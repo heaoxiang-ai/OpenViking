@@ -338,10 +338,25 @@ class OpenVikingAPIClient:
         url = self._build_url(self.server_url, endpoint, params)
         return self._request_with_retry("GET", url)
 
-    def fs_write(self, uri: str, content: str) -> requests.Response:
+    def fs_write(
+        self,
+        uri: str,
+        content: str,
+        mode: str = "replace",
+        wait: bool = False,
+        timeout: Optional[float] = None,
+    ) -> requests.Response:
         endpoint = "/api/v1/content/write"
         url = self._build_url(self.server_url, endpoint)
-        return self._request_with_retry("POST", url, json={"uri": uri, "content": content})
+        payload = {
+            "uri": uri,
+            "content": content,
+            "mode": mode,
+            "wait": wait,
+        }
+        if timeout is not None:
+            payload["timeout"] = timeout
+        return self._request_with_retry("POST", url, json=payload)
 
     def fs_rm(self, uri: str, recursive: bool = False) -> requests.Response:
         endpoint = "/api/v1/fs"

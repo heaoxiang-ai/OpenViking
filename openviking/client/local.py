@@ -227,6 +227,33 @@ class LocalClient(BaseClient):
         """Read L1 overview."""
         return await self._service.fs.overview(uri, ctx=self._ctx)
 
+    async def write(
+        self,
+        uri: str,
+        content: str,
+        mode: str = "replace",
+        wait: bool = False,
+        timeout: Optional[float] = None,
+        telemetry: TelemetryRequest = False,
+    ) -> Dict[str, Any]:
+        """Write text content to an existing file and refresh semantics/vectors."""
+        execution = await run_with_telemetry(
+            operation="content.write",
+            telemetry=telemetry,
+            fn=lambda: self._service.fs.write(
+                uri=uri,
+                content=content,
+                ctx=self._ctx,
+                mode=mode,
+                wait=wait,
+                timeout=timeout,
+            ),
+        )
+        return attach_telemetry_payload(
+            execution.result,
+            execution.telemetry,
+        )
+
     # ============= Search =============
 
     async def find(

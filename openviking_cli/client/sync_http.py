@@ -331,6 +331,27 @@ class SyncHTTPClient:
         """Read L1 overview."""
         return run_async(self._async_client.overview(uri))
 
+    def write(
+        self,
+        uri: str,
+        content: str,
+        mode: str = "replace",
+        wait: bool = False,
+        timeout: Optional[float] = None,
+        telemetry: TelemetryRequest = False,
+    ) -> Dict[str, Any]:
+        """Write text content to an existing file and refresh semantics/vectors."""
+        return run_async(
+            self._async_client.write(
+                uri=uri,
+                content=content,
+                mode=mode,
+                wait=wait,
+                timeout=timeout,
+                telemetry=telemetry,
+            )
+        )
+
     # ============= Relations =============
 
     def relations(self, uri: str) -> List[Dict[str, Any]]:

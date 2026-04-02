@@ -197,6 +197,27 @@ class SyncOpenViking:
         """Read file"""
         return run_async(self._async_client.read(uri, offset=offset, limit=limit))
 
+    def write(
+        self,
+        uri: str,
+        content: str,
+        mode: str = "replace",
+        wait: bool = False,
+        timeout: Optional[float] = None,
+        telemetry: TelemetryRequest = False,
+    ) -> Dict[str, Any]:
+        """Write text content to an existing file and refresh semantics/vectors."""
+        return run_async(
+            self._async_client.write(
+                uri=uri,
+                content=content,
+                mode=mode,
+                wait=wait,
+                timeout=timeout,
+                telemetry=telemetry,
+            )
+        )
+
     def ls(self, uri: str, **kwargs) -> List[Any]:
         """
         List directory contents.

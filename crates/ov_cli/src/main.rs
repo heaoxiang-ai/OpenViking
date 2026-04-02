@@ -321,6 +321,26 @@ enum Commands {
         /// Viking URI
         uri: String,
     },
+    /// Write text content to an existing file
+    Write {
+        /// Viking URI
+        uri: String,
+        /// Content to write
+        #[arg(long, conflicts_with = "from_file")]
+        content: Option<String>,
+        /// Read content from a local file
+        #[arg(long = "from-file", conflicts_with = "content")]
+        from_file: Option<String>,
+        /// Append instead of replacing the file
+        #[arg(long)]
+        append: bool,
+        /// Wait for async processing to finish
+        #[arg(long, default_value = "false")]
+        wait: bool,
+        /// Optional wait timeout in seconds
+        #[arg(long)]
+        timeout: Option<f64>,
+    },
     /// Reindex content at URI (regenerates .abstract.md and .overview.md)
     Reindex {
         /// Viking URI
@@ -727,9 +747,15 @@ async fn main() {
             no_history,
         } => {
             let session_id = session.or_else(|| config::get_or_create_machine_id().ok());
+            let endpoint = if let Ok(env_endpoint) = std::env::var("VIKINGBOT_ENDPOINT") {
+                env_endpoint
+            } else if let Ok(config_url) = std::env::var("OPENVIKING_URL") {
+                format!("{}/bot/v1", config_url)
+            } else {
+                format!("{}/bot/v1", ctx.config.url)
+            };
             let cmd = commands::chat::ChatCommand {
-                endpoint: std::env::var("VIKINGBOT_ENDPOINT")
-                    .unwrap_or_else(|_| "http://localhost:1933/bot/v1".to_string()),
+                endpoint,
                 api_key: std::env::var("VIKINGBOT_API_KEY").ok(),
                 session: session_id,
                 sender,
@@ -748,6 +774,15 @@ async fn main() {
         Commands::Read { uri } => handle_read(uri, ctx).await,
         Commands::Abstract { uri } => handle_abstract(uri, ctx).await,
         Commands::Overview { uri } => handle_overview(uri, ctx).await,
+        Commands::Write {
+            uri,
+            content,
+            from_file,
+            append,
+            wait,
+            timeout,
+        } => handle_write(uri, content, from_file, append, wait, timeout, ctx)
+            .await,
         Commands::Reindex {
             uri,
             regenerate,
@@ -1184,6 +1219,35 @@ async fn handle_overview(uri: String, ctx: CliContext) -> Result<()> {
     commands::content::overview(&client, &uri, ctx.output_format, ctx.compact).await
 }
 
+async fn handle_write(
+    uri: String,
+    content: Option<String>,
+    from_file: Option<String>,
+    append: bool,
+    wait: bool,
+    timeout: Option<f64>,
+    ctx: CliContext,
+) -> Result<()> {
+    let client = ctx.get_client();
+    let payload = match (content, from_file) {
+        (Some(value), None) => value,
+        (None, Some(path)) => std::fs::read_to_string(path)
+            .map_err(|e| Error::Client(format!("Failed to read --from-file: {}", e)))?,
+        _ => return Err(Error::Client("Specify exactly one of --content or --from-file".into())),
+    };
+    commands::content::write(
+        &client,
+        &uri,
+        &payload,
+        append,
+        wait,
+        timeout,
+        ctx.output_format,
+        ctx.compact,
+    )
+    .await
+}
+
 async fn handle_reindex(uri: String, regenerate: bool, wait: bool, ctx: CliContext) -> Result<()> {
     let client = ctx.get_client();
     commands::content::reindex(
@@ -1478,5 +1542,20 @@ mod tests {
         assert_eq!(ctx.config.account.as_deref(), Some("from-cli-account"));
         assert_eq!(ctx.config.user.as_deref(), Some("from-cli-user"));
         assert_eq!(ctx.config.agent_id.as_deref(), Some("from-cli-agent"));
+    }
+
+    #[test]
+    fn cli_write_rejects_removed_semantic_flags() {
+        let result = Cli::try_parse_from([
+            "ov",
+            "write",
+            "viking://resources/demo.md",
+            "--content",
+            "updated",
+            "--no-semantics",
+            "--no-vectorize",
+        ]);
+
+        assert!(result.is_err(), "removed write flags should not parse");
     }
 }
