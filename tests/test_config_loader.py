@@ -180,3 +180,77 @@ def test_openviking_config_singleton_preserves_value_error_for_bad_config(tmp_pa
     with pytest.raises(ValueError, match="server"):
         OpenVikingConfigSingleton.initialize(config_path=str(config_path))
     OpenVikingConfigSingleton.reset_instance()
+
+
+def test_memory_llm_tools_default_and_dedup(monkeypatch):
+    monkeypatch.setenv("OPENVIKING_CONFIG_FILE", "/tmp/codex-no-config.json")
+
+    from openviking_cli.utils.config.open_viking_config import OpenVikingConfig
+
+    config = OpenVikingConfig.from_dict(
+        {
+            "embedding": {
+                "dense": {
+                    "provider": "openai",
+                    "api_key": "test-key",
+                    "model": "text-embedding-3-small",
+                }
+            }
+        }
+    )
+
+    assert config.memory.llm_tools == ["read", "search"]
+
+    config2 = OpenVikingConfig.from_dict(
+        {
+            "embedding": {
+                "dense": {
+                    "provider": "openai",
+                    "api_key": "test-key",
+                    "model": "text-embedding-3-small",
+                }
+            },
+            "memory": {"llm_tools": ["read", "search", "search", "ls"]},
+        }
+    )
+    assert config2.memory.llm_tools == ["read", "search", "ls"]
+
+
+def test_memory_llm_tools_reject_invalid_tool(monkeypatch):
+    monkeypatch.setenv("OPENVIKING_CONFIG_FILE", "/tmp/codex-no-config.json")
+
+    from openviking_cli.utils.config.open_viking_config import OpenVikingConfig
+
+    with pytest.raises(ValueError, match="memory.llm_tools only supports"):
+        OpenVikingConfig.from_dict(
+            {
+                "embedding": {
+                    "dense": {
+                        "provider": "openai",
+                        "api_key": "test-key",
+                        "model": "text-embedding-3-small",
+                    }
+                },
+                "memory": {"llm_tools": ["read", "write"]},
+            }
+        )
+
+
+def test_memory_llm_tools_require_read(monkeypatch):
+    monkeypatch.setenv("OPENVIKING_CONFIG_FILE", "/tmp/codex-no-config.json")
+
+    from openviking_cli.utils.config.open_viking_config import OpenVikingConfig
+
+    with pytest.raises(ValueError, match="must include 'read'"):
+        OpenVikingConfig.from_dict(
+            {
+                "embedding": {
+                    "dense": {
+                        "provider": "openai",
+                        "api_key": "test-key",
+                        "model": "text-embedding-3-small",
+                    }
+                },
+                "memory": {"llm_tools": ["search"]},
+            }
+        )
