@@ -93,7 +93,8 @@
   "enable_memory_decay": true,
   "memory_decay_check_interval": 3600,
   "memory": {
-    "version": "v1"
+    "version": "v1",
+    "llm_tools": ["read", "search"]
   },
   "log": {
     "level": "INFO",

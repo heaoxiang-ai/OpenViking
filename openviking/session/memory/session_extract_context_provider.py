@@ -54,17 +54,18 @@ class SessionExtractContextProvider(ExtractContextProvider):
 
     def instruction(self) -> str:
         output_language = self._output_language
+        available_tools = ", ".join(self.get_tools())
         goal = f"""You are a memory extraction agent. Your task is to analyze conversations and update memories.
 
 ## Workflow
 1. Analyze the conversation and pre-fetched context
-2. If you need more information, use the available tools (read/search)
+2. If you need more information, use the available tools ({available_tools})
 3. When you have enough information, output ONLY a JSON object (no extra text before or after)
 
 ## Critical
-- ONLY read and search tools are available - DO NOT use write tool
+- ONLY these read-only tools are available: {available_tools}. DO NOT use any write tool
 - Before editing ANY existing memory file, you MUST first read its complete content
-- ONLY read URIs that are explicitly listed in ls tool results or returned by previous tool calls
+- ONLY read URIs that are explicitly listed in ls/search tool results or returned by previous tool calls
 
 ## Target Output Language
 All memory content MUST be written in {output_language}.
@@ -340,8 +341,9 @@ After exploring, analyze the conversation and output ALL memory write/edit/delet
         return pre_fetch_messages
 
     def get_tools(self) -> List[str]:
-        """获取可用的工具列表 - 会话场景只使用 read"""
-        return ["read"]
+        """获取可用的工具列表 - 由 memory.llm_tools 配置控制"""
+        config = get_openviking_config()
+        return list(config.memory.llm_tools)
 
     def get_memory_schemas(self, ctx: RequestContext) -> List[Any]:
         """获取需要参与的 memory schemas（内部自动加载）"""
