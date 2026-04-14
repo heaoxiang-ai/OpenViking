@@ -15,8 +15,6 @@ Create `~/.openviking/ov.conf` in your project directory:
       "backend": "local"
     },
     "agfs": {
-      "port": 1833,
-      "log_level": "warn",
       "backend": "local"
     }
   },
@@ -51,7 +49,7 @@ Create `~/.openviking/ov.conf` in your project directory:
       "api_key"  : "your-volcengine-api-key",
       "provider" : "volcengine",
       "dimension": 1024,
-      "model"    : "doubao-embedding-vision-250615",
+      "model"    : "doubao-embedding-vision-251215",
       "input": "multimodal"
     }
   },
@@ -107,7 +105,7 @@ Embedding model configuration for vector search, supporting dense, sparse, and h
     "dense": {
       "provider": "volcengine",
       "api_key": "your-api-key",
-      "model": "doubao-embedding-vision-250615",
+      "model": "doubao-embedding-vision-251215",
       "dimension": 1024,
       "input": "multimodal"
     }
@@ -156,7 +154,7 @@ When the embedding provider experiences consecutive transient failures (e.g. `42
 
 | Model | Dimension | Input Type | Notes |
 |-------|-----------|------------|-------|
-| `doubao-embedding-vision-250615` | 1024 | multimodal | Recommended |
+| `doubao-embedding-vision-251215` | 1024 | multimodal | Recommended |
 | `doubao-embedding-250615` | 1024 | text | Text only |
 
 With `input: "multimodal"`, OpenViking can embed text, images (PNG, JPG, etc.), and mixed content.
@@ -323,7 +321,7 @@ Supported task types: `RETRIEVAL_QUERY`, `RETRIEVAL_DOCUMENT`, `SEMANTIC_SIMILAR
 
 #### Sparse Embedding
 
-> **Note:** Volcengine sparse embedding is supported starting from model `doubao-embedding-vision-250615`.
+> **Note:** Volcengine sparse embedding is supported starting from model `doubao-embedding-vision-251215`.
 
 ```json
 {
@@ -331,7 +329,7 @@ Supported task types: `RETRIEVAL_QUERY`, `RETRIEVAL_DOCUMENT`, `SEMANTIC_SIMILAR
     "sparse": {
       "provider": "volcengine",
       "api_key": "your-api-key",
-      "model": "doubao-embedding-vision-250615"
+      "model": "doubao-embedding-vision-251215"
     }
   }
 }
@@ -364,13 +362,13 @@ Two approaches are supported:
     "dense": {
       "provider": "volcengine",
       "api_key": "your-api-key",
-      "model": "doubao-embedding-vision-250615",
+      "model": "doubao-embedding-vision-251215",
       "dimension": 1024
     },
     "sparse": {
       "provider": "volcengine",
       "api_key": "your-api-key",
-      "model": "doubao-embedding-vision-250615"
+      "model": "doubao-embedding-vision-251215"
     }
   }
 }
@@ -568,6 +566,7 @@ Reranking model for search result refinement. Supports VikingDB (Volcengine), Co
 | `api_base` | str | Endpoint URL (for `openai` provider) |
 | `model` | str | Model name (for `openai` or `litellm` providers) |
 | `threshold` | float | Score threshold between `0.0` and `1.0`; results below this are filtered out. Default: `0.1` |
+| `extra_headers` | object | Custom HTTP headers (for OpenAI-compatible providers, optional) |
 
 **Supported providers:**
 - `vikingdb`: Volcengine VikingDB Rerank API (uses AK/SK)
@@ -579,14 +578,14 @@ If rerank is not configured, search uses vector similarity only.
 
 ### storage
 
-Storage configuration for context data, including file storage (AGFS) and vector database storage (VectorDB).
+Storage configuration for context data, including file storage (RAGFS) and vector database storage (VectorDB).
 
 #### Root Configuration
 
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
 | `workspace` | str | Local data storage path (main configuration) | "./data" |
-| `agfs` | object | AGFS configuration | {} |
+| `agfs` | object | RAGFS (Rust-based AGFS) configuration | {} |
 | `vectordb` | object | Vector database storage configuration | {} |
 
 
@@ -605,55 +604,17 @@ Storage configuration for context data, including file storage (AGFS) and vector
 }
 ```
 
-#### agfs
+#### agfs (RAGFS)
 
 | Parameter | Type | Description | Default |
 |-----------|------|-------------|---------|
-| `mode` | str | `"http-client"` or `"binding-client"` | `"http-client"` |
 | `backend` | str | `"local"`, `"s3"`, or `"memory"` | `"local"` |
-| `url` | str | AGFS service URL for `http-client` mode | `"http://localhost:1833"` |
 | `timeout` | float | Request timeout in seconds | `10.0` |
 | `s3` | object | S3 backend configuration (when backend is 's3') | - |
 
 **Configuration Examples**
 
-<details>
-<summary><b>HTTP Client (Default)</b></summary>
-
-Connects to a remote or local AGFS service via HTTP.
-
-```json
-{
-  "storage": {
-    "agfs": {
-      "mode": "http-client",
-      "url": "http://localhost:1833",
-      "timeout": 10.0
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><b>Binding Client (High Performance)</b></summary>
-
-Directly uses the AGFS Go implementation through a shared library. 
-
-**Config**:
-```json
-{
-  "storage": {
-    "agfs": {
-      "mode": "binding-client",
-      "backend": "local"
-    }
-  }
-}
-```
-
-</details>
+RAGFS uses Rust binding mode by default, directly accessing the file system through the Rust implementation.
 
 
 ##### S3 Backend Configuration
@@ -670,11 +631,11 @@ Directly uses the AGFS Go implementation through a shared library.
 | `use_path_style` | bool | true for PathStyle used by MinIO and some S3-compatible services; false for VirtualHostStyle used by TOS and some S3-compatible services | true |
 | `directory_marker_mode` | str | How to persist directory markers: `none`, `empty`, or `nonempty` | `"empty"` |
 
-`directory_marker_mode` controls how AGFS materializes directory objects in S3:
+`directory_marker_mode` controls how RAGFS materializes directory objects in S3:
 
-- `empty` is the default. AGFS writes a zero-byte directory marker and preserves empty-directory semantics.
+- `empty` is the default. RAGFS writes a zero-byte directory marker and preserves empty-directory semantics.
 - `nonempty` writes a non-empty marker payload. Use this for S3-compatible services such as TOS that reject zero-byte directory markers.
-- `none` switches AGFS to prefix-style S3 semantics. AGFS does not create directory marker objects, so empty directories are not persisted and may not be discoverable until they contain at least one child object.
+- `none` switches RAGFS to prefix-style S3 semantics. RAGFS does not create directory marker objects, so empty directories are not persisted and may not be discoverable until they contain at least one child object.
 
 Typical choices:
 
@@ -834,7 +795,12 @@ Config file for the HTTP client (`SyncHTTPClient` / `AsyncHTTPClient`) and CLI t
   "account": "acme",
   "user": "alice",
   "agent_id": "my-agent",
-  "output": "table"
+  "output": "table",
+  "upload": {
+    "ignore_dirs": "node_modules,.cache,.nx",
+    "include": "*.md,*.pdf",
+    "exclude": "*.tmp,*.log"
+  }
 }
 ```
 
@@ -846,11 +812,22 @@ Config file for the HTTP client (`SyncHTTPClient` / `AsyncHTTPClient`) and CLI t
 | `user` | Default user sent as `X-OpenViking-User` | `null` |
 | `agent_id` | Agent identifier for agent space isolation | `null` |
 | `output` | Default output format: `"table"` or `"json"` | `"table"` |
+| `upload.ignore_dirs` | Default directory ignore list for `add-resource` (CSV) | `null` |
+| `upload.include` | Default include patterns for `add-resource` (CSV) | `null` |
+| `upload.exclude` | Default exclude patterns for `add-resource` (CSV) | `null` |
 
 CLI flags can override these identity fields per command:
 
 ```bash
 openviking --account acme --user alice --agent-id assistant-2 ls viking://
+```
+
+For `add-resource`, upload filter flags are merged additively with `ovcli.conf` defaults:
+
+```bash
+# ovcli.conf: upload.exclude="*.log"
+openviking add-resource ./docs --exclude "*.tmp"
+# effective exclude sent to server: "*.log,*.tmp"
 ```
 
 See [Deployment](./03-deployment.md) for details.
@@ -1030,7 +1007,8 @@ For detailed encryption explanations, see [Data Encryption](../concepts/10-encry
     "api_key": "string",
     "model": "string",
     "api_base": "string",
-    "threshold": 0.1
+    "threshold": 0.1,
+    "extra_headers": {}
   },
   "encryption": {
     "enabled": false,
@@ -1055,7 +1033,6 @@ For detailed encryption explanations, see [Data Encryption](../concepts/10-encry
     "workspace": "string",
     "agfs": {
       "backend": "local|s3|memory",
-      "url": "string",
       "timeout": 10
     },
     "transaction": {
