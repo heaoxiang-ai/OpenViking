@@ -3,6 +3,7 @@
 """SemanticProcessor: Processes messages from SemanticQueue, generates .abstract.md and .overview.md."""
 
 import asyncio
+import re
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -1155,8 +1156,55 @@ class SemanticProcessor(DequeueHandlerBase):
         else:
             return await self._generate_text_summary(file_path, file_name, llm_sem, ctx=ctx)
 
+    _ABSTRACT_BLOCK_RE = re.compile(
+        r"<!--\s*ABSTRACT\s*-->\s*(?P<abstract>.*?)(?=<!--\s*OVERVIEW\s*-->|$)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    _OVERVIEW_BLOCK_RE = re.compile(
+        r"<!--\s*OVERVIEW\s*-->\s*(?P<overview>.*)$",
+        re.IGNORECASE | re.DOTALL,
+    )
+
+    def _extract_structured_abstract(self, generated_content: str) -> Optional[str]:
+        match = self._ABSTRACT_BLOCK_RE.search(generated_content or "")
+        if not match:
+            return None
+        abstract = " ".join(match.group("abstract").split())
+        return abstract or None
+
+    def _extract_structured_overview(self, generated_content: str) -> str:
+        match = self._OVERVIEW_BLOCK_RE.search(generated_content or "")
+        if not match:
+            return generated_content
+        return match.group("overview").strip()
+
+    def _truncate_abstract(self, abstract: str, max_chars: int) -> str:
+        if max_chars <= 0 or len(abstract) <= max_chars:
+            return abstract
+
+        if max_chars <= 3:
+            return abstract[:max_chars]
+
+        sentence_candidate = abstract[:max_chars].rstrip()
+        sentence_end = -1
+        for char in ".!?。？！":
+            sentence_end = max(sentence_end, sentence_candidate.rfind(char))
+        if sentence_end >= 0:
+            return sentence_candidate[: sentence_end + 1].strip()
+
+        candidate = abstract[: max_chars - 3].rstrip()
+        word_boundary = candidate.rfind(" ")
+        if word_boundary > 0:
+            return candidate[:word_boundary].rstrip() + "..."
+
+        return candidate + "..."
+
     def _extract_abstract_from_overview(self, overview_content: str) -> str:
         """Extract abstract from overview.md."""
+        structured_abstract = self._extract_structured_abstract(overview_content)
+        if structured_abstract:
+            return structured_abstract
+
         lines = overview_content.split("\n")
 
         # Skip header lines (starting with #)
@@ -1181,10 +1229,11 @@ class SemanticProcessor(DequeueHandlerBase):
     def _enforce_size_limits(self, overview: str, abstract: str) -> Tuple[str, str]:
         """Enforce max size limits on overview and abstract."""
         semantic = get_openviking_config().semantic
+        overview = self._extract_structured_overview(overview)
         if len(overview) > semantic.overview_max_chars:
             overview = overview[: semantic.overview_max_chars]
         if len(abstract) > semantic.abstract_max_chars:
-            abstract = abstract[: semantic.abstract_max_chars - 3] + "..."
+            abstract = self._truncate_abstract(abstract, semantic.abstract_max_chars)
         return overview, abstract
 
     def _parse_overview_md(self, overview_content: str) -> Dict[str, str]:
@@ -1359,9 +1408,9 @@ class SemanticProcessor(DequeueHandlerBase):
         output_language: str = "en",
     ) -> str:
         """Generate overview from a single prompt (small directories)."""
-        import re
-
-        vlm = get_openviking_config().vlm
+        config = get_openviking_config()
+        vlm = config.vlm
+        semantic = config.semantic
 
         try:
             prompt = render_prompt(
@@ -1371,6 +1420,7 @@ class SemanticProcessor(DequeueHandlerBase):
                     "file_summaries": file_summaries_str,
                     "children_abstracts": children_abstracts_str,
                     "output_language": output_language,
+                    "abstract_max_chars": semantic.abstract_max_chars,
                 },
             )
 
@@ -1407,10 +1457,9 @@ class SemanticProcessor(DequeueHandlerBase):
         Splits file summaries into batches, generates a partial overview per
         batch, then merges all partials into a final overview.
         """
-        import re
-
-        vlm = get_openviking_config().vlm
-        semantic = get_openviking_config().semantic
+        config = get_openviking_config()
+        vlm = config.vlm
+        semantic = config.semantic
         batch_size = semantic.overview_batch_size
         dir_name = dir_uri.split("/")[-1]
 
@@ -1455,6 +1504,7 @@ class SemanticProcessor(DequeueHandlerBase):
                     "file_summaries": batch_str,
                     "children_abstracts": children_str,
                     "output_language": output_language,
+                    "abstract_max_chars": semantic.abstract_max_chars,
                 },
             )
             batch_prompts.append((batch_idx, prompt, batch_index_map))
@@ -1499,6 +1549,7 @@ class SemanticProcessor(DequeueHandlerBase):
                     "file_summaries": combined,
                     "children_abstracts": children_abstracts_str,
                     "output_language": output_language,
+                    "abstract_max_chars": semantic.abstract_max_chars,
                 },
             )
             with bind_telemetry_stage("resource_summarize"):

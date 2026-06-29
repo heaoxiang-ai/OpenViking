@@ -27,6 +27,11 @@ variables:
     description: "Language code for output (e.g., 'en', 'zh-CN', 'ja', 'ko', 'ru', 'ar')"
     required: true
 
+  - name: "abstract_max_chars"
+    type: "int"
+    description: "Maximum character count for the generated abstract"
+    required: true
+
 template: |
   Output Language: {{ output_language }}
 
@@ -51,6 +56,12 @@ template: |
   - When the summaries suggest a code repository, explain how subdirectories relate to the whole repo, such as services, libraries, apps, modules, or support folders.
 
   Output in Markdown format, strictly following this structure:
+
+  <!-- ABSTRACT -->
+  Write one complete sentence in {{ output_language }} for L0 retrieval.
+  It must be no longer than {{ abstract_max_chars }} characters, must not end mid-word, and must not use Markdown bullets or headings.
+
+  <!-- OVERVIEW -->
 
   1. **Title** (H1): Directory name
 

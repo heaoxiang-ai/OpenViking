@@ -205,9 +205,13 @@ class TestOverviewGenerationFlow:
                 "file_summaries": file_summaries,
                 "children_abstracts": "",
                 "output_language": detected_lang,
+                "abstract_max_chars": 256,
             },
         )
         assert f"Output Language: {lang}" in prompt
+        assert "<!-- ABSTRACT -->" in prompt
+        assert "<!-- OVERVIEW -->" in prompt
+        assert "no longer than 256 characters" in prompt
 
     def test_overview_generation_prompt_preserves_repository_hierarchy(self):
         prompt = render_prompt(
@@ -217,6 +221,7 @@ class TestOverviewGenerationFlow:
                 "file_summaries": "[1] pyproject.toml: Python project config",
                 "children_abstracts": "- backend/: API service\n- frontend/: web UI",
                 "output_language": "en",
+                "abstract_max_chars": 256,
             },
         )
 
