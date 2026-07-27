@@ -543,6 +543,7 @@ class Session:
         auto_commit_threshold: int = 8000,
         tool_output_externalization_config: Optional[ToolOutputExternalizationConfig] = None,
         agent_evolution_enabled: bool = True,
+        agent_evolution_enabled_provider: Optional[Callable[[], bool]] = None,
         usage_reporter: Optional["UsageReporter"] = None,
     ):
         self._viking_fs = viking_fs
@@ -575,6 +576,7 @@ class Session:
             else ToolOutputExternalizationConfig()
         )
         self._agent_evolution_enabled = agent_evolution_enabled
+        self._agent_evolution_enabled_provider = agent_evolution_enabled_provider
         self._usage_reporter = usage_reporter
 
         logger.info(f"Session created: {self.session_id} for user {self.user}")
@@ -1710,7 +1712,11 @@ class Session:
             memory_policy if memory_policy is not None else self._meta.memory_policy
         )
         _validate_memory_policy_types(effective_policy)
-        agent_evolution_enabled = self._agent_evolution_enabled
+        agent_evolution_enabled = (
+            self._agent_evolution_enabled_provider()
+            if self._agent_evolution_enabled_provider is not None
+            else self._agent_evolution_enabled
+        )
         effective_policy = _apply_agent_evolution_setting(
             effective_policy,
             agent_evolution_enabled=agent_evolution_enabled,

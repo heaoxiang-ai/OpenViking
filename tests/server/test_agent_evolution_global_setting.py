@@ -1,12 +1,16 @@
 # Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
 # SPDX-License-Identifier: AGPL-3.0
 
+import json
 from unittest.mock import AsyncMock
 
 import httpx
 
+from openviking.server.agent_evolution_config import AgentEvolutionConfigProvider
 from openviking.server.config import AgentEvolutionConfig, ServerConfig, UserConfig
+from openviking.server.identity import RequestContext, Role
 from openviking.service.session_service import SessionService
+from openviking_cli.session.user_id import UserIdentifier
 
 
 def test_agent_evolution_is_disabled_by_default():
@@ -22,7 +26,56 @@ def test_agent_evolution_can_be_enabled_for_the_server():
 def test_embedded_session_service_preserves_agent_evolution_default():
     service = SessionService()
 
-    assert service._agent_evolution_enabled is True
+    assert service.get_agent_evolution_enabled() is True
+
+
+def test_existing_session_observes_updated_runtime_value():
+    service = SessionService(viking_fs=object())
+    session = service.session(
+        RequestContext(user=UserIdentifier.the_default_user(), role=Role.ROOT)
+    )
+
+    service.set_agent_evolution_config(AgentEvolutionConfig(enabled=False))
+
+    assert session._agent_evolution_enabled_provider() is False
+
+
+def test_agent_evolution_provider_reloads_config_file(tmp_path):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": False}}}),
+        encoding="utf-8",
+    )
+    provider = AgentEvolutionConfigProvider(
+        default_enabled=True,
+        config_path=config_path,
+    )
+
+    assert provider.is_enabled() is False
+
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": True}}}),
+        encoding="utf-8",
+    )
+
+    assert provider.is_enabled() is True
+
+
+def test_agent_evolution_provider_keeps_last_valid_value(tmp_path):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": True}}}),
+        encoding="utf-8",
+    )
+    provider = AgentEvolutionConfigProvider(
+        default_enabled=False,
+        config_path=config_path,
+    )
+    assert provider.is_enabled() is True
+
+    config_path.write_text("{", encoding="utf-8")
+
+    assert provider.is_enabled() is True
 
 
 def test_deprecated_user_agent_evolution_config_is_not_persisted():
@@ -38,6 +91,18 @@ async def test_agent_evolution_user_endpoint_is_not_registered(
     response = await client.get("/api/v1/user-settings/memory")
 
     assert response.status_code == 404
+
+
+async def test_agent_evolution_admin_endpoint_returns_runtime_value(
+    service,
+    client: httpx.AsyncClient,
+):
+    service.sessions.set_agent_evolution_config(AgentEvolutionConfig(enabled=True))
+
+    response = await client.get("/api/v1/admin/agent-evolution")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["result"] == {"enabled": True}
 
 
 async def test_manual_extract_respects_disabled_agent_evolution(
