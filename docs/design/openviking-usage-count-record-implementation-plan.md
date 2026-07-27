@@ -38,8 +38,8 @@
 ```python
 assert payload["events"] == [
     {
-        "countName": "experience.recall.count",
-        "opType": "add",
+        "CountName": "experience.recall.count",
+        "OpType": "add",
         "amount": 1.0,
         "timestamp": 1785124800000,
         "uniqueId": "ue_recall",
@@ -136,8 +136,8 @@ def _to_count_record(event: UsageEvent) -> dict[str, Any]:
         extra["attributes"] = attributes
 
     return {
-        "countName": count_name,
-        "opType": "add",
+        "CountName": count_name,
+        "OpType": "add",
         "amount": 1.0,
         "timestamp": _timestamp_millis(str(record["occurred_at"])),
         "uniqueId": str(record["event_id"]),

@@ -118,8 +118,8 @@ class TestHttpUsageSink:
             payload = json.loads(pending_path.read_text(encoding="utf-8"))
             assert payload["events"] == [
                 {
-                    "countName": "experience.recall.count",
-                    "opType": "add",
+                    "CountName": "experience.recall.count",
+                    "OpType": "add",
                     "amount": 1.0,
                     "timestamp": 1785124800000,
                     "uniqueId": "ue_recall",
@@ -166,7 +166,7 @@ class TestHttpUsageSink:
 
             pending_path = next((outbox_dir / "pending").glob("*.json"))
             payload = json.loads(pending_path.read_text(encoding="utf-8"))
-            assert payload["events"][0]["countName"] == "experience.inject.count"
+            assert payload["events"][0]["CountName"] == "experience.inject.count"
 
     def test_write_omits_empty_optional_count_record_extra_fields(self) -> None:
         with tempfile.TemporaryDirectory() as data_dir:

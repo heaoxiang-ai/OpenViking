@@ -145,8 +145,8 @@ HTTP 批次外层继续保留 `schema_version`、`resource_id`、`batch_id`、
 
 ```json
 {
-  "countName": "experience.recall.count",
-  "opType": "add",
+  "CountName": "experience.recall.count",
+  "OpType": "add",
   "amount": 1.0,
   "timestamp": 1785124800000,
   "uniqueId": "ue_<sha256>",
@@ -169,9 +169,9 @@ HTTP 批次外层继续保留 `schema_version`、`resource_id`、`batch_id`、
 
 字段映射：
 
-- `memory.recalled` 映射为 `countName=experience.recall.count`。
-- `memory.injected` 映射为 `countName=experience.inject.count`。
-- `opType` 固定为 `add`。
+- `memory.recalled` 映射为 `CountName=experience.recall.count`。
+- `memory.injected` 映射为 `CountName=experience.inject.count`。
+- `OpType` 固定为 `add`。
 - `amount` 固定为 `1.0`。
 - `timestamp` 由 `occurred_at` 转换为 Unix 毫秒时间戳。
 - `uniqueId` 使用稳定的 `event_id`。
