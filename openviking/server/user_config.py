@@ -28,11 +28,6 @@ class ResolvedAddTargets:
     skill_uri: Optional[str] = None
 
 
-@dataclass(frozen=True)
-class ResolvedMemorySettings:
-    agent_evolution_enabled: bool
-
-
 _UpdateResult = TypeVar("_UpdateResult")
 
 
@@ -220,49 +215,6 @@ async def delete_user_add_targets(viking_fs: VikingFS, ctx: RequestContext) -> N
         user_config.add_targets = AddTargetsConfig()
 
     await update_user_config(viking_fs, ctx, _clear)
-
-
-async def write_user_memory_settings(
-    viking_fs: VikingFS,
-    ctx: RequestContext,
-    *,
-    agent_evolution_enabled: Any,
-    agent_evolution_enabled_set: bool,
-) -> None:
-    if (
-        agent_evolution_enabled_set
-        and agent_evolution_enabled is not None
-        and not isinstance(agent_evolution_enabled, bool)
-    ):
-        raise InvalidArgumentError("agent_evolution_enabled must be a boolean or null")
-
-    def _set(user_config: UserConfig) -> None:
-        if agent_evolution_enabled_set:
-            user_config.agent_evolution.enabled = agent_evolution_enabled
-
-    await update_user_config(viking_fs, ctx, _set)
-
-
-async def resolve_memory_settings(
-    *,
-    viking_fs: VikingFS,
-    ctx: RequestContext,
-    user_config_defaults: Optional[UserConfig] = None,
-    user_config: Optional[UserConfig] = None,
-) -> ResolvedMemorySettings:
-    current = user_config or await read_user_config(viking_fs, ctx)
-    defaults = user_config_defaults or UserConfig()
-    enabled = current.agent_evolution.enabled
-    if enabled is None:
-        enabled = defaults.agent_evolution.enabled
-    effective_agent_evolution_enabled = bool(enabled) if enabled is not None else False
-    return ResolvedMemorySettings(
-        agent_evolution_enabled=effective_agent_evolution_enabled,
-    )
-
-
-def public_memory_settings(user_config: UserConfig) -> dict[str, Any]:
-    return {"agent_evolution_enabled": user_config.agent_evolution.enabled}
 
 
 async def effective_resource_add_target(

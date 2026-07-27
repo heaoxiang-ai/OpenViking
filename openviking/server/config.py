@@ -82,7 +82,15 @@ class AddTargetsConfig(BaseModel):
 
 
 class AgentEvolutionConfig(BaseModel):
-    """Per-user Agent Evolution production switch."""
+    """Server-wide Agent Evolution production switch."""
+
+    enabled: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class DeprecatedUserAgentEvolutionConfig(BaseModel):
+    """Parse-only compatibility for legacy per-user configuration files."""
 
     enabled: Optional[bool] = None
 
@@ -93,7 +101,10 @@ class UserConfig(BaseModel):
     """User configuration values that can be defaulted or initialized."""
 
     add_targets: AddTargetsConfig = Field(default_factory=AddTargetsConfig)
-    agent_evolution: AgentEvolutionConfig = Field(default_factory=AgentEvolutionConfig)
+    agent_evolution: DeprecatedUserAgentEvolutionConfig = Field(
+        default_factory=DeprecatedUserAgentEvolutionConfig,
+        exclude=True,
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -276,6 +287,7 @@ class ServerConfig(BaseModel):
     upload_signed_ttl_seconds: int = 600
     temp_upload: TempUploadConfig = Field(default_factory=TempUploadConfig)
     user_config_defaults: UserConfig = Field(default_factory=UserConfig)
+    agent_evolution: AgentEvolutionConfig = Field(default_factory=AgentEvolutionConfig)
     tool_output_externalization: ToolOutputExternalizationConfig = Field(
         default_factory=ToolOutputExternalizationConfig
     )

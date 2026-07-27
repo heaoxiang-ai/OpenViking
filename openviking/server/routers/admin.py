@@ -91,13 +91,7 @@ def _has_add_targets(user_config: UserConfig | None) -> bool:
 
 
 def _has_initial_user_config(user_config: UserConfig | None) -> bool:
-    return bool(
-        _has_add_targets(user_config)
-        or (
-            user_config is not None
-            and user_config.agent_evolution.enabled is not None
-        )
-    )
+    return _has_add_targets(user_config)
 
 
 def _validate_initial_user_config(

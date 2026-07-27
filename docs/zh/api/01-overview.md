@@ -522,7 +522,7 @@ JSON 输出 - 错误：
 | GET | `/api/v1/observer/system` | 聚合运行状态 |
 | GET | `/metrics` | Prometheus 指标 |
 
-### [管理员](08-admin.md)、[用户记忆设置](12-user-settings.md)与[隐私配置](10-privacy.md)
+### [管理员](08-admin.md)与[隐私配置](10-privacy.md)
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -535,8 +535,6 @@ JSON 输出 - 错误：
 | DELETE | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | 移除用户 |
 | PUT | `/api/v1/admin/accounts/{account_id}/users/{user_id}/role` | 修改用户角色 |
 | POST | `/api/v1/admin/accounts/{account_id}/users/{user_id}/key` | 重新生成用户 Key |
-| GET | `/api/v1/user-settings/memory` | 读取当前用户的 Agent 进化设置 |
-| PATCH | `/api/v1/user-settings/memory` | 更新或清除当前用户的 Agent 进化覆盖设置 |
 | GET | `/api/v1/privacy-configs` | 列出隐私配置分类 |
 | GET | `/api/v1/privacy-configs/{category}` | 列出分类目标 |
 | GET | `/api/v1/privacy-configs/{category}/{target_key}` | 获取生效配置 |

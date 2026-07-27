@@ -527,7 +527,7 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | GET | `/api/v1/observer/system` | Aggregate runtime status |
 | GET | `/metrics` | Prometheus metrics |
 
-### [Administration](08-admin.md), [User Memory Settings](12-user-settings.md), and [Privacy Configuration](10-privacy.md)
+### [Administration](08-admin.md) and [Privacy Configuration](10-privacy.md)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -540,8 +540,6 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | DELETE | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | Remove a user |
 | PUT | `/api/v1/admin/accounts/{account_id}/users/{user_id}/role` | Change a user role |
 | POST | `/api/v1/admin/accounts/{account_id}/users/{user_id}/key` | Regenerate a user key |
-| GET | `/api/v1/user-settings/memory` | Read the current user's Agent Evolution setting |
-| PATCH | `/api/v1/user-settings/memory` | Update or clear the current user's Agent Evolution override |
 | GET | `/api/v1/privacy-configs` | List privacy configuration categories |
 | GET | `/api/v1/privacy-configs/{category}` | List category targets |
 | GET | `/api/v1/privacy-configs/{category}/{target_key}` | Get the active configuration |

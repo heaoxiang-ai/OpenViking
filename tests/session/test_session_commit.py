@@ -13,8 +13,6 @@ import pytest
 from openviking import AsyncOpenViking
 from openviking.client.session import Session as ClientSession
 from openviking.message import TextPart
-from openviking.server.config import UserConfig
-from openviking.server.user_config import write_user_memory_settings
 from openviking.service.task_tracker import get_task_tracker
 from openviking.session import Session
 from openviking.storage.transaction import get_lock_manager
@@ -84,7 +82,7 @@ class TestCommit:
     async def test_commit_default_disables_agent_memory_but_keeps_archive(
         self, session_with_messages: Session
     ):
-        session_with_messages._user_config_defaults = UserConfig()
+        session_with_messages._agent_evolution_enabled = False
         session_with_messages._session_compressor.extract_long_term_memories = AsyncMock(
             return_value=[]
         )
@@ -107,18 +105,12 @@ class TestCommit:
         assert "trajectories" not in call_kwargs["allowed_memory_types"]
         assert "experiences" not in call_kwargs["allowed_memory_types"]
 
-    async def test_commit_reloads_user_setting_and_enables_agent_memory(
+    async def test_commit_uses_global_setting_and_enables_agent_memory(
         self, session_with_messages: Session
     ):
-        session_with_messages._user_config_defaults = UserConfig()
+        session_with_messages._agent_evolution_enabled = True
         session_with_messages._session_compressor.extract_long_term_memories = AsyncMock(
             return_value=[]
-        )
-        await write_user_memory_settings(
-            session_with_messages._viking_fs,
-            session_with_messages.ctx,
-            agent_evolution_enabled=True,
-            agent_evolution_enabled_set=True,
         )
 
         result = await session_with_messages.commit_async()

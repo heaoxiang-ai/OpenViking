@@ -223,9 +223,9 @@ def create_app(
         if callable(usage_reporter_setter):
             usage_reporter_setter(_get_usage_reporter())
 
-        user_config_defaults_setter = getattr(sessions, "set_user_config_defaults", None)
-        if callable(user_config_defaults_setter):
-            user_config_defaults_setter(config.user_config_defaults)
+        agent_evolution_setter = getattr(sessions, "set_agent_evolution_config", None)
+        if callable(agent_evolution_setter):
+            agent_evolution_setter(config.agent_evolution)
 
     if service is not None:
         _configure_session_runtime(service)

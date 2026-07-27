@@ -18,7 +18,7 @@ from openviking.core.peer_id import normalize_peer_id, safe_peer_id
 from openviking.message import Message, Part
 from openviking.message.part import ContextPart, TextPart, ToolPart
 from openviking.pyagfs.exceptions import AGFSClientError, AGFSHTTPError, AGFSNotFoundError
-from openviking.server.config import ToolOutputExternalizationConfig, UserConfig
+from openviking.server.config import ToolOutputExternalizationConfig
 from openviking.server.identity import RequestContext, Role
 from openviking.session.memory.constants import (
     AGENT_EVOLUTION_MEMORY_TYPES,
@@ -51,7 +51,6 @@ from openviking.utils.time_utils import get_current_timestamp
 from openviking.utils.token_estimation import estimate_text_tokens, truncate_text_to_token_budget
 from openviking_cli.exceptions import (
     FailedPreconditionError,
-    InvalidArgumentError,
     NotFoundError,
 )
 from openviking_cli.session.user_id import UserIdentifier
@@ -543,7 +542,7 @@ class Session:
         session_uri: Optional[str] = None,
         auto_commit_threshold: int = 8000,
         tool_output_externalization_config: Optional[ToolOutputExternalizationConfig] = None,
-        user_config_defaults: Optional[UserConfig] = None,
+        agent_evolution_enabled: bool = False,
         usage_reporter: Optional["UsageReporter"] = None,
     ):
         self._viking_fs = viking_fs
@@ -575,11 +574,7 @@ class Session:
             if tool_output_externalization_config is not None
             else ToolOutputExternalizationConfig()
         )
-        self._user_config_defaults = (
-            user_config_defaults.model_copy(deep=True)
-            if user_config_defaults is not None
-            else UserConfig()
-        )
+        self._agent_evolution_enabled = agent_evolution_enabled
         self._usage_reporter = usage_reporter
 
         logger.info(f"Session created: {self.session_id} for user {self.user}")
@@ -1482,7 +1477,6 @@ class Session:
         min_raw_tail_steps: int,
         agent_evolution_enabled: bool = True,
         agent_memory_skip_reason: Optional[str] = None,
-        user_config_error: Optional[str] = None,
     ) -> None:
         """Persist the Phase 1 intent before any destructive root rewrite."""
         payload = {
@@ -1506,7 +1500,6 @@ class Session:
                 "agent_evolution": {
                     "enabled": agent_evolution_enabled,
                     "skip_reason": agent_memory_skip_reason,
-                    "user_config_error": user_config_error,
                 },
             },
         )
@@ -1717,33 +1710,16 @@ class Session:
             memory_policy if memory_policy is not None else self._meta.memory_policy
         )
         _validate_memory_policy_types(effective_policy)
-        agent_evolution_enabled = False
-        user_config_error: Optional[str] = None
-        try:
-            from openviking.server.user_config import resolve_memory_settings
-
-            user_settings = await resolve_memory_settings(
-                viking_fs=self._viking_fs,
-                ctx=self.ctx,
-                user_config_defaults=self._user_config_defaults,
-            )
-            agent_evolution_enabled = user_settings.agent_evolution_enabled
-            effective_policy = _apply_agent_evolution_setting(
-                effective_policy,
-                agent_evolution_enabled=agent_evolution_enabled,
-            )
-        except InvalidArgumentError as exc:
-            user_config_error = str(exc)
-            effective_policy = _apply_agent_evolution_setting(
-                effective_policy,
-                agent_evolution_enabled=False,
-            )
+        agent_evolution_enabled = self._agent_evolution_enabled
+        effective_policy = _apply_agent_evolution_setting(
+            effective_policy,
+            agent_evolution_enabled=agent_evolution_enabled,
+        )
         effective_memory_policy = effective_policy.to_dict()
         effective_memory_types = sorted(_effective_memory_types(effective_policy))
         agent_memory_skip_reason = _agent_memory_skip_reason(
             agent_evolution_enabled=agent_evolution_enabled,
             effective_memory_types=set(effective_memory_types),
-            user_config_error=user_config_error,
         )
         logger.info(
             f"[TRACER] session_commit started, trace_id={trace_id}, "
@@ -1798,7 +1774,6 @@ class Session:
                 agent_memory_skip_reason = _agent_memory_skip_reason(
                     agent_evolution_enabled=agent_evolution_enabled,
                     effective_memory_types=set(effective_memory_types),
-                    user_config_error=user_config_error,
                 )
 
             archive_refs = await self._list_archive_refs()
@@ -1916,7 +1891,6 @@ class Session:
                     min_raw_tail_steps=effective_min_tail,
                     agent_evolution_enabled=agent_evolution_enabled,
                     agent_memory_skip_reason=agent_memory_skip_reason,
-                    user_config_error=user_config_error,
                 )
 
                 # Archive raw remains durable and recoverable before any live

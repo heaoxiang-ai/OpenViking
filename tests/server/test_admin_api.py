@@ -331,7 +331,7 @@ async def test_create_user_paths_accept_initial_user_config(
     assert bob_settings.resource_uri == "viking://user/resources/bob"
 
 
-async def test_create_user_paths_accept_agent_evolution_only_config(
+async def test_create_user_paths_ignore_deprecated_agent_evolution_config(
     lightweight_admin_client: httpx.AsyncClient,
     lightweight_admin_app: FastAPI,
 ):
@@ -353,7 +353,7 @@ async def test_create_user_paths_accept_agent_evolution_only_config(
         viking_fs,
         RequestContext(user=UserIdentifier(acct, "alice"), role=Role.ADMIN),
     )
-    assert alice_config.agent_evolution.enabled is True
+    assert alice_config.agent_evolution.enabled is None
 
     resp = await lightweight_admin_client.post(
         f"/api/v1/admin/accounts/{acct}/users",
@@ -370,7 +370,7 @@ async def test_create_user_paths_accept_agent_evolution_only_config(
         viking_fs,
         RequestContext(user=UserIdentifier(acct, "bob"), role=Role.USER),
     )
-    assert bob_config.agent_evolution.enabled is False
+    assert bob_config.agent_evolution.enabled is None
 
 
 async def test_list_accounts(admin_client: httpx.AsyncClient):
