@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import httpx
 
 from openviking.server.config import AgentEvolutionConfig, ServerConfig, UserConfig
+from openviking.service.session_service import SessionService
 
 
 def test_agent_evolution_is_disabled_by_default():
@@ -16,6 +17,12 @@ def test_agent_evolution_can_be_enabled_for_the_server():
     config = ServerConfig.model_validate({"agent_evolution": {"enabled": True}})
 
     assert config.agent_evolution.enabled is True
+
+
+def test_embedded_session_service_preserves_agent_evolution_default():
+    service = SessionService()
+
+    assert service._agent_evolution_enabled is True
 
 
 def test_deprecated_user_agent_evolution_config_is_not_persisted():

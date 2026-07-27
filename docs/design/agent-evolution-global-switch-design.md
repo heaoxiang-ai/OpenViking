@@ -36,6 +36,10 @@ The default is `false`.
 defaults such as add targets. Agent Evolution is no longer part of active
 `UserConfig` resolution.
 
+This setting belongs to the HTTP server deployment surface. Embedded/local SDK
+clients do not load `ServerConfig`, so they preserve the historical enabled
+behavior instead of becoming permanently unable to produce Agent memory.
+
 ## Commit Behavior
 
 `SessionService` passes the deployment-level Agent Evolution configuration into
@@ -48,8 +52,15 @@ session-level `memory_policy`:
   the effective policy. A session cannot enable them through `memory_policy`.
 
 Phase 1 stores the effective boolean and skip reason in archive metadata.
-Asynchronous Phase 2 reads that snapshot, so a server configuration change does
-not alter an already accepted commit.
+Asynchronous Phase 2 reads that snapshot, so normal queue processing and direct
+recovery of that archive use the value accepted at commit time.
+
+When a later commit rolls earlier failed archives into one recovery batch, the
+entire batch uses the triggering archive's snapshot. OpenViking keeps one
+extraction policy per batch instead of splitting the merged conversation across
+different Agent Evolution settings. Therefore, changing the deployment setting
+before a later recovery commit can affect replayed messages from earlier failed
+archives.
 
 Archives created before the snapshot field existed preserve the historical
 enabled behavior during recovery.
@@ -76,6 +87,8 @@ override the deployment-level setting.
 ## Compatibility
 
 - Existing experiences remain readable and searchable.
+- Embedded/local SDK clients preserve their historical enabled behavior because
+  they do not have the HTTP server configuration surface.
 - Existing user config files containing `agent_evolution` continue to parse,
   preventing an upgrade from breaking users that already wrote the branch-era
   configuration.

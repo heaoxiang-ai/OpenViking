@@ -542,7 +542,7 @@ class Session:
         session_uri: Optional[str] = None,
         auto_commit_threshold: int = 8000,
         tool_output_externalization_config: Optional[ToolOutputExternalizationConfig] = None,
-        agent_evolution_enabled: bool = False,
+        agent_evolution_enabled: bool = True,
         usage_reporter: Optional["UsageReporter"] = None,
     ):
         self._viking_fs = viking_fs

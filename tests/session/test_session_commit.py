@@ -127,6 +127,43 @@ class TestCommit:
         assert call_kwargs["agent_evolution_enabled"] is True
         assert call_kwargs["allowed_memory_types"] is None
 
+    async def test_disabled_agent_evolution_keeps_working_memory(
+        self, session_with_messages: Session, monkeypatch
+    ):
+        session_with_messages._agent_evolution_enabled = False
+        summary_called = False
+
+        async def fake_summary(_session, messages, latest_archive_overview=""):
+            nonlocal summary_called
+            del messages, latest_archive_overview
+            summary_called = True
+            return "# Working Memory\n\nAgent memory production is disabled."
+
+        monkeypatch.setattr(Session, "_generate_archive_summary_async", fake_summary)
+        session_with_messages._session_compressor.extract_long_term_memories = AsyncMock(
+            return_value=[]
+        )
+        if hasattr(session_with_messages._session_compressor, "extract_execution_memories"):
+            session_with_messages._session_compressor.extract_execution_memories = AsyncMock(
+                return_value={"contexts": [], "session_skills": []}
+            )
+
+        result = await session_with_messages.commit_async(
+            memory_policy={
+                "memory_types": ["cases", "trajectories", "experiences"],
+                "working_memory": {"enabled": True},
+            }
+        )
+        task_result = await _wait_for_task(result["task_id"])
+
+        assert task_result["status"] == "completed"
+        assert summary_called is True
+        archive_uri = task_result["result"]["archive_uri"]
+        assert await _marker_exists(session_with_messages, archive_uri, ".overview.md")
+        session_with_messages._session_compressor.extract_long_term_memories.assert_not_awaited()
+        if hasattr(session_with_messages._session_compressor, "extract_execution_memories"):
+            session_with_messages._session_compressor.extract_execution_memories.assert_not_awaited()
+
     async def test_commit_reports_session_skills_separately(
         self, session_with_messages: Session, monkeypatch
     ):
