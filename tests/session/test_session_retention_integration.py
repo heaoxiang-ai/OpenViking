@@ -367,9 +367,15 @@ async def test_phase2_roll_forward_writes_coverage_and_calls_existing_summary_on
         1,
         [_text_message("u1", "user", "failed one")],
         failed=True,
+        meta={"agent_evolution": {"enabled": False}},
     )
     current = _text_message("u2", "user", "current two")
-    current_uri = await _write_archive(session, 2, [current])
+    current_uri = await _write_archive(
+        session,
+        2,
+        [current],
+        meta={"agent_evolution": {"enabled": True}},
+    )
     seen_message_ids: list[list[str]] = []
 
     async def fake_summary(messages, latest_archive_overview=""):
@@ -402,11 +408,14 @@ async def test_phase2_roll_forward_writes_coverage_and_calls_existing_summary_on
         first_message_id=current.id,
         last_message_id=current.id,
         memory_policy={"working_memory": {"enabled": True}},
+        agent_evolution_enabled=True,
     )
 
     done = json.loads(await session._viking_fs.read_file(f"{current_uri}/.done", ctx=session.ctx))
+    task = await get_task_tracker().get(task_id)
     context = await session.get_session_context()
     assert seen_message_ids == [["u1", "u2"]]
+    assert task.result["agent_evolution_enabled"] is True
     assert done["coverage_start_archive"] == "archive_001"
     assert done["coverage_end_archive"] == "archive_002"
     assert done["covered_failed_archives"] == ["archive_001"]
