@@ -24,6 +24,57 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_COUNT_NAMES = {
+    "memory.recalled": "experience.recall.count",
+    "memory.injected": "experience.inject.count",
+}
+
+
+def _timestamp_millis(value: str) -> int:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _to_count_record(event: UsageEvent) -> dict[str, Any]:
+    record = event.to_dict()
+    event_type = str(record.get("event_type") or "")
+    try:
+        count_name = _COUNT_NAMES[event_type]
+    except KeyError as exc:
+        raise ValueError(f"unsupported usage event type: {event_type}") from exc
+
+    evidence = record.get("evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    attributes = record.get("attributes")
+    attributes = attributes if isinstance(attributes, dict) else {}
+
+    extra = {key: value for key, value in evidence.items() if value not in (None, "")}
+    session_id = str(record.get("session_id") or "")
+    if session_id:
+        extra["session_id"] = session_id
+    task_id = record.get("task_id")
+    if task_id not in (None, ""):
+        extra["task_id"] = task_id
+    if attributes:
+        extra["attributes"] = attributes
+
+    return {
+        "countName": count_name,
+        "opType": "add",
+        "amount": 1.0,
+        "timestamp": _timestamp_millis(str(record.get("occurred_at") or "")),
+        "uniqueId": str(record.get("event_id") or ""),
+        "tags": {
+            "account_id": str(record.get("account_id") or ""),
+            "user_id": str(record.get("user_id") or ""),
+            "resource_uri": str(record.get("resource_uri") or ""),
+            "resource_type": str(record.get("resource_type") or ""),
+        },
+        "extra": extra,
+    }
+
 
 class HttpUsageSink:
     """Persist usage events before delivering them to an HTTP collector."""
@@ -108,12 +159,10 @@ class HttpUsageSink:
     def _persist_events(self, events: list[UsageEvent]) -> None:
         records: list[dict[str, Any]] = []
         for event in events:
-            record = event.to_dict()
-            event_id = str(record.get("event_id") or "").strip()
+            event_id = str(event.to_dict().get("event_id") or "").strip()
             if not event_id:
                 raise ValueError("event_id is required")
-            record["prefix"] = self._resource_id
-            records.append(record)
+            records.append(_to_count_record(event))
 
         batch: list[dict[str, Any]] = []
         for record in records:
@@ -248,8 +297,8 @@ class HttpUsageSink:
         return effective_total_bytes + incoming_bytes <= self._max_outbox_bytes
 
     def _build_payload(self, events: list[dict[str, Any]]) -> dict[str, Any]:
-        event_ids = "\n".join(str(event["event_id"]) for event in events)
-        batch_id = f"ub_{hashlib.sha256(event_ids.encode('utf-8')).hexdigest()}"
+        unique_ids = "\n".join(str(event["uniqueId"]) for event in events)
+        batch_id = f"ub_{hashlib.sha256(unique_ids.encode('utf-8')).hexdigest()}"
         created_at = (
             datetime.now(timezone.utc)
             .isoformat(timespec="milliseconds")

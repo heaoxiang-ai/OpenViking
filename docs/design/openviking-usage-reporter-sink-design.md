@@ -177,6 +177,7 @@ HTTP 批次外层继续保留 `schema_version`、`resource_id`、`batch_id`、
 - `uniqueId` 使用稳定的 `event_id`。
 - `tags` 保存 `account_id`、`user_id`、`resource_uri` 和 `resource_type`。
 - `extra` 保存 `session_id`、可选的 `task_id` 以及 `evidence` 中的审计字段。
+- 非空的 `UsageEvent.attributes` 原样写入 `extra.attributes`。
 - 空的可选字段不写入 `extra`。
 
 无法识别的 `event_type` 不生成含义不明确的计量记录，转换时抛出错误并由
@@ -288,6 +289,6 @@ schema_version
 任务恢复或附加属性变化破坏幂等性。同一 session message 中同一 tool call
 对同一资源产生的事件，在 phase2 重放后仍得到相同 `event_id`。
 
-内置 HTTP Sink 提供持久化 outbox、失败重试和发送确认。所有 `2xx` 响应视为确认，瞬时错误进入指数退避重试，`400` / `422` 进入 dead-letter。HTTP Sink 可能重复发送同一事件，消费端仍需按 `event_id` 去重。
+内置 HTTP Sink 提供持久化 outbox、失败重试和发送确认。所有 `2xx` 响应视为确认，瞬时错误进入指数退避重试，`400` / `422` 进入 dead-letter。HTTP Sink 可能重复发送同一事件，消费端需按由内部 `event_id` 映射得到的 `CountRecord.uniqueId` 去重。
 
 HTTP outbox 使用 `max_outbox_bytes` 限制磁盘占用。达到上限时先淘汰最旧的 dead-letter，再淘汰最旧的 pending；inflight 不被淘汰。因此即使启用 HTTP Sink，长期下游故障和容量压力下仍可能丢失事件，整体机制保持 best-effort，不承诺端到端 at-least-once。

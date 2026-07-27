@@ -14,6 +14,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from openviking.usage_reporter.http_sink import HttpUsageSink
 
 
@@ -23,15 +25,26 @@ class FakeUsageEvent:
         event_id: str,
         session_id: str,
         attributes: dict[str, object] | None = None,
+        *,
+        event_type: str = "memory.recalled",
+        occurred_at: str = "2026-07-27T04:00:00Z",
+        resource_uri: str = "viking://user/user-1/memories/experiences/exchange.md",
+        resource_type: str = "experience",
+        task_id: str | None = None,
+        evidence: dict[str, object] | None = None,
     ) -> None:
         self._record = {
             "schema_version": "v1",
             "event_id": event_id,
-            "event_type": "session_commit",
+            "event_type": event_type,
             "account_id": "2101858484",
             "user_id": "user-1",
             "session_id": session_id,
-            "resource_uri": "",
+            "task_id": task_id,
+            "occurred_at": occurred_at,
+            "resource_uri": resource_uri,
+            "resource_type": resource_type,
+            "evidence": evidence or {},
             "attributes": attributes or {},
         }
 
@@ -70,6 +83,130 @@ def wait_until(predicate: object, timeout: float = 3.0) -> None:
 
 
 class TestHttpUsageSink:
+    def test_write_persists_recall_as_count_record(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            outbox_dir = Path(data_dir) / ".usage_outbox"
+            with mock.patch.dict(os.environ, {"OV_RESOURCE_ID": "ov-test"}, clear=False):
+                with mock.patch.object(HttpUsageSink, "_start_worker"):
+                    sink = HttpUsageSink(
+                        endpoint="http://127.0.0.1:1/usage",
+                        outbox_dir=str(outbox_dir),
+                    )
+                    asyncio.run(
+                        sink.write(
+                            events=[
+                                FakeUsageEvent(
+                                    "ue_recall",
+                                    "session-1",
+                                    {"rank": 1},
+                                    task_id="task-1",
+                                    evidence={
+                                        "archive_uri": (
+                                            "viking://user/user-1/sessions/session-1/"
+                                            "history/archive_001"
+                                        ),
+                                        "message_id": "msg-1",
+                                        "tool_call_id": "call-1",
+                                        "tool_name": "search_experience",
+                                    },
+                                )
+                            ]
+                        )
+                    )
+
+            pending_path = next((outbox_dir / "pending").glob("*.json"))
+            payload = json.loads(pending_path.read_text(encoding="utf-8"))
+            assert payload["events"] == [
+                {
+                    "countName": "experience.recall.count",
+                    "opType": "add",
+                    "amount": 1.0,
+                    "timestamp": 1785124800000,
+                    "uniqueId": "ue_recall",
+                    "tags": {
+                        "account_id": "2101858484",
+                        "user_id": "user-1",
+                        "resource_uri": ("viking://user/user-1/memories/experiences/exchange.md"),
+                        "resource_type": "experience",
+                    },
+                    "extra": {
+                        "session_id": "session-1",
+                        "task_id": "task-1",
+                        "archive_uri": (
+                            "viking://user/user-1/sessions/session-1/history/archive_001"
+                        ),
+                        "message_id": "msg-1",
+                        "tool_call_id": "call-1",
+                        "tool_name": "search_experience",
+                        "attributes": {"rank": 1},
+                    },
+                }
+            ]
+
+    def test_write_maps_injected_event_to_count_record(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            outbox_dir = Path(data_dir) / ".usage_outbox"
+            with mock.patch.dict(os.environ, {"OV_RESOURCE_ID": "ov-test"}, clear=False):
+                with mock.patch.object(HttpUsageSink, "_start_worker"):
+                    sink = HttpUsageSink(
+                        endpoint="http://127.0.0.1:1/usage",
+                        outbox_dir=str(outbox_dir),
+                    )
+                    asyncio.run(
+                        sink.write(
+                            events=[
+                                FakeUsageEvent(
+                                    "ue_inject",
+                                    "session-1",
+                                    event_type="memory.injected",
+                                )
+                            ]
+                        )
+                    )
+
+            pending_path = next((outbox_dir / "pending").glob("*.json"))
+            payload = json.loads(pending_path.read_text(encoding="utf-8"))
+            assert payload["events"][0]["countName"] == "experience.inject.count"
+
+    def test_write_omits_empty_optional_count_record_extra_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            outbox_dir = Path(data_dir) / ".usage_outbox"
+            with mock.patch.dict(os.environ, {"OV_RESOURCE_ID": "ov-test"}, clear=False):
+                with mock.patch.object(HttpUsageSink, "_start_worker"):
+                    sink = HttpUsageSink(
+                        endpoint="http://127.0.0.1:1/usage",
+                        outbox_dir=str(outbox_dir),
+                    )
+                    asyncio.run(sink.write(events=[FakeUsageEvent("ue_minimal", "session-1")]))
+
+            pending_path = next((outbox_dir / "pending").glob("*.json"))
+            payload = json.loads(pending_path.read_text(encoding="utf-8"))
+            assert payload["events"][0]["extra"] == {"session_id": "session-1"}
+
+    def test_write_rejects_unknown_usage_event_type(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            with mock.patch.dict(os.environ, {"OV_RESOURCE_ID": "ov-test"}, clear=False):
+                with mock.patch.object(HttpUsageSink, "_start_worker"):
+                    sink = HttpUsageSink(
+                        endpoint="http://127.0.0.1:1/usage",
+                        outbox_dir=str(Path(data_dir) / ".usage_outbox"),
+                    )
+                    with pytest.raises(
+                        ValueError,
+                        match="unsupported usage event type: memory.unknown",
+                    ):
+                        asyncio.run(
+                            sink.write(
+                                events=[
+                                    FakeUsageEvent(
+                                        "ue_unknown",
+                                        "session-1",
+                                        event_type="memory.unknown",
+                                    )
+                                ]
+                            )
+                        )
+
     def test_write_atomically_persists_stable_batch(self) -> None:
         events = [
             FakeUsageEvent("ue_1", "session-1"),
@@ -95,11 +232,11 @@ class TestHttpUsageSink:
             assert payload["schema_version"] == "v1"
             assert payload["resource_id"] == "ov-test"
             assert payload["batch_id"] == f"ub_{expected_digest}"
-            assert [event["event_id"] for event in payload["events"]] == [
+            assert [event["uniqueId"] for event in payload["events"]] == [
                 "ue_1",
                 "ue_2",
             ]
-            assert all(event["prefix"] == "ov-test" for event in payload["events"])
+            assert all("prefix" not in event for event in payload["events"])
 
     def test_write_splits_batches_before_http_limit(self) -> None:
         events = [
@@ -221,7 +358,7 @@ class TestHttpUsageSink:
             pending_files = list((outbox_dir / "pending").glob("*.json"))
             total_bytes = sum(path.stat().st_size for path in pending_files)
             persisted_ids = {
-                event["event_id"]
+                event["uniqueId"]
                 for path in pending_files
                 for event in json.loads(path.read_text(encoding="utf-8"))["events"]
             }
@@ -376,7 +513,7 @@ class TestHttpUsageSink:
             ]
             assert not inflight_path.exists()
             assert len(children) == 2
-            assert {event["event_id"] for child in children for event in child["events"]} == {
+            assert {event["uniqueId"] for child in children for event in child["events"]} == {
                 "ue_split_left",
                 "ue_split_right",
             }

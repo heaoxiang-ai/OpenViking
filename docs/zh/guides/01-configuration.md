@@ -1502,7 +1502,7 @@ openviking add-resource ./docs --exclude "*.tmp"
 
 启动服务前，需要设置 `resource_id_env` 指定的环境变量。未配置 `outbox_dir` 时，默认使用 OpenViking 运行用户的 `~/.openviking/data/.usage_outbox`。
 
-HTTP Sink 使用本地持久化队列重试，同一事件可能被重复发送，采集端需要按 `event_id` 去重。所有 `2xx` 响应都表示批次已确认；瞬时失败使用指数退避重试；`400` 和 `422` 会将批次移入 `dead_letter`；`413` 会拆分包含多条事件的批次。outbox 总量受 `max_outbox_bytes` 限制，达到上限后先删除最旧的 dead-letter 批次，再删除最旧的 pending 批次，正在发送的批次不会被淘汰。由于容量压力可能丢弃 pending 数据，整体上报仍是 best-effort，不提供端到端 at-least-once 保证。
+HTTP Sink 使用本地持久化队列重试，同一事件可能被重复发送，采集端需要按 `CountRecord.uniqueId` 去重。所有 `2xx` 响应都表示批次已确认；瞬时失败使用指数退避重试；`400` 和 `422` 会将批次移入 `dead_letter`；`413` 会拆分包含多条事件的批次。outbox 总量受 `max_outbox_bytes` 限制，达到上限后先删除最旧的 dead-letter 批次，再删除最旧的 pending 批次，正在发送的批次不会被淘汰。由于容量压力可能丢弃 pending 数据，整体上报仍是 best-effort，不提供端到端 at-least-once 保证。
 
 `inflight_lease_seconds` 必须大于 `request_timeout_seconds`。worker 领取批次时会刷新 lease，避免其他 worker 把正在发送的批次误判为过期任务。
 
