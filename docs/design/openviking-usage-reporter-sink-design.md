@@ -132,6 +132,56 @@ def load_class(class_path: str):
 
 内置 HTTP Sink 在 `write()` 返回前把事件批次写入本地 outbox，再由后台线程发送。它只依赖 Python 标准库，不引入 Kafka 等厂商依赖。HTTP Sink 支持指数退避、`413` 拆包、不可恢复批次转入 dead-letter，以及有界磁盘容量。
 
+### 6.1 HTTP CountRecord 协议
+
+`UsageEvent` 继续作为 OpenViking 内部抽取结果和自定义 Sink 的稳定协议。内置
+HTTP Sink 在写入 outbox 前，将 `UsageEvent` 转换为计量接收端使用的
+`CountRecord`。这样计量平台协议不会侵入 Extractor，也不会改变自定义 Sink
+的输入。
+
+HTTP 批次外层继续保留 `schema_version`、`resource_id`、`batch_id`、
+`created_at`、`attempt`、`next_retry_at` 和 `events`。`events` 数组中的元素
+采用以下格式：
+
+```json
+{
+  "countName": "experience.recall.count",
+  "opType": "add",
+  "amount": 1.0,
+  "timestamp": 1785124800000,
+  "uniqueId": "ue_<sha256>",
+  "tags": {
+    "account_id": "new",
+    "user_id": "test",
+    "resource_uri": "viking://user/test/memories/experiences/example.md",
+    "resource_type": "experience"
+  },
+  "extra": {
+    "session_id": "session-id",
+    "task_id": "task-id",
+    "archive_uri": "viking://user/test/sessions/session-id/history/archive_001",
+    "message_id": "message-id",
+    "tool_call_id": "tool-call-id",
+    "tool_name": "search_experience"
+  }
+}
+```
+
+字段映射：
+
+- `memory.recalled` 映射为 `countName=experience.recall.count`。
+- `memory.injected` 映射为 `countName=experience.inject.count`。
+- `opType` 固定为 `add`。
+- `amount` 固定为 `1.0`。
+- `timestamp` 由 `occurred_at` 转换为 Unix 毫秒时间戳。
+- `uniqueId` 使用稳定的 `event_id`。
+- `tags` 保存 `account_id`、`user_id`、`resource_uri` 和 `resource_type`。
+- `extra` 保存 `session_id`、可选的 `task_id` 以及 `evidence` 中的审计字段。
+- 空的可选字段不写入 `extra`。
+
+无法识别的 `event_type` 不生成含义不明确的计量记录，转换时抛出错误并由
+Reporter 的 best-effort 隔离机制处理。
+
 ## 7. 配置设计
 
 默认关闭：
