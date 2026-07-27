@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -46,6 +47,9 @@ class HttpUsageSink:
             raise ValueError("endpoint is required")
         if not self._resource_id:
             raise ValueError(f"{resource_id_env} is required")
+        self._outbox_scope = hashlib.sha256(
+            f"{self._endpoint}\0{self._resource_id}".encode("utf-8")
+        ).hexdigest()[:24]
 
         self._outbox_dir = (
             Path(outbox_dir)
@@ -75,9 +79,7 @@ class HttpUsageSink:
         if self._inflight_lease_seconds <= 0:
             raise ValueError("inflight_lease_seconds must be positive")
         if self._inflight_lease_seconds <= self._request_timeout_seconds:
-            raise ValueError(
-                "inflight_lease_seconds must be greater than request_timeout_seconds"
-            )
+            raise ValueError("inflight_lease_seconds must be greater than request_timeout_seconds")
         if self._retry_base_seconds < 0:
             raise ValueError("retry_base_seconds must be non-negative")
         if self._retry_max_seconds < 0:
@@ -145,7 +147,7 @@ class HttpUsageSink:
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
-            file_stem = f"{time.time_ns()}_{index}_{payload['batch_id']}"
+            file_stem = f"{self._outbox_scope}_{time.time_ns()}_{index}_{payload['batch_id']}"
             encoded_batches.append(
                 (
                     payload,
@@ -213,7 +215,7 @@ class HttpUsageSink:
             self._pending_dir,
             self._inflight_dir,
         ):
-            for path in directory.glob("*.json"):
+            for path in self._owned_batches(directory):
                 try:
                     total_bytes += path.stat().st_size
                 except FileNotFoundError:
@@ -248,9 +250,13 @@ class HttpUsageSink:
     def _build_payload(self, events: list[dict[str, Any]]) -> dict[str, Any]:
         event_ids = "\n".join(str(event["event_id"]) for event in events)
         batch_id = f"ub_{hashlib.sha256(event_ids.encode('utf-8')).hexdigest()}"
-        created_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
-            "+00:00",
-            "Z",
+        created_at = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace(
+                "+00:00",
+                "Z",
+            )
         )
         return {
             "schema_version": "v1",
@@ -307,7 +313,7 @@ class HttpUsageSink:
 
     def _handle_next_batch(self) -> bool:
         now = datetime.now(timezone.utc)
-        for pending_path in sorted(self._pending_dir.glob("*.json")):
+        for pending_path in sorted(self._owned_batches(self._pending_dir)):
             try:
                 payload = self._read_payload(pending_path)
             except (OSError, ValueError, json.JSONDecodeError):
@@ -457,10 +463,13 @@ class HttpUsageSink:
     def _recover_stale_inflight(self) -> None:
         stale_before = time.time() - self._inflight_lease_seconds
         with self._outbox_lock:
-            for inflight_path in self._inflight_dir.glob("*.json"):
+            for inflight_path in self._owned_batches(self._inflight_dir):
                 try:
                     if inflight_path.stat().st_mtime > stale_before:
                         continue
                     os.replace(inflight_path, self._pending_dir / inflight_path.name)
                 except FileNotFoundError:
                     continue
+
+    def _owned_batches(self, directory: Path) -> Iterator[Path]:
+        return directory.glob(f"{self._outbox_scope}_*.json")

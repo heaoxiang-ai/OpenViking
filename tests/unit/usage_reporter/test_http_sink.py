@@ -86,12 +86,8 @@ class TestHttpUsageSink:
                     )
                     asyncio.run(sink.write(events=events))
 
-            pending_files = list(
-                (Path(data_dir) / ".usage_outbox" / "pending").glob("*.json")
-            )
-            temporary_files = list(
-                (Path(data_dir) / ".usage_outbox" / "pending").glob("*.tmp")
-            )
+            pending_files = list((Path(data_dir) / ".usage_outbox" / "pending").glob("*.json"))
+            temporary_files = list((Path(data_dir) / ".usage_outbox" / "pending").glob("*.tmp"))
 
             assert len(pending_files) == 1
             assert temporary_files == []
@@ -148,13 +144,13 @@ class TestHttpUsageSink:
                         retry_base_seconds=0.01,
                         retry_max_seconds=0.02,
                     )
-                    asyncio.run(
-                        sink.write(events=[FakeUsageEvent("ue_retry", "session-retry")])
-                    )
+                    asyncio.run(sink.write(events=[FakeUsageEvent("ue_retry", "session-retry")]))
                     wait_until(lambda: len(server.requests) == 2)
                     wait_until(
-                        lambda: not list((outbox_dir / "pending").glob("*.json"))
-                        and not list((outbox_dir / "inflight").glob("*.json"))
+                        lambda: (
+                            not list((outbox_dir / "pending").glob("*.json"))
+                            and not list((outbox_dir / "inflight").glob("*.json"))
+                        )
                     )
                     sink.close()
 
@@ -185,13 +181,13 @@ class TestHttpUsageSink:
                         outbox_dir=str(outbox_dir),
                         request_timeout_seconds=0.5,
                     )
-                    asyncio.run(
-                        sink.write(events=[FakeUsageEvent("ue_204", "session-success")])
-                    )
+                    asyncio.run(sink.write(events=[FakeUsageEvent("ue_204", "session-success")]))
                     wait_until(lambda: len(server.requests) == 1)
                     wait_until(
-                        lambda: not list((outbox_dir / "pending").glob("*.json"))
-                        and not list((outbox_dir / "inflight").glob("*.json"))
+                        lambda: (
+                            not list((outbox_dir / "pending").glob("*.json"))
+                            and not list((outbox_dir / "inflight").glob("*.json"))
+                        )
                     )
                     sink.close()
         finally:
@@ -243,7 +239,7 @@ class TestHttpUsageSink:
                         outbox_dir=str(outbox_dir),
                         max_outbox_bytes=1800,
                     )
-                    inflight_path = outbox_dir / "inflight" / "active.json"
+                    inflight_path = outbox_dir / "inflight" / f"{sink._outbox_scope}_active.json"
                     inflight_path.write_bytes(b"x" * 1000)
                     asyncio.run(
                         sink.write(
@@ -270,6 +266,38 @@ class TestHttpUsageSink:
 
             assert sink._outbox_dir == expected
             assert expected.is_dir()
+
+    def test_shared_outbox_root_isolated_by_endpoint_and_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as data_dir:
+            outbox_root = Path(data_dir) / ".usage_outbox"
+            with mock.patch.object(HttpUsageSink, "_start_worker"):
+                with mock.patch.dict(os.environ, {"OV_RESOURCE_ID": "resource-a"}, clear=False):
+                    sink_a = HttpUsageSink(
+                        endpoint="http://collector-a.example/usage",
+                        outbox_dir=str(outbox_root),
+                    )
+                with mock.patch.dict(os.environ, {"OV_RESOURCE_ID": "resource-b"}, clear=False):
+                    other_resource_sink = HttpUsageSink(
+                        endpoint="http://collector-a.example/usage",
+                        outbox_dir=str(outbox_root),
+                    )
+                with mock.patch.dict(os.environ, {"OV_RESOURCE_ID": "resource-a"}, clear=False):
+                    other_endpoint_sink = HttpUsageSink(
+                        endpoint="http://collector-b.example/usage",
+                        outbox_dir=str(outbox_root),
+                    )
+
+                asyncio.run(sink_a.write(events=[FakeUsageEvent("ue_a", "session-a")]))
+                sink_a._post_payload = mock.Mock(return_value=200)
+                other_resource_sink._post_payload = mock.Mock(return_value=200)
+                other_endpoint_sink._post_payload = mock.Mock(return_value=200)
+
+                assert other_resource_sink._handle_next_batch() is False
+                other_resource_sink._post_payload.assert_not_called()
+                assert other_endpoint_sink._handle_next_batch() is False
+                other_endpoint_sink._post_payload.assert_not_called()
+                assert sink_a._handle_next_batch() is True
+                sink_a._post_payload.assert_called_once()
 
     def test_worker_splits_payload_rejected_as_too_large(self) -> None:
         server = UsageHTTPServer(("127.0.0.1", 0), UsageRequestHandler)
@@ -298,8 +326,10 @@ class TestHttpUsageSink:
                     )
                     wait_until(lambda: len(server.requests) == 3)
                     wait_until(
-                        lambda: not list((outbox_dir / "pending").glob("*.json"))
-                        and not list((outbox_dir / "inflight").glob("*.json"))
+                        lambda: (
+                            not list((outbox_dir / "pending").glob("*.json"))
+                            and not list((outbox_dir / "inflight").glob("*.json"))
+                        )
                     )
                     sink.close()
 
@@ -346,11 +376,10 @@ class TestHttpUsageSink:
             ]
             assert not inflight_path.exists()
             assert len(children) == 2
-            assert {
-                event["event_id"]
-                for child in children
-                for event in child["events"]
-            } == {"ue_split_left", "ue_split_right"}
+            assert {event["event_id"] for child in children for event in child["events"]} == {
+                "ue_split_left",
+                "ue_split_right",
+            }
 
     def test_worker_moves_unrecoverable_payload_to_dead_letter(self) -> None:
         server = UsageHTTPServer(("127.0.0.1", 0), UsageRequestHandler)
@@ -369,10 +398,7 @@ class TestHttpUsageSink:
                         outbox_dir=str(outbox_dir),
                     )
                     asyncio.run(sink.write(events=[FakeUsageEvent("ue_bad", "session-bad")]))
-                    wait_until(
-                        lambda: len(list((outbox_dir / "dead_letter").glob("*.json")))
-                        == 1
-                    )
+                    wait_until(lambda: len(list((outbox_dir / "dead_letter").glob("*.json"))) == 1)
                     sink.close()
 
                 assert len(server.requests) == 1
@@ -400,9 +426,7 @@ class TestHttpUsageSink:
                             outbox_dir=str(outbox_dir),
                         )
                         asyncio.run(
-                            first_sink.write(
-                                events=[FakeUsageEvent("ue_stale", "session-stale")]
-                            )
+                            first_sink.write(events=[FakeUsageEvent("ue_stale", "session-stale")])
                         )
                     pending_path = next((outbox_dir / "pending").glob("*.json"))
                     inflight_path = outbox_dir / "inflight" / pending_path.name
@@ -442,9 +466,7 @@ class TestHttpUsageSink:
                             outbox_dir=str(outbox_dir),
                         )
                         asyncio.run(
-                            first_sink.write(
-                                events=[FakeUsageEvent("ue_fresh", "session-fresh")]
-                            )
+                            first_sink.write(events=[FakeUsageEvent("ue_fresh", "session-fresh")])
                         )
                     pending_path = next((outbox_dir / "pending").glob("*.json"))
                     inflight_path = outbox_dir / "inflight" / pending_path.name
@@ -488,14 +510,14 @@ class TestHttpUsageSink:
                     "openviking.usage_reporter.http_sink.logger.exception"
                 ) as log_exception:
                     asyncio.run(
-                        sink.write(
-                            events=[FakeUsageEvent("ue_exception", "session-exception")]
-                        )
+                        sink.write(events=[FakeUsageEvent("ue_exception", "session-exception")])
                     )
                     wait_until(lambda: attempts == 2)
                     wait_until(
-                        lambda: not list((outbox_dir / "pending").glob("*.json"))
-                        and not list((outbox_dir / "inflight").glob("*.json"))
+                        lambda: (
+                            not list((outbox_dir / "pending").glob("*.json"))
+                            and not list((outbox_dir / "inflight").glob("*.json"))
+                        )
                     )
                     sink.close()
                     assert log_exception.call_count == 1
@@ -515,9 +537,7 @@ class TestHttpUsageSink:
                         request_timeout_seconds=0.01,
                         inflight_lease_seconds=0.05,
                     )
-                    asyncio.run(
-                        sink.write(events=[FakeUsageEvent("ue_claim", "session-claim")])
-                    )
+                    asyncio.run(sink.write(events=[FakeUsageEvent("ue_claim", "session-claim")]))
                     pending_path = next((outbox_dir / "pending").glob("*.json"))
                     stale_time = time.time() - 60
                     os.utime(pending_path, (stale_time, stale_time))
