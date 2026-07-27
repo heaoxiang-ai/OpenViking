@@ -75,12 +75,7 @@ function splitTopLevel(source) {
 
 const routes = new Map()
 const middlewareQueryParameters = new Set(['profile'])
-const internalRouterFiles = new Set(['console.py', 'debug.py', 'stats.py'])
-const internalRoutes = new Set([
-  'GET /api/v1/user-settings/add-locations',
-  'PATCH /api/v1/user-settings/add-locations',
-  'DELETE /api/v1/user-settings/add-locations',
-])
+const internalRouterFiles = new Set(['console.py', 'debug.py', 'stats.py', 'user_settings.py'])
 for (const file of fs.readdirSync(routerDir).filter((name) => name.endsWith('.py'))) {
   if (internalRouterFiles.has(file)) continue
   const source = fs.readFileSync(path.join(routerDir, file), 'utf8')
@@ -136,8 +131,7 @@ for (const file of fs.readdirSync(routerDir).filter((name) => name.endsWith('.py
       query.set(defaultMatch[1], false)
     }
     for (const method of decorator.methods) {
-      const route = `${method} ${normalizePath(routePath)}`
-      if (!internalRoutes.has(route)) routes.set(route, { query, pathParameters })
+      routes.set(`${method} ${normalizePath(routePath)}`, { query, pathParameters })
     }
   }
 }

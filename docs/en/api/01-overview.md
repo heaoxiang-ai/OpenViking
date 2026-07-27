@@ -576,5 +576,5 @@ The sidebar is organized by responsibility rather than historical file size:
 | Retrieval & Relations | Semantic retrieval, code retrieval, and resource relations |
 | Data Lifecycle | Watches, snapshots, and OVPack |
 | Operations & Observability | System, tasks, Observer, and Metrics |
-| Identity & Governance | Administration, privacy configuration, and per-user memory settings |
+| Identity & Governance | Administration and privacy configuration |
 | Protocols & Extensions | WebDAV and VikingBot API |

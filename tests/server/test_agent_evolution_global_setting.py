@@ -32,7 +32,7 @@ def test_deprecated_user_agent_evolution_config_is_not_persisted():
     assert "agent_evolution" not in config.model_dump(exclude_none=True)
 
 
-async def test_user_memory_settings_endpoint_is_not_registered(
+async def test_agent_evolution_user_endpoint_is_not_registered(
     client: httpx.AsyncClient,
 ):
     response = await client.get("/api/v1/user-settings/memory")

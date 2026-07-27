@@ -5,7 +5,7 @@ from openviking.session import session as session_module
 from openviking.session.memory_policy import MemoryPolicy
 
 
-def test_enabled_agent_evolution_preserves_session_memory_types():
+def test_global_enabled_agent_evolution_preserves_session_memory_types():
     policy = MemoryPolicy.from_dict(
         {"memory_types": ["profile", "events", "cases", "trajectories", "experiences"]}
     )

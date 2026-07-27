@@ -15,7 +15,7 @@
 **Files:**
 - Modify: `openviking/server/config.py`
 - Modify: `openviking/server/user_config.py`
-- Test: `tests/server/test_user_memory_settings.py`
+- Test: `tests/server/test_agent_evolution_global_setting.py`
 
 - [ ] **Step 1: Replace user-resolution tests with global configuration tests**
 
@@ -46,7 +46,7 @@ def test_deprecated_user_agent_evolution_value_is_ignored():
 Run:
 
 ```bash
-uv run pytest -q --no-cov --tb=short tests/server/test_user_memory_settings.py
+uv run pytest -q --no-cov --tb=short tests/server/test_agent_evolution_global_setting.py
 ```
 
 Expected: failures because `ServerConfig.agent_evolution` does not exist and the user field is still active.
@@ -89,7 +89,7 @@ Remove `ResolvedMemorySettings`, `write_user_memory_settings()`,
 Run:
 
 ```bash
-uv run pytest -q --no-cov --tb=short tests/server/test_user_memory_settings.py
+uv run pytest -q --no-cov --tb=short tests/server/test_agent_evolution_global_setting.py
 ```
 
 Expected: all remaining global configuration and compatibility tests pass.
@@ -97,7 +97,7 @@ Expected: all remaining global configuration and compatibility tests pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add openviking/server/config.py openviking/server/user_config.py tests/server/test_user_memory_settings.py
+git add openviking/server/config.py openviking/server/user_config.py tests/server/test_agent_evolution_global_setting.py
 git commit -m "refactor(agent-evolution): use global configuration"
 ```
 
@@ -107,7 +107,7 @@ git commit -m "refactor(agent-evolution): use global configuration"
 - Modify: `openviking/server/app.py`
 - Modify: `openviking/service/session_service.py`
 - Modify: `openviking/session/session.py`
-- Modify: `tests/unit/session/test_user_memory_policy.py`
+- Modify: `tests/unit/session/test_agent_evolution_policy.py`
 - Modify: `tests/unit/session/test_session_commit_resume.py`
 - Modify: `tests/session/test_session_commit.py`
 
@@ -156,7 +156,7 @@ Run:
 
 ```bash
 uv run pytest -q --no-cov --tb=short \
-  tests/unit/session/test_user_memory_policy.py \
+  tests/unit/session/test_agent_evolution_policy.py \
   tests/unit/session/test_session_commit_resume.py \
   tests/session/test_session_commit.py
 ```
@@ -213,7 +213,7 @@ Run:
 
 ```bash
 uv run pytest -q --no-cov --tb=short \
-  tests/unit/session/test_user_memory_policy.py \
+  tests/unit/session/test_agent_evolution_policy.py \
   tests/unit/session/test_session_commit_resume.py \
   tests/session/test_session_commit.py
 ```
@@ -224,7 +224,7 @@ Expected: all tests pass.
 
 ```bash
 git add openviking/server/app.py openviking/service/session_service.py \
-  openviking/session/session.py tests/unit/session/test_user_memory_policy.py \
+  openviking/session/session.py tests/unit/session/test_agent_evolution_policy.py \
   tests/unit/session/test_session_commit_resume.py tests/session/test_session_commit.py
 git commit -m "feat(agent-evolution): apply global commit switch"
 ```
@@ -253,7 +253,7 @@ git commit -m "feat(agent-evolution): apply global commit switch"
 Add:
 
 ```python
-async def test_user_memory_settings_endpoint_is_not_registered(client):
+async def test_agent_evolution_user_endpoint_is_not_registered(client):
     response = await client.get("/api/v1/user-settings/memory")
     assert response.status_code == 404
 ```
@@ -266,7 +266,7 @@ Run:
 
 ```bash
 uv run pytest -q --no-cov --tb=short \
-  tests/server/test_user_memory_settings.py \
+  tests/server/test_agent_evolution_global_setting.py \
   tests/client/test_base_client_compatibility.py \
   sdk/python/tests/test_async_client_behaviors.py
 ```
@@ -292,7 +292,7 @@ Run:
 
 ```bash
 uv run pytest -q --no-cov --tb=short \
-  tests/server/test_user_memory_settings.py \
+  tests/server/test_agent_evolution_global_setting.py \
   tests/client/test_base_client_compatibility.py \
   sdk/python/tests/test_async_client_behaviors.py
 cargo test --manifest-path crates/ov_cli/Cargo.toml user_settings
@@ -374,8 +374,8 @@ git commit -m "docs(agent-evolution): document global switch"
 uv run pytest -q --no-cov --tb=short \
   tests/unit/session/test_session_commit_resume.py \
   tests/storage/test_session_commit_processor_identity.py \
-  tests/server/test_user_memory_settings.py \
-  tests/unit/session/test_user_memory_policy.py \
+  tests/server/test_agent_evolution_global_setting.py \
+  tests/unit/session/test_agent_evolution_policy.py \
   tests/unit/usage_reporter \
   tests/session/test_compressor_v3.py \
   tests/session/test_session_commit.py

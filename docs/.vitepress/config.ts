@@ -213,7 +213,6 @@ const apiReferenceSidebar = {
         text: 'Identity & Governance',
         items: [
           ['08-admin.md', 'Multi-Tenancy'],
-          ['12-user-settings.md', 'User Memory Settings'],
           ['10-privacy.md', 'Privacy']
         ]
       },
@@ -273,7 +272,6 @@ const apiReferenceSidebar = {
         text: '身份与治理',
         items: [
           ['08-admin.md', '多租户'],
-          ['12-user-settings.md', '用户记忆设置'],
           ['10-privacy.md', '隐私配置']
         ]
       },
