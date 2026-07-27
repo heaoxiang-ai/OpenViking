@@ -66,6 +66,21 @@ class MigrateLegacyDataRequest(BaseModel):
     action: str = "migrate"
 
 
+@router.get("/agent-evolution")
+@require_auth_root
+async def get_agent_evolution_status(
+    request: Request,
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Return the live instance-wide Agent Evolution switch."""
+    del request
+    del ctx
+    return Response(
+        status="ok",
+        result={"enabled": get_service().sessions.get_agent_evolution_enabled()},
+    )
+
+
 def _get_api_key_manager(request: Request):
     """Get APIKeyManager from app state."""
     return get_api_key_manager_or_raise(request)
