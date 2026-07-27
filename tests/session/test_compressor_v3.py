@@ -117,6 +117,117 @@ async def test_v3_skips_agent_training_when_agent_evolution_is_disabled(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_v3_extracts_session_skills_when_agent_evolution_is_disabled(monkeypatch):
+    config = SimpleNamespace(
+        memory=SimpleNamespace(session_skill_extraction_enabled=True),
+    )
+    monkeypatch.setattr(
+        "openviking.session.compressor_v3.get_openviking_config",
+        lambda: config,
+    )
+    monkeypatch.setattr(
+        "openviking.session.compressor_v3.get_viking_fs",
+        lambda: SimpleNamespace(),
+    )
+    compressor = SessionCompressorV3(
+        vikingdb=None,
+        skill_processor=SimpleNamespace(),
+    )
+    compressor._extract_user_memories = AsyncMock(
+        return_value=SimpleNamespace(
+            contexts=[],
+            cases=[],
+            memory_diff={"operations": {}},
+            case_uri_by_name={},
+        )
+    )
+    compressor.train_from_extracted_cases = AsyncMock()
+    compressor.extract_session_skills = AsyncMock(
+        return_value={
+            "case_count": 0,
+            "submitted": 0,
+            "skill_submitted": 1,
+            "skill_uris": ["viking://user/u/skills/code-review/SKILL.md"],
+        }
+    )
+    compressor._write_final_memory_diff = AsyncMock()
+
+    result = await compressor.extract_long_term_memories(
+        messages=_messages(),
+        ctx=_ctx(),
+        allowed_memory_types={"profile", "preferences"},
+        agent_evolution_enabled=False,
+    )
+
+    compressor.train_from_extracted_cases.assert_not_awaited()
+    compressor.extract_session_skills.assert_awaited_once()
+    assert result["session_skills"] == [
+        {
+            "uri": "viking://user/u/skills/code-review/SKILL.md",
+            "archive_uri": "",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v3_skill_only_extraction_submits_gradients_without_agent_memories(monkeypatch):
+    from openviking.session.train import PatchSemanticGradient
+
+    skill_uri = "viking://user/u/skills/code-review/SKILL.md"
+    gradient = PatchSemanticGradient(
+        before_file=None,
+        after_file=MemoryFile(
+            uri=skill_uri,
+            content="## Workflow\n- Read changed files first.",
+            memory_type="skills",
+            extra_fields={"skill_name": "code-review"},
+        ),
+        base_version=None,
+        rationale="test",
+        links=[],
+        confidence=0.9,
+        metadata={},
+    )
+    analyzer = SimpleNamespace(
+        extract_trajectory_memories=AsyncMock(
+            return_value={"contexts": [], "skill_gradients": [gradient]}
+        )
+    )
+    trainer = SimpleNamespace(
+        submit_gradients=AsyncMock(
+            return_value=SimpleNamespace(apply_result=SimpleNamespace(written_uris=[skill_uri]))
+        )
+    )
+    compressor = SessionCompressorV3(
+        vikingdb=None,
+        rollout_analyzer=analyzer,
+        skill_processor=SimpleNamespace(),
+    )
+    compressor._session_skill_extraction_enabled = lambda: True
+    compressor._get_session_skill_trainer = AsyncMock(return_value=trainer)
+    monkeypatch.setattr(
+        "openviking.session.compressor_v3.get_viking_fs",
+        lambda: SimpleNamespace(),
+    )
+
+    result = await compressor.extract_session_skills(
+        messages=_messages(),
+        ctx=_ctx(),
+        archive_uri="viking://user/u/sessions/s1/history/archive_001",
+    )
+
+    analyzer.extract_trajectory_memories.assert_awaited_once()
+    assert analyzer.extract_trajectory_memories.await_args.kwargs["include_trajectories"] is False
+    trainer.submit_gradients.assert_awaited_once_with([gradient])
+    assert result == {
+        "case_count": 0,
+        "submitted": 0,
+        "skill_submitted": 1,
+        "skill_uris": [skill_uri],
+    }
+
+
+@pytest.mark.asyncio
 async def test_v3_skips_agent_training_when_execution_memory_types_are_filtered(monkeypatch):
     monkeypatch.setattr(
         "openviking.session.compressor_v3.get_viking_fs",
