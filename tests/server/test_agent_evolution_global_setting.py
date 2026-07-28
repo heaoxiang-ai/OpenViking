@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: AGPL-3.0
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
 
 from openviking.server.agent_evolution_config import AgentEvolutionConfigProvider
+from openviking.server.app import create_app
 from openviking.server.config import AgentEvolutionConfig, ServerConfig, UserConfig
 from openviking.server.identity import RequestContext, Role
 from openviking.service.session_service import SessionService
 from openviking_cli.session.user_id import UserIdentifier
+from openviking_cli.utils.config import OPENVIKING_CONFIG_ENV
 
 
 def test_agent_evolution_is_disabled_by_default():
@@ -23,7 +26,17 @@ def test_agent_evolution_can_be_enabled_for_the_server():
     assert config.agent_evolution.enabled is True
 
 
-def test_embedded_session_service_preserves_agent_evolution_default():
+def test_embedded_session_service_preserves_agent_evolution_default(
+    tmp_path,
+    monkeypatch,
+):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": False}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(OPENVIKING_CONFIG_ENV, str(config_path))
+
     service = SessionService()
 
     assert service.get_agent_evolution_enabled() is True
@@ -56,6 +69,75 @@ def test_agent_evolution_provider_reloads_config_file(tmp_path):
     config_path.write_text(
         json.dumps({"server": {"agent_evolution": {"enabled": True}}}),
         encoding="utf-8",
+    )
+
+    assert provider.is_enabled() is True
+
+
+def test_session_service_reloads_from_resolved_server_config_path(tmp_path):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": False}}}),
+        encoding="utf-8",
+    )
+    service = SessionService()
+    service.set_agent_evolution_config(AgentEvolutionConfig(enabled=True))
+    service.set_agent_evolution_config_path(str(config_path))
+
+    assert service.get_agent_evolution_enabled() is False
+
+
+def test_http_app_wires_resolved_server_config_path(tmp_path):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": False}}}),
+        encoding="utf-8",
+    )
+    sessions = SessionService()
+
+    create_app(
+        config=ServerConfig(agent_evolution=AgentEvolutionConfig(enabled=True)),
+        service=SimpleNamespace(sessions=sessions),
+        config_path=str(config_path),
+    )
+
+    assert sessions.get_agent_evolution_enabled() is False
+
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": True}}}),
+        encoding="utf-8",
+    )
+
+    assert sessions.get_agent_evolution_enabled() is True
+
+
+def test_agent_evolution_provider_applies_missing_section_default(tmp_path):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": True}}}),
+        encoding="utf-8",
+    )
+    provider = AgentEvolutionConfigProvider(
+        default_enabled=False,
+        config_path=config_path,
+    )
+    assert provider.is_enabled() is True
+
+    config_path.write_text(json.dumps({"server": {}}), encoding="utf-8")
+
+    assert provider.is_enabled() is False
+
+
+def test_agent_evolution_provider_uses_standard_config_loading(tmp_path, monkeypatch):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        '\ufeff{"server": {"agent_evolution": {"enabled": ${AGENT_EVOLUTION_ENABLED}}}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_EVOLUTION_ENABLED", "true")
+    provider = AgentEvolutionConfigProvider(
+        default_enabled=False,
+        config_path=config_path,
     )
 
     assert provider.is_enabled() is True

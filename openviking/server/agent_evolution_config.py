@@ -4,11 +4,11 @@
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 from typing import Optional
 
+from openviking.server.config import AgentEvolutionConfig
+from openviking_cli.utils.config import load_json_config
 from openviking_cli.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,27 +28,28 @@ class AgentEvolutionConfigProvider:
         default_enabled: bool,
         config_path: Optional[str | Path] = None,
     ) -> None:
-        self._default_enabled = bool(default_enabled)
         self._last_valid_enabled = bool(default_enabled)
         self._config_path = Path(config_path).expanduser() if config_path else None
 
     def set_default_enabled(self, enabled: bool) -> None:
-        self._default_enabled = bool(enabled)
         self._last_valid_enabled = bool(enabled)
 
     def is_enabled(self) -> bool:
         config_path = self._config_path
         if config_path is None:
-            configured_path = os.getenv("OPENVIKING_CONFIG_FILE", "").strip()
-            if not configured_path:
-                return self._last_valid_enabled
-            config_path = Path(configured_path).expanduser()
+            return self._last_valid_enabled
 
         try:
-            payload = json.loads(config_path.read_text(encoding="utf-8"))
-            enabled = payload["server"]["agent_evolution"]["enabled"]
-            if not isinstance(enabled, bool):
-                raise ValueError("server.agent_evolution.enabled must be a boolean")
+            payload = load_json_config(config_path)
+            server_config = payload.get("server", {})
+            if server_config is None:
+                server_config = {}
+            if not isinstance(server_config, dict):
+                raise ValueError("server must be an object")
+            agent_evolution_config = server_config.get("agent_evolution", {})
+            if agent_evolution_config is None:
+                agent_evolution_config = {}
+            enabled = AgentEvolutionConfig.model_validate(agent_evolution_config).enabled
         except OSError as exc:
             logger.warning(
                 "Failed to access Agent Evolution config file %s, using last valid value: %s",
@@ -56,7 +57,7 @@ class AgentEvolutionConfigProvider:
                 exc,
             )
             return self._last_valid_enabled
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             logger.warning(
                 "Failed to read Agent Evolution config from %s, using last valid value: %s",
                 config_path,
