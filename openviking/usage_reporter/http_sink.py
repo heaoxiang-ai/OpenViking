@@ -61,8 +61,8 @@ def _to_count_record(event: UsageEvent) -> dict[str, Any]:
         extra["attributes"] = attributes
 
     return {
-        "CountName": count_name,
-        "OpType": "add",
+        "count_name": count_name,
+        "op_type": "add",
         "amount": 1.0,
         "timestamp": _timestamp_millis(str(record.get("occurred_at") or "")),
         "uniqueId": str(record.get("event_id") or ""),
