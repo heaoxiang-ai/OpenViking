@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -21,7 +22,10 @@ except ImportError as exc:  # pragma: no cover - exercised by optional import pa
 from openviking.integrations.langchain.client import (
     OpenVikingCommitPolicy,
     OpenVikingConnection,
+    acall_openviking,
+    aclose_openviking_clients,
     call_openviking,
+    ensure_async_client,
     ensure_client,
     extract_message_text,
     get_latest_user_text,
@@ -32,6 +36,7 @@ from openviking.integrations.langchain.history import (
 )
 from openviking.integrations.langchain.messages import OPENVIKING_CONTEXT_MARKER
 from openviking.integrations.langchain.retrievers import OpenVikingRetriever
+from openviking.utils.async_client_cache import LoopScopedAsyncClientCache
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +58,7 @@ class OpenVikingSessionContextAssembler:
         self,
         *,
         client: Any = None,
+        async_client: Any = None,
         retriever: OpenVikingRetriever | None = None,
         url: str | None = None,
         api_key: str | None = None,
@@ -75,6 +81,7 @@ class OpenVikingSessionContextAssembler:
     ):
         self._connection = OpenVikingConnection(
             client=client,
+            async_client=async_client,
             url=url,
             api_key=api_key,
             account=account,
@@ -88,6 +95,7 @@ class OpenVikingSessionContextAssembler:
         )
         self.retriever = retriever or OpenVikingRetriever(
             client=client,
+            async_client=async_client,
             url=url,
             api_key=api_key,
             account=account,
@@ -108,7 +116,11 @@ class OpenVikingSessionContextAssembler:
         self.include_active_messages = include_active_messages
         self.include_recall = include_recall
         self.recall_header = recall_header
+        self._owns_client = client is None
+        self._owns_retriever = retriever is None
         self._client_cache: Any = None
+        self._async_clients = LoopScopedAsyncClientCache()
+        self._closed = False
 
     def assemble(
         self,
@@ -123,6 +135,30 @@ class OpenVikingSessionContextAssembler:
             session_id,
             query,
         )
+        return self._assembled_context(session_context, recall_documents)
+
+    async def aassemble(
+        self,
+        *,
+        session_id: str,
+        query: str = "",
+    ) -> OpenVikingAssembledContext:
+        """Asynchronously assemble session and recall context."""
+
+        client = await self._get_async_client()
+        await self._aensure_session(client, session_id)
+        session_context = await self._aget_session_context(client, session_id)
+        recall_documents = await self._aget_recall_documents(
+            session_id,
+            query,
+        )
+        return self._assembled_context(session_context, recall_documents)
+
+    def _assembled_context(
+        self,
+        session_context: dict[str, Any],
+        recall_documents: list[Any],
+    ) -> OpenVikingAssembledContext:
         block = self._format_context_block(session_context, recall_documents)
         return OpenVikingAssembledContext(
             block=block,
@@ -132,9 +168,65 @@ class OpenVikingSessionContextAssembler:
         )
 
     def _get_client(self) -> Any:
+        self._raise_if_closed()
         if self._client_cache is None:
             self._client_cache = ensure_client(self._connection)
         return self._client_cache
+
+    async def get_async_client(self) -> Any:
+        """Return the async client interface used by this assembler.
+
+        Injected clients are returned unchanged and remain caller-owned.
+        HTTP-backed connections return an internally managed, loop-local handle
+        whose method calls support recovery. Direct attributes on that handle
+        are best-effort during recovery; use ``await handle.get()`` only to read
+        raw properties immediately because recovery may replace that snapshot.
+        Embedded ``path=`` connections return an adapter-owned synchronous
+        client whose calls are dispatched through a worker thread.
+        """
+
+        self._raise_if_closed()
+        client = await ensure_async_client(
+            self._connection,
+            client_cache=self._async_clients,
+            embedded_client_factory=self._get_client,
+        )
+        self._raise_if_closed()
+        return client
+
+    async def _get_async_client(self) -> Any:
+        return await self.get_async_client()
+
+    async def aclose(self) -> None:
+        """Release clients and the default retriever owned by this assembler."""
+
+        if self._closed:
+            return
+        self._closed = True
+        sync_client = self._client_cache
+        self._client_cache = None
+        async_clients = await asyncio.to_thread(self._async_clients.pop_all)
+
+        first_error: BaseException | None = None
+        try:
+            await aclose_openviking_clients(
+                sync_client if self._owns_client else None,
+                *async_clients,
+            )
+        except BaseException as exc:
+            first_error = exc
+        if self._owns_retriever:
+            try:
+                await self.retriever.aclose()
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise RuntimeError("OpenVikingSessionContextAssembler is closed")
 
     def _ensure_session(self, client: Any, session_id: str) -> None:
         try:
@@ -143,11 +235,35 @@ class OpenVikingSessionContextAssembler:
             logger.debug("OpenViking session ensure failed", exc_info=True)
             pass
 
+    async def _aensure_session(self, client: Any, session_id: str) -> None:
+        try:
+            await acall_openviking(client, "create_session", session_id=session_id)
+        except Exception:
+            logger.debug("OpenViking session ensure failed", exc_info=True)
+
     def _get_session_context(self, client: Any, session_id: str) -> dict[str, Any]:
         if not self.include_session_context:
             return {}
         try:
             return call_openviking(
+                client,
+                "get_session_context",
+                session_id=session_id,
+                token_budget=self.token_budget,
+            )
+        except Exception:
+            logger.debug("OpenViking session context assembly failed", exc_info=True)
+            return {}
+
+    async def _aget_session_context(
+        self,
+        client: Any,
+        session_id: str,
+    ) -> dict[str, Any]:
+        if not self.include_session_context:
+            return {}
+        try:
+            return await acall_openviking(
                 client,
                 "get_session_context",
                 session_id=session_id,
@@ -170,6 +286,24 @@ class OpenVikingSessionContextAssembler:
                     self.retriever,
                     session_id,
                 ).invoke(query)
+            )
+        except Exception:
+            logger.debug("OpenViking recall retrieval failed", exc_info=True)
+            return []
+
+    async def _aget_recall_documents(
+        self,
+        session_id: str,
+        query: str,
+    ) -> list[Any]:
+        if not self.include_recall or not query:
+            return []
+        try:
+            return list(
+                await _retriever_for_session(
+                    self.retriever,
+                    session_id,
+                ).ainvoke(query)
             )
         except Exception:
             logger.debug("OpenViking recall retrieval failed", exc_info=True)
@@ -220,6 +354,7 @@ def with_openviking_context(
     runnable: Any,
     *,
     client: Any = None,
+    async_client: Any = None,
     url: str | None = None,
     api_key: str | None = None,
     account: str | None = None,
@@ -248,6 +383,7 @@ def with_openviking_context(
 
     assembler = OpenVikingSessionContextAssembler(
         client=client,
+        async_client=async_client,
         url=url,
         api_key=api_key,
         account=account,
@@ -289,6 +425,7 @@ def with_openviking_context(
                 peer_id,
             ),
             client=client,
+            async_client=async_client,
             url=url,
             api_key=api_key,
             account=account,
@@ -335,7 +472,10 @@ def with_openviking_context(
         session_history_factory = fixed_session_history_factory
         history_factory_config = None
 
-    def inject(input_value: Any, config: dict[str, Any] | None = None) -> Any:
+    def prepare_injection(
+        input_value: Any,
+        config: dict[str, Any] | None,
+    ) -> tuple[str, tuple[str, str], str] | None:
         resolved_session_id = session_id or _session_id_from_config(
             config,
             key=session_id_config_key,
@@ -347,25 +487,52 @@ def with_openviking_context(
         )
         active_peer_ids[resolved_session_id] = resolved_peer_id
         if not inject_context:
-            return input_value
+            return None
         pending_key = _pending_context_key(resolved_session_id, resolved_peer_id)
         pending_context_parts.pop(pending_key, None)
         query = _latest_user_text_from_input(input_value, input_messages_key)
-        assembled = assembler.assemble(
-            session_id=resolved_session_id,
-            query=query,
-        )
+        return resolved_session_id, pending_key, query
+
+    def apply_injection(
+        input_value: Any,
+        pending_key: tuple[str, str],
+        assembled: OpenVikingAssembledContext,
+    ) -> Any:
         if not assembled.block:
             return input_value
         if assembled.context_parts:
             pending_context_parts[pending_key] = assembled.context_parts
         return _inject_system_context(input_value, assembled.block, input_messages_key)
 
+    def inject(input_value: Any, config: dict[str, Any] | None = None) -> Any:
+        prepared = prepare_injection(input_value, config)
+        if prepared is None:
+            return input_value
+        resolved_session_id, pending_key, query = prepared
+        assembled = assembler.assemble(
+            session_id=resolved_session_id,
+            query=query,
+        )
+        return apply_injection(input_value, pending_key, assembled)
+
+    async def ainject(input_value: Any, config: dict[str, Any] | None = None) -> Any:
+        prepared = prepare_injection(input_value, config)
+        if prepared is None:
+            return input_value
+        resolved_session_id, pending_key, query = prepared
+        assembled = await assembler.aassemble(
+            session_id=resolved_session_id,
+            query=query,
+        )
+        return apply_injection(input_value, pending_key, assembled)
+
     def clear_pending_on_error(_run: Any, config: dict[str, Any] | None = None) -> None:
         del config
         pending_context_parts.clear()
 
-    bound = (RunnableLambda(inject) | runnable).with_listeners(on_error=clear_pending_on_error)
+    bound = (RunnableLambda(inject, afunc=ainject) | runnable).with_listeners(
+        on_error=clear_pending_on_error
+    )
     return RunnableWithMessageHistory(
         bound,
         session_history_factory,
