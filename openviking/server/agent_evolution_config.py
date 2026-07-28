@@ -41,6 +41,8 @@ class AgentEvolutionConfigProvider:
 
         try:
             payload = load_json_config(config_path)
+            if not isinstance(payload, dict):
+                raise ValueError("config root must be an object")
             server_config = payload.get("server", {})
             if server_config is None:
                 server_config = {}

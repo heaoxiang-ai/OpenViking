@@ -159,6 +159,10 @@ def test_agent_evolution_provider_keeps_last_valid_value(tmp_path):
 
     assert provider.is_enabled() is True
 
+    config_path.write_text("[]", encoding="utf-8")
+
+    assert provider.is_enabled() is True
+
 
 def test_deprecated_user_agent_evolution_config_is_not_persisted():
     config = UserConfig.model_validate({"agent_evolution": {"enabled": True}})
