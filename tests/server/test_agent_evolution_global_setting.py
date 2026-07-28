@@ -102,7 +102,10 @@ async def test_agent_evolution_admin_endpoint_returns_runtime_value(
     response = await client.get("/api/v1/admin/agent-evolution")
 
     assert response.status_code == 200, response.text
-    assert response.json()["result"] == {"enabled": True}
+    assert response.json()["result"] == {
+        "enabled": True,
+        "account_id": "default",
+    }
 
 
 async def test_manual_extract_respects_disabled_agent_evolution(
