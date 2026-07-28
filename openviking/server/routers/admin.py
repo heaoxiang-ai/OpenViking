@@ -33,6 +33,7 @@ from openviking_cli.exceptions import (
     PermissionDeniedError,
 )
 from openviking_cli.session.user_id import UserIdentifier
+from openviking_cli.utils.config import get_openviking_config
 from openviking_cli.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -77,7 +78,10 @@ async def get_agent_evolution_status(
     del ctx
     return Response(
         status="ok",
-        result={"enabled": get_service().sessions.get_agent_evolution_enabled()},
+        result={
+            "enabled": get_service().sessions.get_agent_evolution_enabled(),
+            "account_id": get_openviking_config().default_account,
+        },
     )
 
 
