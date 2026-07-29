@@ -12,6 +12,7 @@ from openviking.server.app import create_app
 from openviking.server.config import AgentEvolutionConfig, ServerConfig, UserConfig
 from openviking.server.identity import RequestContext, Role
 from openviking.service.session_service import SessionService
+from openviking.session import Session
 from openviking_cli.session.user_id import UserIdentifier
 from openviking_cli.utils.config import OPENVIKING_CONFIG_ENV
 
@@ -51,6 +52,27 @@ def test_existing_session_observes_updated_runtime_value():
     service.set_agent_evolution_config(AgentEvolutionConfig(enabled=False))
 
     assert session._agent_evolution_enabled_provider() is False
+
+
+def test_session_positional_usage_reporter_remains_compatible():
+    reporter = object()
+
+    session = Session(
+        object(),
+        None,
+        None,
+        None,
+        None,
+        "session-id",
+        None,
+        8000,
+        None,
+        True,
+        reporter,
+    )
+
+    assert session._usage_reporter is reporter
+    assert session._agent_evolution_enabled_provider is None
 
 
 def test_agent_evolution_provider_reloads_config_file(tmp_path):
@@ -160,6 +182,33 @@ def test_agent_evolution_provider_keeps_last_valid_value(tmp_path):
     assert provider.is_enabled() is True
 
     config_path.write_text("[]", encoding="utf-8")
+
+    assert provider.is_enabled() is True
+
+
+def test_agent_evolution_provider_rejects_invalid_unrelated_server_config(tmp_path):
+    config_path = tmp_path / "ov.conf"
+    config_path.write_text(
+        json.dumps({"server": {"agent_evolution": {"enabled": True}}}),
+        encoding="utf-8",
+    )
+    provider = AgentEvolutionConfigProvider(
+        default_enabled=False,
+        config_path=config_path,
+    )
+    assert provider.is_enabled() is True
+
+    config_path.write_text(
+        json.dumps(
+            {
+                "server": {
+                    "port": "not-an-integer",
+                    "agent_evolution": {"enabled": False},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     assert provider.is_enabled() is True
 

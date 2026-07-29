@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from openviking.server.config import AgentEvolutionConfig
+from openviking.server.config import ServerConfig
 from openviking_cli.utils.config import load_json_config
 from openviking_cli.utils.logger import get_logger
 
@@ -48,10 +48,7 @@ class AgentEvolutionConfigProvider:
                 server_config = {}
             if not isinstance(server_config, dict):
                 raise ValueError("server must be an object")
-            agent_evolution_config = server_config.get("agent_evolution", {})
-            if agent_evolution_config is None:
-                agent_evolution_config = {}
-            enabled = AgentEvolutionConfig.model_validate(agent_evolution_config).enabled
+            enabled = ServerConfig.model_validate(server_config).agent_evolution.enabled
         except OSError as exc:
             logger.warning(
                 "Failed to access Agent Evolution config file %s, using last valid value: %s",

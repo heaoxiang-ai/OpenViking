@@ -82,7 +82,7 @@ class TestCommit:
     async def test_commit_default_disables_agent_memory_but_keeps_archive(
         self, session_with_messages: Session
     ):
-        session_with_messages._agent_evolution_enabled = False
+        session_with_messages._agent_evolution_enabled_provider = lambda: False
         session_with_messages._session_compressor.extract_long_term_memories = AsyncMock(
             return_value=[]
         )
@@ -130,7 +130,7 @@ class TestCommit:
     async def test_disabled_agent_evolution_keeps_working_memory(
         self, session_with_messages: Session, monkeypatch
     ):
-        session_with_messages._agent_evolution_enabled = False
+        session_with_messages._agent_evolution_enabled_provider = lambda: False
         summary_called = False
 
         async def fake_summary(_session, messages, latest_archive_overview=""):

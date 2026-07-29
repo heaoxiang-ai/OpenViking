@@ -543,8 +543,8 @@ class Session:
         auto_commit_threshold: int = 8000,
         tool_output_externalization_config: Optional[ToolOutputExternalizationConfig] = None,
         agent_evolution_enabled: bool = True,
-        agent_evolution_enabled_provider: Optional[Callable[[], bool]] = None,
         usage_reporter: Optional["UsageReporter"] = None,
+        agent_evolution_enabled_provider: Optional[Callable[[], bool]] = None,
     ):
         self._viking_fs = viking_fs
         self._vikingdb_manager = vikingdb_manager
