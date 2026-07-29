@@ -1506,7 +1506,7 @@ When running OpenViking as an HTTP service, add a `server` section to `ov.conf`:
 
 When `root_api_key` is configured in `api_key` mode, the server enables multi-tenant authentication. Use the Admin API to create accounts and user keys. In `trusted` mode, ordinary requests do not require user registration first; each request is resolved as `USER` from the injected identity headers. However, skipping `root_api_key` in `trusted` mode is allowed only on localhost. Development mode only applies when `auth_mode = "api_key"` and `root_api_key` is not set.
 
-`user_config_defaults` only provides per-user defaults for add targets. For add operations, explicit request targets still win: `add_resource.to` / `add_resource.parent` take precedence over user defaults, and `add_skill.target_uri` takes precedence over user defaults. `agent_evolution.enabled` is shared by the entire OpenViking instance and has no per-user override; restart the server after changing it.
+`user_config_defaults` only provides per-user defaults for add targets. For add operations, explicit request targets still win: `add_resource.to` / `add_resource.parent` take precedence over user defaults, and `add_skill.target_uri` takes precedence over user defaults. `agent_evolution.enabled` is shared by the entire OpenViking instance and has no per-user override. Running HTTP server workers read the current value from the resolved `ov.conf` when a session commits, so a valid file update applies without restarting the server.
 
 ### Usage Reporter
 

@@ -104,6 +104,38 @@ async def test_file_log_sink_message_key_falls_back_to_session_id(tmp_path, monk
     assert key == "ov-test|2101858484|user-1|session-fallback"
 
 
+@pytest.mark.asyncio
+async def test_file_log_sink_preserves_records_when_workers_roll_over(tmp_path, monkeypatch):
+    monkeypatch.setenv("OV_RESOURCE_ID", "ov-test")
+    log_path = tmp_path / "usage.log"
+    first = FileLogUsageSink(path=log_path)
+    second = FileLogUsageSink(path=log_path)
+
+    try:
+        await first.write(events=[FakeUsageEvent(event_id="ue_first_before")])
+        await second.write(events=[FakeUsageEvent(event_id="ue_second_before")])
+
+        first._handler.rolloverAt = 0
+        second._handler.rolloverAt = 0
+        await first.write(events=[FakeUsageEvent(event_id="ue_first_after")])
+        await second.write(events=[FakeUsageEvent(event_id="ue_second_after")])
+    finally:
+        first.close()
+        second.close()
+
+    unique_ids = []
+    for path in tmp_path.glob("usage.log*"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            _key, value = _parse_line(line)
+            unique_ids.append(value["uniqueId"])
+    assert sorted(unique_ids) == [
+        "ue_first_after",
+        "ue_first_before",
+        "ue_second_after",
+        "ue_second_before",
+    ]
+
+
 def test_file_log_sink_uses_hourly_utc_rotation(tmp_path, monkeypatch):
     monkeypatch.setenv("OV_RESOURCE_ID", "ov-test")
     sink = FileLogUsageSink(

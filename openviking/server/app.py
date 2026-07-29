@@ -74,14 +74,20 @@ WORKER_BOT_API_URL_ENV = "OPENVIKING_WORKER_BOT_API_URL"
 
 def create_worker_app() -> FastAPI:
     """Load file config and replay parent-process Bot CLI overrides."""
-    config = load_server_config()
+    resolved_config_path = resolve_config_path(
+        None,
+        OPENVIKING_CONFIG_ENV,
+        DEFAULT_OV_CONF,
+    )
+    config_path = str(resolved_config_path) if resolved_config_path is not None else None
+    config = load_server_config(config_path)
     with_bot = os.environ.get(WORKER_WITH_BOT_ENV)
     if with_bot is not None:
         config.with_bot = with_bot == "1"
     bot_api_url = os.environ.get(WORKER_BOT_API_URL_ENV)
     if bot_api_url is not None:
         config.bot_api_url = bot_api_url
-    return create_app(config)
+    return create_app(config, config_path=config_path)
 
 
 async def _initialize_auth_plugin(

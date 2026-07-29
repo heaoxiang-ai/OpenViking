@@ -8,10 +8,11 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
     from .models import UsageEvent
@@ -20,6 +21,75 @@ _COUNT_NAMES = {
     "memory.recalled": "experience.recall.count",
     "memory.injected": "experience.inject.count",
 }
+
+
+@contextmanager
+def _interprocess_lock(path: Path) -> Iterator[None]:
+    """Serialize log rotation across server worker processes."""
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+class _ProcessSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
+    """Timed handler that coordinates rollover with sibling worker processes."""
+
+    def __init__(self, filename: Path, **kwargs: Any) -> None:
+        self._process_lock_path = filename.with_name(f".{filename.name}.lock")
+        super().__init__(filename=filename, **kwargs)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        with _interprocess_lock(self._process_lock_path):
+            self._refresh_after_external_rollover()
+            super().emit(record)
+
+    def _refresh_after_external_rollover(self) -> None:
+        """Reopen a base file rotated by another process and sync its deadline."""
+        try:
+            path_stat = os.stat(self.baseFilename)
+        except FileNotFoundError:
+            path_stat = None
+
+        stream_stat = None
+        if self.stream is not None:
+            try:
+                stream_stat = os.fstat(self.stream.fileno())
+            except (OSError, ValueError):
+                stream_stat = None
+
+        if stream_stat is not None and path_stat is not None:
+            if (stream_stat.st_dev, stream_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino):
+                return
+
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+        if path_stat is not None:
+            self.rolloverAt = self.computeRollover(int(path_stat.st_mtime))
 
 
 def _timestamp_millis(value: str) -> int:
@@ -128,7 +198,7 @@ class FileLogUsageSink:
 
         self._path = Path(os.path.expandvars(os.path.expanduser(raw_path)))
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._handler = TimedRotatingFileHandler(
+        self._handler = _ProcessSafeTimedRotatingFileHandler(
             filename=self._path,
             when="H",
             interval=rotation_interval_hours,
