@@ -61,6 +61,7 @@ class _ProcessSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
     def __init__(self, filename: Path, **kwargs: Any) -> None:
         self._process_lock_path = filename.with_name(f".{filename.name}.lock")
         super().__init__(filename=filename, **kwargs)
+        self._base_file_identity = self._get_base_file_identity()
 
     def emit(self, record: logging.LogRecord) -> None:
         with _interprocess_lock(self._process_lock_path):
@@ -68,11 +69,22 @@ class _ProcessSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
             try:
                 super().emit(record)
             finally:
+                self._base_file_identity = self._get_base_file_identity()
                 # Windows does not allow another process to rename an open
                 # file. Release the handle so the next worker can roll it.
                 if os.name == "nt" and self.stream is not None:
                     self.stream.close()
                     self.stream = None
+
+    @staticmethod
+    def _file_identity(stat_result: os.stat_result) -> tuple[int, int]:
+        return stat_result.st_dev, stat_result.st_ino
+
+    def _get_base_file_identity(self) -> tuple[int, int] | None:
+        try:
+            return self._file_identity(os.stat(self.baseFilename))
+        except FileNotFoundError:
+            return None
 
     def _refresh_after_external_rollover(self) -> None:
         """Reopen a base file rotated by another process and sync its deadline."""
@@ -80,6 +92,7 @@ class _ProcessSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
             path_stat = os.stat(self.baseFilename)
         except FileNotFoundError:
             path_stat = None
+        path_identity = self._file_identity(path_stat) if path_stat is not None else None
 
         stream_stat = None
         if self.stream is not None:
@@ -89,12 +102,19 @@ class _ProcessSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
                 stream_stat = None
 
         if stream_stat is not None and path_stat is not None:
-            if (stream_stat.st_dev, stream_stat.st_ino) == (path_stat.st_dev, path_stat.st_ino):
+            if self._file_identity(stream_stat) == path_identity:
+                self._base_file_identity = path_identity
                 return
+        elif self.stream is None and path_identity == self._base_file_identity:
+            # Windows closes the stream after every emit. The missing handle
+            # alone does not mean another worker rotated the file, so preserve
+            # this handler's existing rollover deadline.
+            return
 
         if self.stream is not None:
             self.stream.close()
             self.stream = None
+        self._base_file_identity = path_identity
         if path_stat is not None:
             self.rolloverAt = self.computeRollover(int(path_stat.st_mtime))
 

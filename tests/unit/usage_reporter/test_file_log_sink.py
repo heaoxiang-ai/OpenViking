@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -134,6 +135,32 @@ async def test_file_log_sink_preserves_records_when_workers_roll_over(tmp_path, 
         "ue_second_after",
         "ue_second_before",
     ]
+
+
+@pytest.mark.asyncio
+async def test_closed_handle_preserves_overdue_rollover_deadline(tmp_path, monkeypatch):
+    monkeypatch.setenv("OV_RESOURCE_ID", "ov-test")
+    log_path = tmp_path / "usage.log"
+    sink = FileLogUsageSink(path=log_path)
+
+    try:
+        await sink.write(events=[FakeUsageEvent(event_id="ue_before")])
+        sink._handler.stream.close()
+        sink._handler.stream = None
+        sink._handler.rolloverAt = int(time.time()) - 1
+
+        await sink.write(events=[FakeUsageEvent(event_id="ue_after")])
+    finally:
+        sink.close()
+
+    log_files = list(tmp_path.glob("usage.log*"))
+    assert len(log_files) == 2
+    unique_ids = []
+    for path in log_files:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            _key, value = _parse_line(line)
+            unique_ids.append(value["uniqueId"])
+    assert sorted(unique_ids) == ["ue_after", "ue_before"]
 
 
 def test_file_log_sink_uses_hourly_utc_rotation(tmp_path, monkeypatch):
