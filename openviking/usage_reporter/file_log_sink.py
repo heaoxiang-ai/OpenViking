@@ -196,9 +196,7 @@ def _to_log_record(event: UsageEvent, *, resource_id: str) -> dict[str, Any]:
 
 
 def _format_record(record: dict[str, Any]) -> str:
-    key = str(record["key"])
-    value = json.dumps(record["value"], ensure_ascii=False, separators=(",", ":"))
-    return f"{key}={value}"
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
 
 
 class FileLogUsageSink:

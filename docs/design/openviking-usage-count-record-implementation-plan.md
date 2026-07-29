@@ -4,8 +4,8 @@
 `CountRecord` 日志协议，供部署侧日志采集系统读取并投递到下游。
 
 **Architecture:** `MemoryUsageExtractor` 继续生成内部 `UsageEvent`。
-`FileLogUsageSink` 在写入专用日志文件前执行单向转换，每行保存 Kafka
-message key 和对应的 `CountRecord` JSON。`uniqueId` 作为稳定事件标识，
+`FileLogUsageSink` 在写入专用日志文件前执行单向转换，每行保存一个包含 Kafka
+message key 和对应 `CountRecord` 的 JSON envelope。`uniqueId` 作为稳定事件标识，
 供下游在 best-effort 投递发生重复时去重。
 
 **Tech Stack:** Python 3.10+、dataclasses、标准库
@@ -75,10 +75,11 @@ message key 和对应的 `CountRecord` JSON。`uniqueId` 作为稳定事件标�
 日志行格式：
 
 ```text
-<resource_id>|<account_id>|<user_id>|<resource_uri>=<CountRecord JSON>
+{"key":"<resource_id>|<account_id>|<user_id>|<resource_uri>","value":<CountRecord JSON>}
 ```
 
 当 `resource_uri` 为空时，message key 的最后一段使用 `session_id`。
+整行使用 JSON envelope，key 中的 `=`、空格或其他字符不会影响 key/value 拆分。
 日志文件不复用 OpenViking stdout，按 UTC 小时滚动，并保留配置数量的历史
 文件。多个 server worker 写入同一路径时，文件追加和滚动通过进程间锁串行化。
 

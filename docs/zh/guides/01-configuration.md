@@ -1475,7 +1475,7 @@ openviking add-resource ./docs --exclude "*.tmp"
 
 ### Usage Reporter
 
-可选的 Usage Reporter 从已 commit session 的 tool parts 中抽取记忆使用事件。内置文件日志 Sink 将每个事件直接写成一行 `<Kafka key>=<Kafka value JSON>`，并按小时滚动专用日志文件：
+可选的 Usage Reporter 从已 commit session 的 tool parts 中抽取记忆使用事件。内置文件日志 Sink 将每个事件写成一行 `{"key": ..., "value": ...}` JSON envelope，并按小时滚动专用日志文件：
 
 ```json
 {
@@ -1505,7 +1505,7 @@ openviking add-resource ./docs --exclude "*.tmp"
 
 启动服务前，需要设置 `resource_id_env` 指定的环境变量。Sink 会自动创建父目录、立即追加事件、按 UTC 每小时滚动文件，并保留 `backup_count` 个历史文件；它不会写入 OpenViking 默认 stdout 日志。
 
-等号左侧与原 Kafka 消息键一致，格式为 `resource_id|account_id|user_id|resource_uri`；`resource_uri` 为空时使用 `session_id`。等号右侧是原 Kafka 消息的完整紧凑 JSON，包含 `count_name`、`op_type`、`amount`、`timestamp`、`uniqueId`、`tags`、`extra` 和 `prefix`。文件采集和下游投递仍为 best-effort，消费端应按 JSON 中的 `uniqueId` 去重。
+每行是包含 `key` 和 `value` 字段的 JSON envelope。`key` 与原 Kafka 消息键一致，格式为 `resource_id|account_id|user_id|resource_uri`；`resource_uri` 为空时使用 `session_id`。`value` 是原 Kafka 消息的完整对象，包含 `count_name`、`op_type`、`amount`、`timestamp`、`uniqueId`、`tags`、`extra` 和 `prefix`。JSON envelope 能完整保留 key 内部的分隔符。文件采集和下游投递仍为 best-effort，消费端应按 `value.uniqueId` 去重。
 
 支持的 add target URI：
 

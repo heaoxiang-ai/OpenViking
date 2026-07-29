@@ -45,9 +45,8 @@ class FakeUsageEvent:
 
 
 def _parse_line(line: str) -> tuple[str, dict[str, object]]:
-    key, separator, value = line.partition("=")
-    assert separator == "="
-    return key, json.loads(value)
+    record = json.loads(line)
+    return record["key"], record["value"]
 
 
 @pytest.mark.asyncio
@@ -103,6 +102,34 @@ async def test_file_log_sink_message_key_falls_back_to_session_id(tmp_path, monk
 
     key, _value = _parse_line(log_path.read_text(encoding="utf-8").strip())
     assert key == "ov-test|2101858484|user-1|session-fallback"
+
+
+@pytest.mark.asyncio
+async def test_file_log_sink_preserves_equals_signs_in_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OV_RESOURCE_ID", "ov=test")
+    log_path = tmp_path / "usage.log"
+    sink = FileLogUsageSink(path=log_path)
+
+    try:
+        await sink.write(
+            events=[
+                FakeUsageEvent(
+                    resource_uri=("viking://user/user-1/memories/experiences/exchange=delivered.md")
+                )
+            ]
+        )
+    finally:
+        sink.close()
+
+    key, value = _parse_line(log_path.read_text(encoding="utf-8").strip())
+    assert key == (
+        "ov=test|2101858484|user-1|viking://user/user-1/memories/experiences/exchange=delivered.md"
+    )
+    assert value["prefix"] == "ov=test"
+    assert (
+        value["tags"]["resource_uri"]
+        == "viking://user/user-1/memories/experiences/exchange=delivered.md"
+    )
 
 
 @pytest.mark.asyncio

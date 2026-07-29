@@ -1510,7 +1510,7 @@ When `root_api_key` is configured in `api_key` mode, the server enables multi-te
 
 ### Usage Reporter
 
-The optional Usage Reporter extracts memory usage events from committed session tool parts. The built-in file log sink writes each event directly as `<Kafka key>=<Kafka value JSON>` to a dedicated hourly rotating file:
+The optional Usage Reporter extracts memory usage events from committed session tool parts. The built-in file log sink writes each event as a `{"key": ..., "value": ...}` JSON envelope to a dedicated hourly rotating file:
 
 ```json
 {
@@ -1541,7 +1541,7 @@ contract.
 
 Set the environment variable named by `resource_id_env` before starting the server. The sink creates the parent directory, appends events immediately, rotates the active file every UTC hour, and retains `backup_count` rotated files. It does not write to the default OpenViking stdout log.
 
-The text to the left of the equals sign matches the original Kafka message key and has the form `resource_id|account_id|user_id|resource_uri`; it falls back to `session_id` when `resource_uri` is empty. The text to the right is the complete compact JSON used as the original Kafka message value, containing `count_name`, `op_type`, `amount`, `timestamp`, `uniqueId`, `tags`, `extra`, and `prefix`. File collection and downstream delivery remain best-effort, so consumers should deduplicate by the JSON `uniqueId`.
+Each line is a JSON envelope with `key` and `value` fields. `key` matches the original Kafka message key and has the form `resource_id|account_id|user_id|resource_uri`; it falls back to `session_id` when `resource_uri` is empty. `value` is the complete object used as the original Kafka message value, containing `count_name`, `op_type`, `amount`, `timestamp`, `uniqueId`, `tags`, `extra`, and `prefix`. The JSON envelope preserves delimiters that appear inside the key. File collection and downstream delivery remain best-effort, so consumers should deduplicate by `value.uniqueId`.
 
 Supported add target URIs:
 

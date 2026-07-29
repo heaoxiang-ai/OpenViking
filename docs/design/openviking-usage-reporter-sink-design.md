@@ -140,18 +140,19 @@ HTTP 请求。日志文件使用 UTC 小时滚动，默认保留 168 个小时�
 
 `UsageEvent` 继续作为 OpenViking 内部抽取结果和自定义 Sink 的稳定协议。内置
 文件日志 Sink 将 `UsageEvent` 转换为计量接收端使用的 `CountRecord`。每个事件
-直接写成一行 `<Kafka key>=<Kafka value JSON>`：
+写成一行包含 Kafka key/value 的 JSON envelope：
 
 ```text
-ov-xxx|new|test|viking://user/test/memories/experiences/example.md={"count_name":"experience.recall.count","op_type":"add","amount":1.0,"timestamp":1785124800000,"uniqueId":"ue_<sha256>","tags":{"account_id":"new","user_id":"test","resource_uri":"viking://user/test/memories/experiences/example.md","resource_type":"experience"},"extra":{"session_id":"session-id","task_id":"task-id","archive_uri":"viking://user/test/sessions/session-id/history/archive_001","message_id":"message-id","tool_call_id":"tool-call-id","tool_name":"search_experience"},"prefix":"ov-xxx"}
+{"key":"ov-xxx|new|test|viking://user/test/memories/experiences/example.md","value":{"count_name":"experience.recall.count","op_type":"add","amount":1.0,"timestamp":1785124800000,"uniqueId":"ue_<sha256>","tags":{"account_id":"new","user_id":"test","resource_uri":"viking://user/test/memories/experiences/example.md","resource_type":"experience"},"extra":{"session_id":"session-id","task_id":"task-id","archive_uri":"viking://user/test/sessions/session-id/history/archive_001","message_id":"message-id","tool_call_id":"tool-call-id","tool_name":"search_experience"},"prefix":"ov-xxx"}}
 ```
 
 字段映射：
 
-- 等号左侧与原 Kafka message key 一致，格式为
+- envelope 的 `key` 与原 Kafka message key 一致，格式为
   `resource_id|account_id|user_id|resource_uri`；`resource_uri` 为空时回退
   到 `session_id`。
-- 等号右侧是原 Kafka message value 的完整 JSON，不拆分内部字段。
+- envelope 的 `value` 是原 Kafka message value 的完整 JSON，不拆分内部字段。
+- 整行使用 JSON envelope，key 中的分隔符不会影响 key/value 解析。
 - JSON 中的 `prefix` 为 OpenViking 实例的 resource ID。
 - `memory.recalled` 映射为 `count_name=experience.recall.count`。
 - `memory.injected` 映射为 `count_name=experience.inject.count`。
