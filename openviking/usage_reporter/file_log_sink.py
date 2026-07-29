@@ -158,7 +158,7 @@ def _to_count_record(event: UsageEvent, *, resource_id: str) -> dict[str, Any]:
         "op_type": "add",
         "amount": 1.0,
         "timestamp": _timestamp_millis(str(record.get("occurred_at") or "")),
-        "uniqueId": unique_id,
+        "unique_id": unique_id,
         "tags": {
             "account_id": str(record.get("account_id") or ""),
             "user_id": str(record.get("user_id") or ""),

@@ -143,7 +143,7 @@ HTTP 请求。日志文件使用 UTC 小时滚动，默认保留 168 个小时�
 写成一行包含 Kafka key/value 的 JSON envelope：
 
 ```text
-{"key":"ov-xxx|new|test|viking://user/test/memories/experiences/example.md","value":{"count_name":"experience.recall.count","op_type":"add","amount":1.0,"timestamp":1785124800000,"uniqueId":"ue_<sha256>","tags":{"account_id":"new","user_id":"test","resource_uri":"viking://user/test/memories/experiences/example.md","resource_type":"experience"},"extra":{"session_id":"session-id","task_id":"task-id","archive_uri":"viking://user/test/sessions/session-id/history/archive_001","message_id":"message-id","tool_call_id":"tool-call-id","tool_name":"search_experience"},"prefix":"ov-xxx"}}
+{"key":"ov-xxx|new|test|viking://user/test/memories/experiences/example.md","value":{"count_name":"experience.recall.count","op_type":"add","amount":1.0,"timestamp":1785124800000,"unique_id":"ue_<sha256>","tags":{"account_id":"new","user_id":"test","resource_uri":"viking://user/test/memories/experiences/example.md","resource_type":"experience"},"extra":{"session_id":"session-id","task_id":"task-id","archive_uri":"viking://user/test/sessions/session-id/history/archive_001","message_id":"message-id","tool_call_id":"tool-call-id","tool_name":"search_experience"},"prefix":"ov-xxx"}}
 ```
 
 字段映射：
@@ -159,7 +159,7 @@ HTTP 请求。日志文件使用 UTC 小时滚动，默认保留 168 个小时�
 - `op_type` 固定为 `add`。
 - `amount` 固定为 `1.0`。
 - `timestamp` 由 `occurred_at` 转换为 Unix 毫秒时间戳。
-- JSON 中的 `uniqueId` 使用稳定的 `event_id`。
+- JSON 中的 `unique_id` 使用稳定的 `event_id`。
 - JSON 中的 `tags` 保存 `account_id`、`user_id`、`resource_uri` 和
   `resource_type`。
 - JSON 中的 `extra` 保存 `session_id`、可选的 `task_id` 以及 `evidence`
@@ -278,4 +278,4 @@ schema_version
 
 内置文件日志 Sink 在 `write()` 返回前完成本地追加，但不负责 TLS 采集、Kafka
 投递或下游确认。文件写入、TLS 采集和下游消费任一阶段都可能在故障时产生丢失
-或重复，消费端需按 `uniqueId` 去重，整体保持 best-effort 语义。
+或重复，消费端需按 `unique_id` 去重，整体保持 best-effort 语义。

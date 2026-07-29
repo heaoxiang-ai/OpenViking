@@ -69,7 +69,7 @@ async def test_file_log_sink_writes_original_kafka_key_and_value(tmp_path, monke
         "op_type": "add",
         "amount": 1.0,
         "timestamp": 1785124800000,
-        "uniqueId": "ue_recall",
+        "unique_id": "ue_recall",
         "tags": {
             "account_id": "2101858484",
             "user_id": "user-1",
@@ -155,7 +155,7 @@ async def test_file_log_sink_preserves_records_when_workers_roll_over(tmp_path, 
     for path in tmp_path.glob("usage.log*"):
         for line in path.read_text(encoding="utf-8").splitlines():
             _key, value = _parse_line(line)
-            unique_ids.append(value["uniqueId"])
+            unique_ids.append(value["unique_id"])
     assert sorted(unique_ids) == [
         "ue_first_after",
         "ue_first_before",
@@ -186,7 +186,7 @@ async def test_closed_handle_preserves_overdue_rollover_deadline(tmp_path, monke
     for path in log_files:
         for line in path.read_text(encoding="utf-8").splitlines():
             _key, value = _parse_line(line)
-            unique_ids.append(value["uniqueId"])
+            unique_ids.append(value["unique_id"])
     assert sorted(unique_ids) == ["ue_after", "ue_before"]
 
 

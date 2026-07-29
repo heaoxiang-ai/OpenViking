@@ -5,7 +5,7 @@
 
 **Architecture:** `MemoryUsageExtractor` 继续生成内部 `UsageEvent`。
 `FileLogUsageSink` 在写入专用日志文件前执行单向转换，每行保存一个包含 Kafka
-message key 和对应 `CountRecord` 的 JSON envelope。`uniqueId` 作为稳定事件标识，
+message key 和对应 `CountRecord` 的 JSON envelope。`unique_id` 作为稳定事件标识，
 供下游在 best-effort 投递发生重复时去重。
 
 **Tech Stack:** Python 3.10+、dataclasses、标准库
@@ -35,7 +35,7 @@ message key 和对应 `CountRecord` 的 JSON envelope。`uniqueId` 作为稳定�
   "op_type": "add",
   "amount": 1.0,
   "timestamp": 1785124800000,
-  "uniqueId": "ue_recall",
+  "unique_id": "ue_recall",
   "tags": {
     "account_id": "2101858484",
     "user_id": "user-1",
@@ -65,7 +65,7 @@ message key 和对应 `CountRecord` 的 JSON envelope。`uniqueId` 作为稳定�
   `count_name=experience.inject.count`。
 - `op_type` 固定为 `add`，`amount` 固定为 `1.0`。
 - `occurred_at` 转换为毫秒时间戳。
-- `event_id` 写入 `uniqueId`，为空时拒绝写入。
+- `event_id` 写入 `unique_id`，为空时拒绝写入。
 - 非空 `UsageEvent.attributes` 写入 `extra.attributes`。
 - `resource_id_env` 指定的环境变量写入 `prefix`。
 - 未知 `event_type` 拒绝写入，避免产生无法解释的计量记录。
@@ -84,7 +84,7 @@ message key 和对应 `CountRecord` 的 JSON envelope。`uniqueId` 作为稳定�
 文件。多个 server worker 写入同一路径时，文件追加和滚动通过进程间锁串行化。
 
 文件落盘及后续采集均采用 best-effort 语义。下游必须按
-`CountRecord.uniqueId` 去重。
+`CountRecord.unique_id` 去重。
 
 ## 验证
 
