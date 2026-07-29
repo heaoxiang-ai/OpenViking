@@ -1475,7 +1475,7 @@ openviking add-resource ./docs --exclude "*.tmp"
 
 ### Usage Reporter
 
-可选的 Usage Reporter 从已 commit session 的 tool parts 中抽取记忆使用事件。内置 HTTP Sink 会先把事件批次持久化到本地 outbox，再发送给采集服务：
+可选的 Usage Reporter 从已 commit session 的 tool parts 中抽取记忆使用事件。内置文件日志 Sink 将每个事件直接写成一行 `<Kafka key>=<Kafka value JSON>`，并按小时滚动专用日志文件：
 
 ```json
 {
@@ -1485,17 +1485,12 @@ openviking add-resource ./docs --exclude "*.tmp"
       "extractors": ["memory_usage"],
       "sinks": [
         {
-          "type": "http",
+          "type": "file_log",
           "config": {
-            "endpoint": "https://collector.example.com/openviking/usage",
+            "path": "/var/log/openviking_usage/usage.log",
             "resource_id_env": "OV_RESOURCE_ID",
-            "outbox_dir": "/var/lib/openviking/.usage_outbox",
-            "request_timeout_seconds": 10,
-            "inflight_lease_seconds": 60,
-            "retry_base_seconds": 1,
-            "retry_max_seconds": 300,
-            "max_batch_bytes": 1048576,
-            "max_outbox_bytes": 268435456
+            "rotation_interval_hours": 1,
+            "backup_count": 168
           }
         }
       ]
@@ -1504,11 +1499,9 @@ openviking add-resource ./docs --exclude "*.tmp"
 }
 ```
 
-启动服务前，需要设置 `resource_id_env` 指定的环境变量。未配置 `outbox_dir` 时，默认使用 OpenViking 运行用户的 `~/.openviking/data/.usage_outbox`。
+启动服务前，需要设置 `resource_id_env` 指定的环境变量。Sink 会自动创建父目录、立即追加事件、按 UTC 每小时滚动文件，并保留 `backup_count` 个历史文件；它不会写入 OpenViking 默认 stdout 日志。
 
-HTTP Sink 使用本地持久化队列重试，同一事件可能被重复发送，采集端需要按 `CountRecord.uniqueId` 去重。所有 `2xx` 响应都表示批次已确认；瞬时失败使用指数退避重试；`400` 和 `422` 会将批次移入 `dead_letter`；`413` 会拆分包含多条事件的批次。outbox 总量受 `max_outbox_bytes` 限制，达到上限后先删除最旧的 dead-letter 批次，再删除最旧的 pending 批次，正在发送的批次不会被淘汰。由于容量压力可能丢弃 pending 数据，整体上报仍是 best-effort，不提供端到端 at-least-once 保证。
-
-`inflight_lease_seconds` 必须大于 `request_timeout_seconds`。worker 领取批次时会刷新 lease，避免其他 worker 把正在发送的批次误判为过期任务。
+等号左侧与原 Kafka 消息键一致，格式为 `resource_id|account_id|user_id|resource_uri`；`resource_uri` 为空时使用 `session_id`。等号右侧是原 Kafka 消息的完整紧凑 JSON，包含 `count_name`、`op_type`、`amount`、`timestamp`、`uniqueId`、`tags`、`extra` 和 `prefix`。文件采集和下游投递仍为 best-effort，消费端应按 JSON 中的 `uniqueId` 去重。
 
 支持的 add target URI：
 

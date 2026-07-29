@@ -1510,7 +1510,7 @@ When `root_api_key` is configured in `api_key` mode, the server enables multi-te
 
 ### Usage Reporter
 
-The optional Usage Reporter extracts memory usage events from committed session tool parts. The built-in HTTP sink persists batches to a local outbox before delivering them to a collector:
+The optional Usage Reporter extracts memory usage events from committed session tool parts. The built-in file log sink writes each event directly as `<Kafka key>=<Kafka value JSON>` to a dedicated hourly rotating file:
 
 ```json
 {
@@ -1520,17 +1520,12 @@ The optional Usage Reporter extracts memory usage events from committed session 
       "extractors": ["memory_usage"],
       "sinks": [
         {
-          "type": "http",
+          "type": "file_log",
           "config": {
-            "endpoint": "https://collector.example.com/openviking/usage",
+            "path": "/var/log/openviking_usage/usage.log",
             "resource_id_env": "OV_RESOURCE_ID",
-            "outbox_dir": "/var/lib/openviking/.usage_outbox",
-            "request_timeout_seconds": 10,
-            "inflight_lease_seconds": 60,
-            "retry_base_seconds": 1,
-            "retry_max_seconds": 300,
-            "max_batch_bytes": 1048576,
-            "max_outbox_bytes": 268435456
+            "rotation_interval_hours": 1,
+            "backup_count": 168
           }
         }
       ]
@@ -1539,11 +1534,9 @@ The optional Usage Reporter extracts memory usage events from committed session 
 }
 ```
 
-Set the environment variable named by `resource_id_env` before starting the server. If `outbox_dir` is omitted, it defaults to `~/.openviking/data/.usage_outbox` for the operating-system user running OpenViking.
+Set the environment variable named by `resource_id_env` before starting the server. The sink creates the parent directory, appends events immediately, rotates the active file every UTC hour, and retains `backup_count` rotated files. It does not write to the default OpenViking stdout log.
 
-HTTP delivery uses a durable local retry queue and may deliver the same event more than once. Collectors should deduplicate `CountRecord` entries by `uniqueId`. Every `2xx` response acknowledges a batch; transient failures are retried with exponential backoff. `400` and `422` responses move a batch to `dead_letter`, while `413` splits multi-event batches. The outbox is bounded by `max_outbox_bytes`; when the limit is reached, the oldest dead-letter batches are removed first, followed by the oldest pending batches. In-flight batches are not evicted. Because capacity pressure can discard pending data, reporting remains best-effort and does not provide an end-to-end at-least-once guarantee.
-
-`inflight_lease_seconds` must be greater than `request_timeout_seconds`. The lease is refreshed whenever a worker claims a batch, preventing another worker from recovering an active delivery.
+The text to the left of the equals sign matches the original Kafka message key and has the form `resource_id|account_id|user_id|resource_uri`; it falls back to `session_id` when `resource_uri` is empty. The text to the right is the complete compact JSON used as the original Kafka message value, containing `count_name`, `op_type`, `amount`, `timestamp`, `uniqueId`, `tags`, `extra`, and `prefix`. File collection and downstream delivery remain best-effort, so consumers should deduplicate by the JSON `uniqueId`.
 
 Supported add target URIs:
 
