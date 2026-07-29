@@ -1499,6 +1499,10 @@ openviking add-resource ./docs --exclude "*.tmp"
 }
 ```
 
+内置 `file_log` Sink 替代了此前的 `http` Sink。原来使用
+`"type": "http"` 的部署需要迁移为 `file_log` 并采集专用日志文件，或配置实现
+原投递协议的 `custom` Sink。
+
 启动服务前，需要设置 `resource_id_env` 指定的环境变量。Sink 会自动创建父目录、立即追加事件、按 UTC 每小时滚动文件，并保留 `backup_count` 个历史文件；它不会写入 OpenViking 默认 stdout 日志。
 
 等号左侧与原 Kafka 消息键一致，格式为 `resource_id|account_id|user_id|resource_uri`；`resource_uri` 为空时使用 `session_id`。等号右侧是原 Kafka 消息的完整紧凑 JSON，包含 `count_name`、`op_type`、`amount`、`timestamp`、`uniqueId`、`tags`、`extra` 和 `prefix`。文件采集和下游投递仍为 best-effort，消费端应按 JSON 中的 `uniqueId` 去重。

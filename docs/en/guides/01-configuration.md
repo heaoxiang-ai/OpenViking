@@ -1534,6 +1534,11 @@ The optional Usage Reporter extracts memory usage events from committed session 
 }
 ```
 
+The built-in `file_log` sink replaces the earlier `http` sink. Deployments
+using `"type": "http"` must migrate to `file_log` and collect the dedicated
+log files, or configure a `custom` sink that implements their delivery
+contract.
+
 Set the environment variable named by `resource_id_env` before starting the server. The sink creates the parent directory, appends events immediately, rotates the active file every UTC hour, and retains `backup_count` rotated files. It does not write to the default OpenViking stdout log.
 
 The text to the left of the equals sign matches the original Kafka message key and has the form `resource_id|account_id|user_id|resource_uri`; it falls back to `session_id` when `resource_uri` is empty. The text to the right is the complete compact JSON used as the original Kafka message value, containing `count_name`, `op_type`, `amount`, `timestamp`, `uniqueId`, `tags`, `extra`, and `prefix`. File collection and downstream delivery remain best-effort, so consumers should deduplicate by the JSON `uniqueId`.

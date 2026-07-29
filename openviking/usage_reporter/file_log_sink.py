@@ -65,7 +65,14 @@ class _ProcessSafeTimedRotatingFileHandler(TimedRotatingFileHandler):
     def emit(self, record: logging.LogRecord) -> None:
         with _interprocess_lock(self._process_lock_path):
             self._refresh_after_external_rollover()
-            super().emit(record)
+            try:
+                super().emit(record)
+            finally:
+                # Windows does not allow another process to rename an open
+                # file. Release the handle so the next worker can roll it.
+                if os.name == "nt" and self.stream is not None:
+                    self.stream.close()
+                    self.stream = None
 
     def _refresh_after_external_rollover(self) -> None:
         """Reopen a base file rotated by another process and sync its deadline."""
