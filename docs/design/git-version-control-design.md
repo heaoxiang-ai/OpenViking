@@ -534,20 +534,10 @@ pub async fn commit(&self, req: CommitRequest) -> Result<CommitResponse> {
     ).await?;
     let mut changed = 0usize;
 
-    // 2. 候选路径:
-    //    paths=Some(非空) → 显式路径 + 工作区中尚未进入 prev_tree 的文件
-    //    paths=Some(空)   → no-op
-    //    paths=None       → enumerate::collect_all 全量
+    // 2. 候选路径:paths=Some → 经 prune_path 过滤后的清单;paths=None → enumerate::collect_all 全量
     let candidates = match &paths {
-        Some(ps) if ps.is_empty() => Vec::new(),
-        Some(ps) => union(
-            ps.iter().filter_map(prune_path),
-            enumerate::collect_all(&self.vfs, &account)
-                .await?
-                .into_iter()
-                .filter(|path| !prev_tree.contains(path)),
-        ),
-        None => enumerate::collect_all(&self.vfs, &account).await?,
+        Some(ps) => ps.iter().filter_map(prune_path).collect(),
+        None     => enumerate::collect_all(&self.vfs, &account).await?,
     };
 
     for path in candidates {
@@ -1239,7 +1229,7 @@ current=commit_a]
 | 风险                                     | 影响 | 缓解                                                                                  |
 | -------------------------------------- | -- | ----------------------------------------------------------------------------------- |
 | S3/TOS CAS 兼容性差异                       | 高  | POC 阶段验证目标后端的 If-Match 条件写支持;不支持时该后端不可用于 git ref 存储                                       |
-| 大账号 commit 时 enumerate 慢               | 中  | 部分提交只读取显式路径及未跟踪文件的内容，但仍需全量枚举工作区以发现未跟踪文件；后续引入工作区索引或增量 diff                  |
+| 大账号 commit 时 enumerate 慢               | 中  | `paths` 参数限定 scope;后续引入增量 diff(基于 mtime + parent tree)                              |
 | 双重加密导致 restore 后内容损坏                   | 高  | restore 路径绕过 `viking_fs.write` 加密,直接走 `MountableFS`;集成测试覆盖                          |
 | L0/L1 派生文件纳入版本历史,模型异步重建导致 commit 间差异增加 | 中  | 用户主动控制 commit 时机,不自动触发;L0/L1 文件通常较小(< 10KB),存储成本可控;如需降频可配置 commit 时忽略 mtime-only 变更 |
 | 同一账号多 Agent 高并发 commit                 | 中  | CAS 冲突自动重试 3 次;长期可引入"基于队列的串行化提交器"                                                   |

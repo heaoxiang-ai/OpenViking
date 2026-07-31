@@ -105,11 +105,8 @@ impl GitService {
     /// Build a new commit on `branch` reflecting the current state of the
     /// account's VFS subtree.
     ///
-    /// - If `paths` is `Some` and non-empty, the listed account-relative
-    ///   paths are considered together with files that exist in the working
-    ///   tree but are absent from the previous snapshot. Already-tracked
-    ///   paths outside the requested scope retain their previous contents.
-    /// - If `paths` is `Some` and empty, the commit is a no-op.
+    /// - If `paths` is `Some`, only those account-relative paths are
+    ///   considered. Directories are expanded recursively.
     /// - If `paths` is `None`, the full `/local/{account}` subtree is
     ///   enumerated via `enumerate::collect_all`.
     ///
@@ -231,10 +228,6 @@ impl GitService {
             }
             None => crate::git::tree_builder::TreeEditor::empty(),
         };
-        let mut prev_lookup_cache = crate::git::tree_builder::TreeLookupCache::new();
-        if let Some(t) = prev_tree {
-            prev_lookup_cache.seed(t, editor.root.clone());
-        }
 
         // 2.5. Explicit paths: classify each entry as File / Directory /
         //      NotFound via a single VFS stat, and assemble three locals:
@@ -264,34 +257,6 @@ impl GitService {
         let candidates: Vec<String> = match &paths {
             Some(ps) => {
                 let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-
-                // A scoped snapshot must not lose files created through APIs
-                // that do not create snapshot history (for example,
-                // content/write). Add only working-tree files that are absent
-                // from prev_tree: already-tracked files outside `ps` keep
-                // their previous blob even if their working copy changed.
-                //
-                // Preserve the explicit empty-list contract as a no-op.
-                if !ps.is_empty() {
-                    let listed = crate::git::enumerate::collect_all(&self.vfs, &account).await?;
-                    for rel in listed {
-                        let was_tracked_file = match prev_tree {
-                            Some(t) => crate::git::tree_builder::lookup_cached(
-                                self.object_store.as_ref(),
-                                &account,
-                                t,
-                                &rel,
-                                &mut prev_lookup_cache,
-                            )
-                            .await?
-                            .is_some_and(|(_, mode)| !mode.is_tree()),
-                            None => false,
-                        };
-                        if !was_tracked_file && include_path(&rel) {
-                            set.insert(rel);
-                        }
-                    }
-                }
 
                 for p in ps {
                     let abs = format!("/local/{}/{}", account, p);
@@ -571,6 +536,10 @@ impl GitService {
         //    in the same parent subtree only fetches each ancestor once.
         //    Pre-seeded with the editor's root entries so the first
         //    `lookup_cached` doesn't re-fetch what `from_tree` already decoded.
+        let mut prev_lookup_cache = crate::git::tree_builder::TreeLookupCache::new();
+        if let Some(t) = prev_tree {
+            prev_lookup_cache.seed(t, editor.root.clone());
+        }
         // Racy-clean threshold: the time the loaded index was written (from the
         // backend's own metadata). A cached entry is only trustworthy when its
         // `mtime_ns` is strictly older than this — otherwise the file may have
@@ -2393,7 +2362,7 @@ mod tests {
 
     // ── 5 ──────────────────────────────────────────────────────────────
     #[tokio::test]
-    async fn test_first_partial_commit_preserves_all_untracked_files() {
+    async fn test_commit_with_explicit_paths_skips_others() {
         let (_dir, vfs, object_store, _ref_store, svc) = make_service("acct");
         vfs.put("resources/a.md", b"A");
         vfs.put("resources/b.md", b"B");
@@ -2423,14 +2392,7 @@ mod tests {
         .await
         .unwrap();
         let paths: Vec<String> = all.into_iter().map(|(p, _)| p).collect();
-        assert_eq!(
-            paths,
-            vec![
-                "resources/a.md".to_string(),
-                "resources/b.md".to_string(),
-                "resources/c.md".to_string(),
-            ]
-        );
+        assert_eq!(paths, vec!["resources/a.md".to_string()]);
         // Sanity-check the blob is reachable via lookup too.
         let found = lookup(
             object_store.as_ref() as &dyn ObjectStore,
@@ -2628,151 +2590,6 @@ mod tests {
         .unwrap();
         let paths: Vec<String> = all.into_iter().map(|(p, _)| p).collect();
         assert_eq!(paths, vec!["resources/a.md".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn test_partial_commit_adds_untracked_without_updating_uncovered_tracked_files() {
-        let (_dir, vfs, _object_store, _ref_store, svc) = make_service("acct");
-        vfs.put("a.md", b"a-v1");
-        vfs.put("b.md", b"b-v1");
-        vfs.put("deleted.md", b"delete-me");
-        let _ = make_commit(&svc, "acct", "main", "initial").await;
-
-        vfs.put("a.md", b"a-v2");
-        vfs.put("b.md", b"b-working-copy");
-        vfs.put("direct-write.md", b"no-snapshot-history");
-        vfs.delete("deleted.md");
-
-        let resp = svc
-            .commit(req(
-                "acct",
-                "main",
-                "partial",
-                Some(vec!["a.md".into(), "deleted.md".into()]),
-            ))
-            .await
-            .unwrap();
-        let commit_oid = match resp {
-            CommitResponse::Created {
-                commit_oid,
-                changed,
-                ..
-            } => {
-                assert_eq!(changed, 3);
-                commit_oid
-            }
-            other => panic!("expected Created, got {other:?}"),
-        };
-        let target_ref = commit_oid.to_hex().to_string();
-
-        for (path, expected) in [
-            ("a.md", b"a-v2".as_slice()),
-            ("b.md", b"b-v1".as_slice()),
-            ("direct-write.md", b"no-snapshot-history".as_slice()),
-        ] {
-            match svc
-                .show(ShowRequest {
-                    account: "acct".into(),
-                    target_ref: target_ref.clone(),
-                    path: Some(path.into()),
-                })
-                .await
-                .unwrap()
-            {
-                ShowResponse::Blob { bytes, .. } => assert_eq!(bytes.as_ref(), expected),
-                other => panic!("expected blob for {path}, got {other:?}"),
-            }
-        }
-        assert!(matches!(
-            svc.show(ShowRequest {
-                account: "acct".into(),
-                target_ref,
-                path: Some("deleted.md".into()),
-            })
-            .await,
-            Err(GitError::PathNotFound(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_empty_partial_paths_remains_noop_with_untracked_files() {
-        let (_dir, vfs, object_store, _ref_store, svc) = make_service("acct");
-        vfs.put("tracked.md", b"tracked");
-        let initial = make_commit(&svc, "acct", "main", "initial").await;
-        vfs.put("direct-write.md", b"no-snapshot-history");
-
-        let resp = svc
-            .commit(req("acct", "main", "empty", Some(Vec::new())))
-            .await
-            .unwrap();
-        assert!(matches!(
-            resp,
-            CommitResponse::Noop { commit_oid, .. } if commit_oid == initial
-        ));
-
-        let tree = commit_tree(
-            object_store.as_ref() as &dyn ObjectStore,
-            "acct",
-            initial,
-        )
-        .await;
-        assert!(
-            lookup(
-                object_store.as_ref() as &dyn ObjectStore,
-                "acct",
-                tree,
-                "direct-write.md",
-            )
-            .await
-            .unwrap()
-            .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_partial_commit_preserves_untracked_file_replacing_tracked_directory() {
-        let (_dir, vfs, _object_store, _ref_store, svc) = make_service("acct");
-        vfs.put("foo/bar.md", b"old nested file");
-        vfs.put("explicit.md", b"unchanged");
-        let _ = make_commit(&svc, "acct", "main", "initial").await;
-
-        vfs.delete("foo/bar.md");
-        vfs.put("foo", b"directly written replacement");
-        let resp = svc
-            .commit(req(
-                "acct",
-                "main",
-                "partial",
-                Some(vec!["explicit.md".into()]),
-            ))
-            .await
-            .unwrap();
-        let commit_oid = match resp {
-            CommitResponse::Created {
-                commit_oid,
-                changed,
-                ..
-            } => {
-                assert_eq!(changed, 1);
-                commit_oid
-            }
-            other => panic!("expected Created, got {other:?}"),
-        };
-
-        match svc
-            .show(ShowRequest {
-                account: "acct".into(),
-                target_ref: commit_oid.to_hex().to_string(),
-                path: Some("foo".into()),
-            })
-            .await
-            .unwrap()
-        {
-            ShowResponse::Blob { bytes, .. } => {
-                assert_eq!(bytes.as_ref(), b"directly written replacement")
-            }
-            other => panic!("expected replacement blob, got {other:?}"),
-        }
     }
 
     // ── commit: paths supports directories ──────────────────────────────
@@ -3217,15 +3034,6 @@ mod tests {
         // and in prev_tree, so each distinct path must contribute exactly one
         // `ignored` and one removal `changed`.
         vfs.put(OVGITIGNORE_PATH, b"*.log\n");
-        let _ = svc
-            .commit(req(
-                "acct_dup",
-                "main",
-                "add ignore",
-                Some(vec![OVGITIGNORE_PATH.to_string()]),
-            ))
-            .await
-            .unwrap();
         let resp = svc
             .commit(req(
                 "acct_dup",

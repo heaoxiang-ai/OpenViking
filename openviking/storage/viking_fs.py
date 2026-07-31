@@ -3903,15 +3903,11 @@ class VikingFS:
             message: Commit message.
             paths: Optional list of ``viking://`` URIs to scope the commit to;
                 entries may be files or directories. Directories are expanded
-                recursively with the snapshot pruning rules applied. A
-                non-empty list also preserves working-tree files absent from
-                the previous snapshot; already-tracked files outside the
-                requested scope retain their previous snapshot contents.
-                ``None`` (default) enumerates the whole account tree. An empty
-                list is forwarded as an explicit empty path list (no-op
-                commit). A path that exists in neither the VFS nor the
-                previous snapshot logs a warning and is treated as a no-op
-                deletion.
+                recursively with the snapshot pruning rules applied. ``None``
+                (default) enumerates the whole account tree. An empty list is
+                forwarded as an explicit empty path list (no-op commit). A
+                path that exists in neither the VFS nor the previous snapshot
+                logs a warning and is treated as a no-op deletion.
             branch: Branch to advance. Defaults to ``"main"``.
             author_name / author_email: Override the default bot author.
             ctx: Request context (provides ``account_id``).
