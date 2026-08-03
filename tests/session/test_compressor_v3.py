@@ -11,7 +11,11 @@ import pytest
 from openviking.message import Message, TextPart
 from openviking.server.identity import RequestContext, Role
 from openviking.session import create_session_compressor
-from openviking.session.compressor_v3 import SessionCompressorV3, _experience_root_uri
+from openviking.session.compressor_v3 import (
+    SessionCompressorV3,
+    _commit_experience_snapshot,
+    _experience_root_uri,
+)
 from openviking.session.memory.dataclass import (
     MemoryFile,
     ResolvedOperation,
@@ -1117,6 +1121,7 @@ async def test_v3_fast_path_writes_final_memory_diff_with_case_traj_and_exp(monk
 @pytest.mark.asyncio
 async def test_v3_builds_training_memory_diff_from_streaming_result(monkeypatch):
     archive_uri = "viking://user/u/sessions/s1/history/archive_001"
+    snapshot_commit_id = "a" * 40
 
     class FakeFS:
         async def read_file(self, uri, ctx=None):
@@ -1181,6 +1186,7 @@ async def test_v3_builds_training_memory_diff_from_streaming_result(monkeypatch)
         viking_fs=FakeFS(),
         ctx=_ctx(),
         archive_uri=archive_uri,
+        snapshot_commit_id=snapshot_commit_id,
     )
 
     assert diff["summary"] == {"total_adds": 1, "total_updates": 1, "total_deletes": 0}
@@ -1189,6 +1195,10 @@ async def test_v3_builds_training_memory_diff_from_streaming_result(monkeypatch)
     assert update["memory_type"] == "experiences"
     assert update["before"] == "old exp content"
     assert update["after"] == "new exp content"
+    assert update["source_trajectory_uris"] == [
+        "viking://user/u/memories/trajectories/duplicate_booking.md"
+    ]
+    assert update["snapshot_commit_id"] == snapshot_commit_id
 
 
 @pytest.mark.asyncio
@@ -1278,10 +1288,44 @@ async def test_v3_training_memory_diff_filters_batch_items_by_current_analysis_t
         viking_fs=FakeFS(),
         ctx=_ctx(),
         archive_uri=archive_uri,
+        snapshot_commit_id="b" * 40,
     )
 
     assert diff["summary"] == {"total_adds": 2, "total_updates": 0, "total_deletes": 0}
     assert [op["uri"] for op in diff["operations"]["adds"]] == [traj_a, exp_a]
+    experience_add = diff["operations"]["adds"][1]
+    assert experience_add["source_trajectory_uris"] == [traj_a]
+    assert experience_add["snapshot_commit_id"] == "b" * 40
+
+
+@pytest.mark.asyncio
+async def test_v3_experience_snapshot_returns_only_created_commit_oid():
+    experience_uri = "viking://user/u/memories/experiences/exp.md"
+    commit_oid = "c" * 40
+
+    created_fs = SimpleNamespace(
+        commit=AsyncMock(return_value={"result": "created", "commit_oid": commit_oid, "changed": 1})
+    )
+    result = await _commit_experience_snapshot(
+        created_fs,
+        ctx=_ctx(),
+        experience_uris=[experience_uri],
+        archive_uri="viking://user/u/sessions/s1/history/archive_001",
+    )
+
+    assert result == commit_oid
+
+    noop_fs = SimpleNamespace(
+        commit=AsyncMock(return_value={"result": "noop", "commit_oid": "d" * 40})
+    )
+    result = await _commit_experience_snapshot(
+        noop_fs,
+        ctx=_ctx(),
+        experience_uris=[experience_uri],
+        archive_uri="viking://user/u/sessions/s1/history/archive_001",
+    )
+
+    assert result is None
 
 
 @pytest.mark.asyncio

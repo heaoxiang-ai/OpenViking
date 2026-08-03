@@ -100,26 +100,31 @@ async def _commit_experience_snapshot(
     ctx: RequestContext,
     experience_uris: list[str],
     archive_uri: str = "",
-) -> None:
+) -> Optional[str]:
     commit = getattr(viking_fs, "commit", None)
     if not callable(commit):
-        return
+        return None
     has_experience_changes = any(
         "/memories/experiences/" in uri and uri.endswith(".md")
         for uri in dict.fromkeys(str(uri or "") for uri in experience_uris)
     )
     if not has_experience_changes:
-        return
+        return None
     paths = [_experience_root_uri(ctx)]
     archive_ref = archive_uri.rstrip("/") if archive_uri else "unknown"
     try:
-        await commit(
+        result = await commit(
             message=f"Update experience memories from session commit {archive_ref}",
             paths=paths,
             ctx=ctx,
         )
+        if not isinstance(result, dict) or result.get("result") != "created":
+            return None
+        commit_oid = str(result.get("commit_oid") or "")
+        return commit_oid or None
     except Exception as exc:
         logger.warning("Failed to commit experience snapshot for %s: %s", paths, exc, exc_info=True)
+        return None
 
 
 class SessionCompressorV3:
@@ -889,8 +894,9 @@ class SessionCompressorV3:
                         viking_fs=viking_fs,
                     )
                 exp_apply_result = getattr(exp_training_result, "apply_result", None)
+                snapshot_commit_id: Optional[str] = None
                 if exp_apply_result is not None:
-                    await _commit_experience_snapshot(
+                    snapshot_commit_id = await _commit_experience_snapshot(
                         viking_fs,
                         ctx=ctx,
                         experience_uris=[
@@ -929,6 +935,7 @@ class SessionCompressorV3:
                         viking_fs=viking_fs,
                         ctx=ctx,
                         archive_uri=archive_uri,
+                        snapshot_commit_id=snapshot_commit_id,
                     )
                     if _memory_diff_has_changes(memory_diff):
                         memory_diffs.append(memory_diff)
@@ -965,6 +972,7 @@ class SessionCompressorV3:
         viking_fs: Any,
         ctx: RequestContext,
         archive_uri: str,
+        snapshot_commit_id: Optional[str] = None,
     ) -> dict[str, Any]:
         adds: list[dict[str, Any]] = []
         updates: list[dict[str, Any]] = []
@@ -997,10 +1005,11 @@ class SessionCompressorV3:
         for item in training_result.plan.items:
             if item.memory_type != "experiences":
                 continue
-            if source_trajectory_uris and not _plan_item_has_source_trajectory(
+            item_source_trajectory_uris = _plan_item_source_trajectory_uris(
                 item,
-                source_trajectory_uris,
-            ):
+                allowed_uris=source_trajectory_uris if source_trajectory_uris else None,
+            )
+            if source_trajectory_uris and not item_source_trajectory_uris:
                 continue
             uri = _experience_plan_item_uri(item, root_uri)
             if not uri:
@@ -1024,8 +1033,19 @@ class SessionCompressorV3:
                 fallback=item.after_content or "",
             )
             before = item.before_content
+            provenance = {
+                "source_trajectory_uris": item_source_trajectory_uris,
+                "snapshot_commit_id": snapshot_commit_id,
+            }
             if before is None:
-                adds.append({"uri": uri, "memory_type": "experiences", "after": after})
+                adds.append(
+                    {
+                        "uri": uri,
+                        "memory_type": "experiences",
+                        "after": after,
+                        **provenance,
+                    }
+                )
             else:
                 # Filter no-op experience updates the same way as user-memory
                 # updates: a patch that re-serializes to identical content should
@@ -1044,6 +1064,7 @@ class SessionCompressorV3:
                         "memory_type": "experiences",
                         "before": before,
                         "after": after,
+                        **provenance,
                     }
                 )
 
@@ -1685,18 +1706,31 @@ def _case_experience_links_via_trajectories(
 
 
 def _plan_item_has_source_trajectory(item: PolicyPlanItem, trajectory_uris: set[str]) -> bool:
+    return bool(_plan_item_source_trajectory_uris(item, allowed_uris=trajectory_uris))
+
+
+def _plan_item_source_trajectory_uris(
+    item: PolicyPlanItem,
+    *,
+    allowed_uris: Optional[set[str]] = None,
+) -> list[str]:
+    uris: list[str] = []
+    seen: set[str] = set()
     for link in getattr(item, "links", []) or []:
         try:
             stored = link if isinstance(link, StoredLink) else StoredLink(**dict(link))
         except Exception:
             continue
-        if (
-            stored.link_type == "derived_from"
-            and stored.to_uri in trajectory_uris
-            and "/memories/trajectories/" in str(stored.to_uri or "")
-        ):
-            return True
-    return False
+        uri = str(stored.to_uri or "")
+        if stored.link_type != "derived_from" or "/memories/trajectories/" not in uri:
+            continue
+        if allowed_uris is not None and uri not in allowed_uris:
+            continue
+        if uri in seen:
+            continue
+        seen.add(uri)
+        uris.append(uri)
+    return uris
 
 
 def _stored_link(
