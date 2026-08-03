@@ -903,21 +903,22 @@ class SessionCompressorV3:
                     )
                 exp_apply_result = getattr(exp_training_result, "apply_result", None)
                 if exp_apply_result is not None:
-                    experience_trajectory_map = _experience_trajectory_map(
-                        plan=exp_training_result.plan,
-                        apply_result=exp_apply_result,
-                        trajectory_uris={
-                            str(getattr(trajectory, "uri", "") or "")
-                            for trajectory in analysis.trajectories
-                            if str(getattr(trajectory, "uri", "") or "")
-                        },
+                    snapshot_apply_result, experience_trajectory_map = (
+                        _experience_snapshot_provenance(
+                            exp_training_result,
+                            fallback_trajectory_uris={
+                                uri
+                                for trajectory in analysis.trajectories
+                                if (uri := str(getattr(trajectory, "uri", "") or ""))
+                            },
+                        )
                     )
                     await _commit_experience_snapshot(
                         viking_fs,
                         ctx=ctx,
                         experience_uris=[
-                            *list(getattr(exp_apply_result, "written_uris", []) or []),
-                            *list(getattr(exp_apply_result, "deleted_uris", []) or []),
+                            *list(getattr(snapshot_apply_result, "written_uris", []) or []),
+                            *list(getattr(snapshot_apply_result, "deleted_uris", []) or []),
                         ],
                         archive_uri=archive_uri,
                         experience_trajectory_map=experience_trajectory_map,
@@ -1757,6 +1758,36 @@ def _experience_trajectory_map(
         existing = result.setdefault(experience_uri, [])
         existing.extend(uri for uri in source_uris if uri not in existing)
     return result
+
+
+def _experience_snapshot_provenance(
+    training_result: Any,
+    *,
+    fallback_trajectory_uris: Optional[set[str]] = None,
+) -> tuple[PolicyApplyResult, dict[str, list[str]]]:
+    """Return provenance for the complete update that reached storage.
+
+    Concurrent submitters can share one streaming trainer flush. Their
+    top-level result is scoped to one submitter, while ``batch_result`` owns
+    the complete plan and apply result that were written atomically. Snapshot
+    history must describe that complete persisted update, regardless of which
+    waiter reaches the snapshot commit first.
+    """
+    persisted_result = getattr(training_result, "batch_result", None) or training_result
+    apply_result = persisted_result.apply_result
+    trajectory_uris = {
+        uri
+        for analysis in getattr(persisted_result, "analyses", []) or []
+        for trajectory in getattr(analysis, "trajectories", []) or []
+        if (uri := str(getattr(trajectory, "uri", "") or ""))
+    }
+    if not trajectory_uris:
+        trajectory_uris = set(fallback_trajectory_uris or set())
+    return apply_result, _experience_trajectory_map(
+        plan=persisted_result.plan,
+        apply_result=apply_result,
+        trajectory_uris=trajectory_uris,
+    )
 
 
 def _stored_link(

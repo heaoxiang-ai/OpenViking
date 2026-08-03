@@ -14,6 +14,7 @@ from openviking.session import create_session_compressor
 from openviking.session.compressor_v3 import (
     SessionCompressorV3,
     _experience_root_uri,
+    _experience_snapshot_provenance,
     _experience_trajectory_map,
 )
 from openviking.session.memory.dataclass import (
@@ -1342,6 +1343,61 @@ def test_v3_maps_each_written_experience_to_its_source_trajectories():
         apply_result=apply_result,
         trajectory_uris={traj_a, traj_b},
     ) == {
+        exp_a: [traj_a],
+        exp_b: [traj_b],
+    }
+
+
+def test_v3_snapshot_provenance_uses_complete_shared_batch_result():
+    traj_a = "viking://user/u/memories/trajectories/traj_a.md"
+    traj_b = "viking://user/u/memories/trajectories/traj_b.md"
+    exp_a = "viking://user/u/memories/experiences/exp_a.md"
+    exp_b = "viking://user/u/memories/experiences/exp_b.md"
+
+    def plan_item(experience_uri: str, trajectory_uri: str) -> PolicyPlanItem:
+        return PolicyPlanItem(
+            kind="upsert",
+            memory_type="experiences",
+            target_name=experience_uri.rsplit("/", 1)[-1].removesuffix(".md"),
+            target_uri=experience_uri,
+            before_content=None,
+            after_content="updated",
+            links=[
+                StoredLink(
+                    from_uri=experience_uri,
+                    to_uri=trajectory_uri,
+                    link_type="derived_from",
+                    weight=1.0,
+                )
+            ],
+        )
+
+    root = "viking://user/u/memories/experiences"
+    batch_result = SimpleNamespace(
+        analyses=[
+            SimpleNamespace(trajectories=[SimpleNamespace(uri=traj_a)]),
+            SimpleNamespace(trajectories=[SimpleNamespace(uri=traj_b)]),
+        ],
+        plan=PolicyUpdatePlan(items=[plan_item(exp_a, traj_a), plan_item(exp_b, traj_b)]),
+        apply_result=PolicyApplyResult(
+            updated_policy_set=ExperienceSet(root_uri=root, policies=[]),
+            written_uris=[exp_a, exp_b],
+        ),
+    )
+    scoped_result = SimpleNamespace(
+        analyses=[batch_result.analyses[0]],
+        plan=PolicyUpdatePlan(items=[batch_result.plan.items[0]]),
+        apply_result=PolicyApplyResult(
+            updated_policy_set=ExperienceSet(root_uri=root, policies=[]),
+            written_uris=[exp_a],
+        ),
+        batch_result=batch_result,
+    )
+
+    apply_result, trajectory_map = _experience_snapshot_provenance(scoped_result)
+
+    assert apply_result is batch_result.apply_result
+    assert trajectory_map == {
         exp_a: [traj_a],
         exp_b: [traj_b],
     }
