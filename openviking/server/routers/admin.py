@@ -5,8 +5,15 @@
 import asyncio
 
 from fastapi import APIRouter, Body, Depends, Path, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from openviking.server.account_settings import (
+    AccountAgentEvolutionSettings,
+    AccountSettings,
+    AccountSettingsPatch,
+    read_account_settings,
+    update_account_settings,
+)
 from openviking.server.api_keys.models import validate_account_user_role
 from openviking.server.auth import (
     get_api_key_manager_or_raise,
@@ -31,6 +38,7 @@ from openviking.storage.viking_fs import get_viking_fs
 from openviking_cli.exceptions import (
     FailedPreconditionError,
     InvalidArgumentError,
+    NotFoundError,
     PermissionDeniedError,
 )
 from openviking_cli.session.user_id import UserIdentifier
@@ -70,45 +78,52 @@ class MigrateLegacyDataRequest(BaseModel):
 
 class SetAgentEvolutionRequest(BaseModel):
     enabled: bool
-    revision: str = Field(min_length=1, max_length=128)
+
+
+def _agent_evolution_account_id(ctx: RequestContext) -> str:
+    if ctx.role == Role.ROOT:
+        return get_openviking_config().default_account
+    return ctx.account_id
 
 
 @router.get("/agent-evolution")
-@require_auth_root
+@require_auth_root_or_admin
 async def get_agent_evolution_status(
     request: Request,
     ctx: RequestContext = Depends(get_request_context),
 ):
-    """Return the live instance-wide Agent Evolution switch."""
-    del request
-    del ctx
+    """Return the effective Agent Evolution switch for the caller's account."""
+    account_id = _agent_evolution_account_id(ctx)
+    _check_account_exists(request, account_id)
+    enabled = await get_service().sessions.get_agent_evolution_enabled(account_id)
     return Response(
         status="ok",
-        result={
-            "enabled": get_service().sessions.get_agent_evolution_enabled(),
-            "account_id": get_openviking_config().default_account,
-        },
+        result={"enabled": enabled, "account_id": account_id},
     )
 
 
 @router.put("/agent-evolution")
-@require_auth_root
+@require_auth_root_or_admin
 async def set_agent_evolution_status(
     body: SetAgentEvolutionRequest,
     request: Request,
     ctx: RequestContext = Depends(get_request_context),
 ):
-    """Apply the instance-wide Agent Evolution switch immediately."""
-    del request
-    del ctx
-    sessions = get_service().sessions
-    sessions.set_agent_evolution_runtime_enabled(body.enabled, body.revision)
+    """Persist and hot-reload Agent Evolution for the caller's account."""
+    account_id = _agent_evolution_account_id(ctx)
+    _check_account_exists(request, account_id)
+    service = get_service()
+    if service.viking_fs is None:
+        raise FailedPreconditionError("OpenViking service is not initialized.")
+    await update_account_settings(
+        service.viking_fs,
+        account_id,
+        AccountSettingsPatch(agent_evolution=AccountAgentEvolutionSettings(enabled=body.enabled)),
+    )
+    enabled = await service.sessions.get_agent_evolution_enabled(account_id)
     return Response(
         status="ok",
-        result={
-            "enabled": sessions.get_agent_evolution_enabled(),
-            "account_id": get_openviking_config().default_account,
-        },
+        result={"enabled": enabled, "account_id": account_id},
     )
 
 
@@ -128,6 +143,31 @@ def _check_account_access(ctx: RequestContext, account_id: str) -> None:
     """ADMIN can only operate on their own account."""
     if ctx.role == Role.ADMIN and ctx.account_id != account_id:
         raise PermissionDeniedError(f"ADMIN can only manage account: {ctx.account_id}")
+
+
+def _check_account_exists(request: Request, account_id: str) -> None:
+    manager = getattr(request.app.state, "api_key_manager", None)
+    if manager is None:
+        return
+    accounts = manager.get_accounts()
+    if not any(item.get("account_id") == account_id for item in accounts):
+        raise NotFoundError(account_id, "account")
+
+
+async def _account_settings_result(
+    account_id: str,
+    settings: AccountSettings,
+) -> dict:
+    enabled = await get_service().sessions.get_agent_evolution_enabled(account_id)
+    return {
+        "account_id": account_id,
+        "settings": {
+            "agent_evolution": {
+                "enabled": enabled,
+            }
+        },
+        "overrides": settings.model_dump(exclude_none=True),
+    }
 
 
 def _has_add_targets(user_config: UserConfig | None) -> bool:
@@ -325,6 +365,47 @@ async def delete_account(
     # Finally delete the account metadata
     await manager.delete_account(account_id)
     return Response(status="ok", result={"deleted": True})
+
+
+@router.get("/accounts/{account_id}/settings")
+@require_auth_root_or_admin
+async def get_account_settings(
+    request: Request,
+    account_id: str = Path(..., description="Account ID"),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Return effective and explicitly overridden settings for one account."""
+    _check_account_access(ctx, account_id)
+    _check_account_exists(request, account_id)
+    service = get_service()
+    if service.viking_fs is None:
+        raise FailedPreconditionError("OpenViking service is not initialized.")
+    settings = await read_account_settings(service.viking_fs, account_id)
+    return Response(
+        status="ok",
+        result=await _account_settings_result(account_id, settings),
+    )
+
+
+@router.patch("/accounts/{account_id}/settings")
+@require_auth_root_or_admin
+async def patch_account_settings(
+    body: AccountSettingsPatch,
+    request: Request,
+    account_id: str = Path(..., description="Account ID"),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Update allowlisted hot-reloadable settings for one account."""
+    _check_account_access(ctx, account_id)
+    _check_account_exists(request, account_id)
+    service = get_service()
+    if service.viking_fs is None:
+        raise FailedPreconditionError("OpenViking service is not initialized.")
+    settings = await update_account_settings(service.viking_fs, account_id, body)
+    return Response(
+        status="ok",
+        result=await _account_settings_result(account_id, settings),
+    )
 
 
 # ---- User endpoints ----
