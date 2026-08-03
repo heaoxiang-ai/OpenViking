@@ -887,10 +887,39 @@ class SessionCompressorV3:
                     policy_set=exp_trainer.policy_set,
                 )
                 if exp_gradients:
+                    fallback_trajectory_uris = {
+                        uri
+                        for trajectory in analysis.trajectories
+                        if (uri := str(getattr(trajectory, "uri", "") or ""))
+                    }
+
+                    async def commit_experience_batch(
+                        batch_result: RolloutTrainingResult,
+                        *,
+                        _fallback_trajectory_uris: set[str] = fallback_trajectory_uris,
+                    ) -> None:
+                        snapshot_apply_result, experience_trajectory_map = (
+                            _experience_snapshot_provenance(
+                                batch_result,
+                                fallback_trajectory_uris=_fallback_trajectory_uris,
+                            )
+                        )
+                        await _commit_experience_snapshot(
+                            viking_fs,
+                            ctx=ctx,
+                            experience_uris=[
+                                *list(getattr(snapshot_apply_result, "written_uris", []) or []),
+                                *list(getattr(snapshot_apply_result, "deleted_uris", []) or []),
+                            ],
+                            archive_uri=archive_uri,
+                            experience_trajectory_map=experience_trajectory_map,
+                        )
+
                     exp_training_result = await exp_trainer.submit_gradients(
                         exp_gradients,
                         analysis=analysis,
                         rollout=rollout,
+                        batch_finalizer=commit_experience_batch,
                     )
                 if case_uri:
                     await self._link_case_to_training_outputs(
@@ -900,28 +929,6 @@ class SessionCompressorV3:
                         apply_result=exp_training_result.apply_result,
                         ctx=ctx,
                         viking_fs=viking_fs,
-                    )
-                exp_apply_result = getattr(exp_training_result, "apply_result", None)
-                if exp_apply_result is not None:
-                    snapshot_apply_result, experience_trajectory_map = (
-                        _experience_snapshot_provenance(
-                            exp_training_result,
-                            fallback_trajectory_uris={
-                                uri
-                                for trajectory in analysis.trajectories
-                                if (uri := str(getattr(trajectory, "uri", "") or ""))
-                            },
-                        )
-                    )
-                    await _commit_experience_snapshot(
-                        viking_fs,
-                        ctx=ctx,
-                        experience_uris=[
-                            *list(getattr(snapshot_apply_result, "written_uris", []) or []),
-                            *list(getattr(snapshot_apply_result, "deleted_uris", []) or []),
-                        ],
-                        archive_uri=archive_uri,
-                        experience_trajectory_map=experience_trajectory_map,
                     )
                 # Skill path: co-extracted skill gradients go directly to skill trainer
                 if skill_trainer is not None and analysis.gradients:

@@ -1484,7 +1484,14 @@ async def test_v3_training_links_case_to_trajectory_and_experience_via_trajector
     class FakeTrainer:
         policy_set = ExperienceSet(root_uri="viking://user/u/memories/experiences", policies=[])
 
-        async def submit_gradients(self, gradients, *, analysis=None, rollout=None):
+        async def submit_gradients(
+            self,
+            gradients,
+            *,
+            analysis=None,
+            rollout=None,
+            batch_finalizer=None,
+        ):
             del gradients, analysis, rollout
             plan = PolicyUpdatePlan(
                 items=[
@@ -1508,7 +1515,7 @@ async def test_v3_training_links_case_to_trajectory_and_experience_via_trajector
                     )
                 ]
             )
-            return RolloutTrainingResult(
+            result = RolloutTrainingResult(
                 analyses=[],
                 gradients=[],
                 plan=plan,
@@ -1523,6 +1530,9 @@ async def test_v3_training_links_case_to_trajectory_and_experience_via_trajector
                 ),
                 metadata={},
             )
+            if batch_finalizer is not None:
+                await batch_finalizer(result)
+            return result
 
     class FakeAnalyzer:
         async def analyze(self, rollout, context):
