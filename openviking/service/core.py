@@ -15,6 +15,7 @@ from openviking.core.namespace import canonicalize_uri
 from openviking.privacy import UserPrivacyConfigService
 from openviking.resource.watch_scheduler import WatchScheduler
 from openviking.server.identity import RequestContext, Role
+from openviking.service.agent_evolution_service import AgentEvolutionService
 from openviking.service.debug_service import DebugService
 from openviking.service.fs_service import FSService
 from openviking.service.pack_service import PackService
@@ -25,13 +26,13 @@ from openviking.service.search_service import SearchService
 from openviking.service.session_service import SessionService
 from openviking.service.task_tracker import get_task_tracker, set_task_tracker
 from openviking.session import create_session_compressor
-from openviking.storage.vikingdb_manager import VikingDBManager
 from openviking.storage.collection_schemas import init_context_collection
 from openviking.storage.index_consistency import check_index_consistency
 from openviking.storage.queuefs.add_resource_processor import AddResourceProcessor
 from openviking.storage.queuefs.queue_manager import QueueManager, init_queue_manager
 from openviking.storage.queuefs.session_commit_processor import SessionCommitProcessor
 from openviking.storage.viking_fs import VikingFS, init_viking_fs
+from openviking.storage.vikingdb_manager import VikingDBManager
 from openviking.utils.agfs_utils import (
     build_runtime_ragfs_binding_config,
     resolve_queuefs_mount_point,
@@ -104,6 +105,7 @@ class OpenVikingService:
         self._resource_service = ResourceService()
         self._session_service = SessionService()
         self._debug_service = DebugService()
+        self._agent_evolution_service = AgentEvolutionService()
 
         # State
         self._initialized = False
@@ -277,6 +279,11 @@ class OpenVikingService:
         """Get DebugService instance."""
         return self._debug_service
 
+    @property
+    def agent_evolution(self) -> AgentEvolutionService:
+        """Get Agent Evolution query service."""
+        return self._agent_evolution_service
+
     async def initialize(self) -> None:
         """Initialize OpenViking storage and indexes."""
         if self._initialized:
@@ -402,6 +409,10 @@ class OpenVikingService:
             vikingdb=self._vikingdb_manager,
             config=self._config,
             agfs_client=self._agfs_client,
+        )
+        self._agent_evolution_service.set_dependencies(
+            vikingdb=self._vikingdb_manager,
+            viking_fs=self._viking_fs,
         )
 
         if self._queue_manager:
