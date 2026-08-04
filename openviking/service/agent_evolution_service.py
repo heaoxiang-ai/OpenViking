@@ -98,6 +98,8 @@ class AgentEvolutionService:
                 limit=limit,
                 offset=offset,
                 output_fields=_TRAJECTORY_OUTPUT_FIELDS,
+                order_by="updated_at",
+                order_desc=True,
                 ctx=ctx,
             ),
             self._vikingdb.count(filter=lineage_filter, ctx=ctx),

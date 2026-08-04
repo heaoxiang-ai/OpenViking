@@ -72,8 +72,8 @@ async def test_list_trajectories_by_experience_uses_exact_scalar_filter_and_pagi
     assert vikingdb.filter.await_args.kwargs["filter"] == expected_filter
     assert vikingdb.filter.await_args.kwargs["limit"] == 1
     assert vikingdb.filter.await_args.kwargs["offset"] == 1
-    assert "order_by" not in vikingdb.filter.await_args.kwargs
-    assert "order_desc" not in vikingdb.filter.await_args.kwargs
+    assert vikingdb.filter.await_args.kwargs["order_by"] == "updated_at"
+    assert vikingdb.filter.await_args.kwargs["order_desc"] is True
     assert vikingdb.count.await_args.kwargs["filter"] == expected_filter
 
 

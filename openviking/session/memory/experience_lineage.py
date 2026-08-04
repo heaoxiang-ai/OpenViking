@@ -41,7 +41,19 @@ def canonical_experience_uri(uri: str, ctx: RequestContext) -> str | None:
 
 def experience_source_tag(experience_uri: str) -> str:
     """Build the exact retrieval tag used for Experience lineage filtering."""
-    return normalize_search_tag(f"{str(experience_uri or '').strip()}=1")
+    uri_key = _escape_search_tag_key(str(experience_uri or "").strip())
+    return normalize_search_tag(f"{uri_key}=1")
+
+
+def _escape_search_tag_key(value: str) -> str:
+    """Preserve URI identity through lowercase-only strict k=v tag normalization."""
+    escaped: list[str] = []
+    for character in value:
+        if character in {"%", "="} or character.lower() != character:
+            escaped.extend(f"%{byte:02x}" for byte in character.encode("utf-8"))
+        else:
+            escaped.append(character)
+    return "".join(escaped)
 
 
 def experience_source_tags(experience_uris: Iterable[str] | None) -> list[str]:

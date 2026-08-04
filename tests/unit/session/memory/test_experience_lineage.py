@@ -78,6 +78,22 @@ def test_experience_source_tag_uses_experience_uri_as_key():
     assert tag.count("=") == 1
 
 
+def test_experience_source_tag_preserves_case_and_escapes_equals_without_collisions():
+    uppercase_uri = "viking://user/Alice/memories/experiences/Exchange=Flow.md"
+    lowercase_uri = "viking://user/alice/memories/experiences/exchange=flow.md"
+
+    uppercase_tag = experience_source_tag(uppercase_uri)
+    lowercase_tag = experience_source_tag(lowercase_uri)
+
+    assert uppercase_tag == (
+        "viking://user/%41lice/memories/experiences/%45xchange%3d%46low.md=1"
+    )
+    assert lowercase_tag == "viking://user/alice/memories/experiences/exchange%3dflow.md=1"
+    assert uppercase_tag != lowercase_tag
+    assert uppercase_tag.count("=") == 1
+    assert lowercase_tag.count("=") == 1
+
+
 def test_source_experiences_create_transient_tags_for_every_generated_trajectory():
     first_uri = "viking://user/alice/memories/experiences/exchange.md"
     second_uri = "viking://user/alice/memories/experiences/refund.md"
