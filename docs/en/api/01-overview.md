@@ -452,7 +452,7 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | PUT | `/api/v1/skills/{skill_name}` | Update a skill |
 | DELETE | `/api/v1/skills/{skill_name}` | Delete a skill |
 
-### [Sessions](05-sessions.md) and [Memory](16-memory.md)
+### [Sessions](05-sessions.md), [Memory](16-memory.md), and [Agent Evolution](19-agent-evolution.md)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -471,6 +471,8 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | POST | `/api/v1/sessions/{session_id}/messages/batch` | Add messages in a batch |
 | POST | `/api/v1/sessions/{session_id}/used` | Record context or skills actually used |
 | POST | `/api/v1/search/recall` | Recall memory as injection-ready context |
+| GET | `/api/v1/agent-evolution/experiences/trajectories` | List trajectories that consumed an Experience |
+| GET | `/api/v1/agent-evolution/experiences/outcomes` | Aggregate outcomes of trajectories that consumed an Experience |
 
 ### [Retrieval](06-retrieval.md) and [Relations](13-relations.md)
 
