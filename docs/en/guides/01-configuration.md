@@ -947,7 +947,9 @@ Retrieval ranking configuration for final search scores.
 {
   "retrieval": {
     "hotness_alpha": 0.0,
-    "score_propagation_alpha": 1.0
+    "score_propagation_alpha": 1.0,
+    "recall_intent_timeout_s": 5.0,
+    "recall_rewrite_timeout_s": 30.0
   }
 }
 ```
@@ -958,6 +960,15 @@ Retrieval ranking configuration for final search scores.
 | `score_propagation_alpha` | float | Weight for each child result's own score when blending with its parent score during hierarchical retrieval. `1.0` ignores the parent score (semantic similarity only); `0.5` is an equal blend with the parent score; `0.0` uses only the parent score. Valid range: `0.0` to `1.0`. | `1.0` |
 
 Keep `hotness_alpha` at `0.0` when you need scores to reflect pure vector similarity. Set it above `0.0` only when frequently accessed or recently updated contexts should receive a ranking boost.
+
+The `mode="context"` assembly face on `/search` uses two timeout fuses:
+
+| Parameter | Type | Description | Default |
+|-----------|------|-------------|---------|
+| `recall_intent_timeout_s` | float | Timeout for session-aware query expansion; on timeout the original user query is used | `5.0` |
+| `recall_rewrite_timeout_s` | float | Timeout for the digest rewrite; on timeout `digest` is empty and `rendered` is returned as usual | `30.0` |
+
+Both LLM steps are strictly opt-in: expansion needs a `session_id`, the rewrite needs `rewrite`. Either one failing degrades gracefully and never blocks recall.
 
 ### grep
 

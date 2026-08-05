@@ -67,6 +67,7 @@ GATEWAY_MARKER_HEADER = "X-VikingBot-Gateway"
 GATEWAY_TOKEN_HEADER = "X-Gateway-Token"
 
 
+
 def _image_mime_type(file_name: str = "") -> str:
     mime_type, _ = mimetypes.guess_type(file_name or "")
     if mime_type and mime_type.startswith("image/"):

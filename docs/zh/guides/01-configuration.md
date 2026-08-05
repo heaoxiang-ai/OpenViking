@@ -915,7 +915,9 @@ ollama pull guoxuter/ov_intent_analysis_sft:v7_q8
 {
   "retrieval": {
     "hotness_alpha": 0.0,
-    "score_propagation_alpha": 1.0
+    "score_propagation_alpha": 1.0,
+    "recall_intent_timeout_s": 5.0,
+    "recall_rewrite_timeout_s": 30.0
   }
 }
 ```
@@ -926,6 +928,15 @@ ollama pull guoxuter/ov_intent_analysis_sft:v7_q8
 | `score_propagation_alpha` | float | 层级检索中，子节点自身分数与父节点传播分数混合时，子节点自身分数的权重。`1.0` 表示忽略父节点分数（仅使用语义相似度）；`0.5` 表示与父节点分数等权混合；`0.0` 表示只使用父节点分数。有效范围：`0.0` 到 `1.0`。 | `1.0` |
 
 如果需要分数严格反映向量相似度，保持 `hotness_alpha` 为 `0.0`。只有当希望高频访问或最近更新的上下文获得排序提升时，才将它设置为大于 `0.0`。
+
+`/search` 的 `mode="context"` 组装面用到两个超时熔断：
+
+| 参数 | 类型 | 说明 | 默认值 |
+|------|------|------|--------|
+| `recall_intent_timeout_s` | float | 会话感知查询扩展的超时；超时后回退为用户原查询 | `5.0` |
+| `recall_rewrite_timeout_s` | float | digest 重写的超时；超时后 `digest` 为空并照常返回 `rendered` | `30.0` |
+
+两个 LLM 环节都是纯 opt-in：查询扩展需要传 `session_id`，重写需要传 `rewrite`。任一环节失败都优雅降级，不会阻塞召回。
 
 ### grep
 

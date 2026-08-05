@@ -117,6 +117,9 @@ def load_ovcli_config(config_path: Optional[str] = None) -> Optional[OVCLIConfig
     try:
         data = _require_mapping(raw, path="ovcli")
 
+        # ovcli.conf is written by the Rust CLI (crates/ov_cli/src/config.rs).
+        # Accept every field it can write, including the ones the SDK does not
+        # read, plus the `plugin` section the harness memory plugins own.
         allowed_keys = {
             "url",
             "api_key",
@@ -130,8 +133,12 @@ def load_ovcli_config(config_path: Optional[str] = None) -> Optional[OVCLIConfig
             "extra_headers",
             "extra_header",
             "output",
+            "echo_command",
+            "show_progress",
+            "verbose",
             "root_api_key",
             "gateway_token",
+            "plugin",
         }
         unknown_keys = sorted(set(data) - allowed_keys)
         if unknown_keys:

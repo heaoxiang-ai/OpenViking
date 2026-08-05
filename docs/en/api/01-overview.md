@@ -470,7 +470,7 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | POST | `/api/v1/sessions/{session_id}/messages` | Add one message |
 | POST | `/api/v1/sessions/{session_id}/messages/batch` | Add messages in a batch |
 | POST | `/api/v1/sessions/{session_id}/used` | Record context or skills actually used |
-| POST | `/api/v1/search/recall` | Recall memory as injection-ready context |
+| POST | `/api/v1/search/recall` | Deprecated: thin preset over the search endpoint with `mode="context"` |
 | GET | `/api/v1/agent-evolution/experiences/trajectories` | List trajectories that consumed an Experience |
 | GET | `/api/v1/agent-evolution/experiences/outcomes` | Aggregate outcomes of trajectories that consumed an Experience |
 
@@ -479,7 +479,7 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/search/find` | Semantic search |
-| POST | `/api/v1/search/search` | Context-aware search |
+| POST | `/api/v1/search/search` | Context-aware search; `mode="context"` returns assembled, injection-ready context |
 | POST | `/api/v1/search/grep` | Content pattern search |
 | POST | `/api/v1/search/glob` | File pattern matching |
 | GET | `/api/v1/relations` | Get resource relations |
