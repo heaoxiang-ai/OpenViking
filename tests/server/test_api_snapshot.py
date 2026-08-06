@@ -9,8 +9,8 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from openviking.server.auth import get_request_context
 from openviking.server.app import create_app
+from openviking.server.auth import get_request_context
 from openviking.server.config import ServerConfig
 from openviking.server.identity import RequestContext, Role
 from openviking_cli.exceptions import InvalidArgumentError, InvalidURIError
@@ -536,9 +536,9 @@ async def test_restore_apply_triggers_reindex_hook(client_with_resource_and_blob
     """Verify the HTTP restore path actually invokes the vector-reindex
     scheduler — protects the chain router -> viking_fs.restore -> _schedule_vector_rebuild.
     """
+    import openviking.service.reindex_executor as reindex_mod
     from openviking.server.identity import RequestContext, Role
     from openviking_cli.session.user_id import UserIdentifier
-    import openviking.service.reindex_executor as reindex_mod
 
     client, c1_oid, blob_uri, _v1 = client_with_resource_and_blob
     ctx = RequestContext(user=UserIdentifier.the_default_user(), role=Role.ROOT)
@@ -583,9 +583,9 @@ async def test_restore_delete_removes_orphaned_vectors(client_with_resource_and_
     viking_fs.restore must route deleted source paths to the executor's
     level-precise delete (DETAIL).
     """
+    import openviking.service.reindex_executor as reindex_mod
     from openviking.server.identity import RequestContext, Role
     from openviking_cli.session.user_id import UserIdentifier
-    import openviking.service.reindex_executor as reindex_mod
 
     client, c1_oid, _blob_uri, _v1 = client_with_resource_and_blob
     ctx = RequestContext(user=UserIdentifier.the_default_user(), role=Role.ROOT)
