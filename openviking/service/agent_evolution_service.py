@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -26,7 +25,6 @@ if TYPE_CHECKING:
 
 DEFAULT_TRAJECTORY_PAGE_LIMIT = 50
 MAX_TRAJECTORY_PAGE_LIMIT = 1000
-_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _TRAJECTORY_OUTPUT_FIELDS = [
     "uri",
@@ -48,12 +46,13 @@ def _trajectory_created_at_range(
         return None
 
     def parse_date(value: str, field: str) -> date:
-        if not _DATE_ONLY_RE.fullmatch(value):
-            raise InvalidArgumentError(f"{field} must use YYYY-MM-DD format")
         try:
-            return date.fromisoformat(value)
+            parsed = date.fromisoformat(value)
         except ValueError as exc:
-            raise InvalidArgumentError(f"{field} must be a valid date") from exc
+            raise InvalidArgumentError(f"{field} must be a valid YYYY-MM-DD date") from exc
+        if parsed.isoformat() != value:
+            raise InvalidArgumentError(f"{field} must use YYYY-MM-DD format")
+        return parsed
 
     start = parse_date(normalized_start, "start_date") if normalized_start else None
     end = parse_date(normalized_end, "end_date") if normalized_end else None
