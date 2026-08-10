@@ -121,8 +121,9 @@ Before an existing setting is replaced, it is backed up to
 
 ROOT can manage any User and ADMIN can manage Users in its own account. The
 User settings endpoint currently allowlists only `memory_policy`. Each target
-has its own `enabled` switch and `memory_types` filter. Agent memory types are
-self-only; configuring them for `peer` is rejected.
+has its own `enabled` switch and `memory_types` filter. Both targets accept
+registered memory types; each memory schema's `peer_enabled` setting remains
+the final authority on whether that type can be written to a Peer directory.
 
 ```http
 GET /api/v1/admin/accounts/{account_id}/users/{user_id}/settings
