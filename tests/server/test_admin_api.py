@@ -96,6 +96,11 @@ class _FakeVikingFS:
 class _FakeService:
     def __init__(self):
         self.viking_fs = _FakeVikingFS()
+        self.sessions = self
+
+    async def get_agent_evolution_enabled(self, account_id):
+        del account_id
+        return True
 
     async def initialize_account_directories(self, ctx):
         return None
@@ -316,6 +321,72 @@ async def test_create_user_paths_accept_initial_user_config(
         RequestContext(user=UserIdentifier(acct, "bob"), role=Role.USER),
     )
     assert bob_settings.resource_uri == "viking://user/resources/bob"
+
+
+async def test_user_memory_policy_can_be_initialized_and_hot_updated(
+    lightweight_admin_client: httpx.AsyncClient,
+    lightweight_admin_app: FastAPI,
+):
+    acct = _uid()
+    create_account = await lightweight_admin_client.post(
+        "/api/v1/admin/accounts",
+        json={"account_id": acct, "admin_user_id": "alice"},
+        headers=root_headers(),
+    )
+    assert create_account.status_code == 200, create_account.text
+
+    create_user = await lightweight_admin_client.post(
+        f"/api/v1/admin/accounts/{acct}/users",
+        json={
+            "user_id": "bob",
+            "role": "user",
+            "user_config": {
+                "memory_policy": {
+                    "self": {"enabled": True, "memory_types": ["profile"]},
+                    "peer": {"enabled": False, "memory_types": []},
+                }
+            },
+        },
+        headers=root_headers(),
+    )
+    assert create_user.status_code == 200, create_user.text
+
+    get_settings = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{acct}/users/bob/settings",
+        headers=root_headers(),
+    )
+    assert get_settings.status_code == 200, get_settings.text
+    assert get_settings.json()["result"]["overrides"]["memory_policy"]["self"] == {
+        "enabled": True,
+        "memory_types": ["profile"],
+    }
+
+    patch_settings = await lightweight_admin_client.patch(
+        f"/api/v1/admin/accounts/{acct}/users/bob/settings",
+        json={
+            "memory_policy": {
+                "self": {"enabled": True, "memory_types": ["experiences"]},
+                "peer": {"enabled": True, "memory_types": ["events"]},
+            }
+        },
+        headers=root_headers(),
+    )
+    assert patch_settings.status_code == 200, patch_settings.text
+    configured = patch_settings.json()["result"]["overrides"]["memory_policy"]
+    assert configured["self"]["memory_types"] == ["experiences"]
+    assert configured["peer"]["memory_types"] == ["events"]
+    assert patch_settings.json()["result"]["settings"]["memory_policy"]["self"]["memory_types"] == [
+        "cases",
+        "experiences",
+        "trajectories",
+    ]
+
+    viking_fs = lightweight_admin_app.state.fake_service.viking_fs
+    persisted = await read_user_config(
+        viking_fs,
+        RequestContext(user=UserIdentifier(acct, "bob"), role=Role.USER),
+    )
+    assert persisted.memory_policy == configured
 
 
 async def test_create_user_paths_ignore_deprecated_agent_evolution_config(

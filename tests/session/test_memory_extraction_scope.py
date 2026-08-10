@@ -67,3 +67,50 @@ def test_actor_memory_extraction_scope_still_uses_policy_and_messages():
     assert scope.allow_self_memory is True
     assert scope.allowed_peer_ids == {"bob"}
     assert scope.include_session_skills is True
+
+
+def test_memory_extraction_scope_keeps_self_and_peer_type_filters_separate():
+    scope = _resolve_memory_extraction_scope(
+        _ctx(),
+        MemoryPolicy.from_dict(
+            {
+                "self": {"memory_types": ["profile", "experiences"]},
+                "peer": {"memory_types": ["events"]},
+            }
+        ).resolve(
+            {"cases", "events", "experiences", "profile", "trajectories"},
+            agent_evolution_enabled=True,
+        ),
+        [_message("alice")],
+        config_session_skill_extraction_enabled=True,
+    )
+
+    assert scope.self_memory_types == {
+        "cases",
+        "experiences",
+        "profile",
+        "trajectories",
+    }
+    assert scope.peer_memory_types == {"events"}
+
+
+def test_disabled_peer_types_do_not_expand_the_active_extraction_scope():
+    scope = _resolve_memory_extraction_scope(
+        _ctx(),
+        MemoryPolicy.from_dict(
+            {
+                "self": {"memory_types": ["experiences"]},
+                "peer": {
+                    "enabled": False,
+                    "memory_types": ["profile", "events"],
+                },
+            }
+        ).resolve(
+            {"cases", "events", "experiences", "profile", "trajectories"},
+            agent_evolution_enabled=True,
+        ),
+        [_message("alice")],
+        config_session_skill_extraction_enabled=True,
+    )
+
+    assert scope.memory_types == {"cases", "experiences", "trajectories"}

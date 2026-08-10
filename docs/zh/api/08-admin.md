@@ -115,6 +115,30 @@ Content-Type: application/json
 覆盖已有配置前，内核会先备份到
 `/local/{account_id}/_system/setting.backup.json`。
 
+### user_settings
+
+ROOT 可管理任意 User，ADMIN 仅可管理所属 account 内的 User。User 配置接口当前
+仅允许修改 `memory_policy`。`self` 和 `peer` 分别配置 `enabled` 与
+`memory_types`；Agent 记忆只允许写入 self，peer 配置 Agent 记忆类型会被拒绝。
+
+```http
+GET /api/v1/admin/accounts/{account_id}/users/{user_id}/settings
+PATCH /api/v1/admin/accounts/{account_id}/users/{user_id}/settings
+Content-Type: application/json
+
+{
+  "memory_policy": {
+    "self": {"enabled": true, "memory_types": ["profile", "experiences"]},
+    "peer": {"enabled": false, "memory_types": []}
+  }
+}
+```
+
+响应同时返回显式 `overrides`、生效 `settings` 和 account 级
+`agent_evolution_enabled`。更新前会备份到该 User 的
+`settings/user_config.backup.json`。未显式配置策略的 Session 在 commit 时读取
+该 User 最新策略。
+
 ---
 
 ### create_account

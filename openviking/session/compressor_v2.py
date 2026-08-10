@@ -232,6 +232,8 @@ class SessionCompressorV2:
         latest_archive_overview: str = "",
         archive_uri: Optional[str] = None,
         allowed_memory_types: Optional[set[str]] = None,
+        allowed_self_memory_types: Optional[set[str]] = None,
+        allowed_peer_memory_types: Optional[set[str]] = None,
         allow_self_memory: bool = True,
         allowed_peer_ids: Optional[set[str]] = None,
         event_search_tags: Optional[List[str]] = None,
@@ -249,7 +251,9 @@ class SessionCompressorV2:
             strict_extract_errors: If True, raise exceptions on extraction errors.
             latest_archive_overview: Overview of latest archive for context.
             archive_uri: Archive URI for writing memory_diff.json.
-            allowed_memory_types: Optional set of memory types this phase may update.
+            allowed_memory_types: Optional union of memory types this phase may update.
+            allowed_self_memory_types: Optional self-memory type whitelist.
+            allowed_peer_memory_types: Optional peer-memory type whitelist.
             allow_self_memory: Whether operations without peer_id may write self memory.
             allowed_peer_ids: Peer IDs that may be written by this extraction.
             event_search_tags: Accepted for interface parity with the v3 compressor;
@@ -275,7 +279,11 @@ class SessionCompressorV2:
         if allow_self_memory:
             await registry.initialize_memory_files(
                 ctx,
-                allowed_memory_types=allowed_memory_types,
+                allowed_memory_types=(
+                    allowed_self_memory_types
+                    if allowed_self_memory_types is not None
+                    else allowed_memory_types
+                ),
             )
 
         # Initialize telemetry counters before extraction.
@@ -319,6 +327,8 @@ class SessionCompressorV2:
                 allowed_memory_types=allowed_memory_types,
                 allow_self=allow_self_memory,
                 allowed_peer_ids=allowed_peer_ids,
+                allowed_self_memory_types=allowed_self_memory_types,
+                allowed_peer_memory_types=allowed_peer_memory_types,
             )
             isolation_handler.prepare_messages()
             context_provider._isolation_handler = isolation_handler

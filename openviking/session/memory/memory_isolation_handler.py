@@ -43,6 +43,8 @@ class MemoryIsolationHandler:
         allowed_memory_types: Optional[Set[str]] = None,
         allow_self: bool = True,
         allowed_peer_ids: Optional[Set[str]] = None,
+        allowed_self_memory_types: Optional[Set[str]] = None,
+        allowed_peer_memory_types: Optional[Set[str]] = None,
     ):
         self.ctx = ctx
         self._extract_context = extract_context
@@ -50,6 +52,16 @@ class MemoryIsolationHandler:
             {str(item) for item in allowed_memory_types}
             if allowed_memory_types is not None
             else None
+        )
+        self.allowed_self_memory_types = (
+            {str(item) for item in allowed_self_memory_types}
+            if allowed_self_memory_types is not None
+            else self.allowed_memory_types
+        )
+        self.allowed_peer_memory_types = (
+            {str(item) for item in allowed_peer_memory_types}
+            if allowed_peer_memory_types is not None
+            else self.allowed_memory_types
         )
         peer_ids = {
             item
@@ -123,11 +135,23 @@ class MemoryIsolationHandler:
         memory_type = getattr(memory_type_schema, "memory_type", "")
         if memory_type in _INTERNAL_MEMORY_TYPES:
             return True
-        if self.allowed_memory_types is not None and memory_type not in self.allowed_memory_types:
-            return False
-        if not self.allow_self and not getattr(memory_type_schema, "peer_enabled", True):
-            return False
-        return True
+        self_allowed = self.allow_self and self._allows_self_type(memory_type)
+        peer_allowed = (
+            self.allow_peer
+            and getattr(memory_type_schema, "peer_enabled", True)
+            and self._allows_peer_type(memory_type)
+        )
+        return self_allowed or peer_allowed
+
+    def _allows_self_type(self, memory_type: str) -> bool:
+        return (
+            self.allowed_self_memory_types is None or memory_type in self.allowed_self_memory_types
+        )
+
+    def _allows_peer_type(self, memory_type: str) -> bool:
+        return (
+            self.allowed_peer_memory_types is None or memory_type in self.allowed_peer_memory_types
+        )
 
     def _can_write_peer(self, peer_id: str) -> bool:
         return self.allow_peer and peer_id in self.allowed_peer_ids
@@ -147,9 +171,14 @@ class MemoryIsolationHandler:
         user_id = self.ctx.user.user_id if self.ctx and self.ctx.user else "default"
         user_space = user_id
         user_spaces: List[str] = []
-        if self.allow_self:
+        memory_type = getattr(memory_type_schema, "memory_type", "")
+        if self.allow_self and self._allows_self_type(memory_type):
             user_spaces.append(user_space)
-        if self.allow_peer and getattr(memory_type_schema, "peer_enabled", True):
+        if (
+            self.allow_peer
+            and getattr(memory_type_schema, "peer_enabled", True)
+            and self._allows_peer_type(memory_type)
+        ):
             for peer_id in sorted(self.allowed_peer_ids):
                 user_spaces.append(peer_user_space(user_space, peer_id))
 
@@ -207,21 +236,26 @@ class MemoryIsolationHandler:
 
         user_id = self.ctx.user.user_id
         operation.memory_fields["user_id"] = user_id
+        memory_type = getattr(memory_type_schema, "memory_type", "")
 
         target_ids: List[str] = []
         has_ranges = operation.memory_fields.get("ranges") is not None
         if not getattr(memory_type_schema, "peer_enabled", True):
             operation.memory_fields.pop("peer_id", None)
-            target_ids = [_SELF_PEER_ID] if self.allow_self else []
+            target_ids = (
+                [_SELF_PEER_ID] if self.allow_self and self._allows_self_type(memory_type) else []
+            )
         elif operation.memory_fields.get("ranges") is not None:
             target_ids = self._range_targets(
                 operation.memory_fields.get("ranges"),
             )
             operation.memory_fields.pop("peer_id", None)
         else:
-            target_id = self._resolve_operation_target_id(
-                operation.memory_fields.get("peer_id"),
-            )
+            raw_peer_id = operation.memory_fields.get("peer_id")
+            if raw_peer_id in (None, "") and not self._allows_self_type(memory_type):
+                target_id = self._unique_peer_target_id_in_messages()
+            else:
+                target_id = self._resolve_operation_target_id(raw_peer_id)
             if target_id:
                 target_ids = [target_id]
             if target_id == _SELF_PEER_ID:
@@ -231,6 +265,15 @@ class MemoryIsolationHandler:
             else:
                 operation.memory_fields.pop("peer_id", None)
 
+        if not target_ids:
+            return []
+
+        target_ids = [
+            target_id
+            for target_id in target_ids
+            if (target_id == _SELF_PEER_ID and self._allows_self_type(memory_type))
+            or (target_id != _SELF_PEER_ID and self._allows_peer_type(memory_type))
+        ]
         if not target_ids:
             return []
 

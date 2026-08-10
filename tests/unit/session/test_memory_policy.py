@@ -43,9 +43,8 @@ def test_memory_policy_uses_top_level_memory_types():
     assert policy.peer_enabled is True
     assert policy.memory_types == {"profile", "events"}
     assert policy.to_dict() == {
-        "self": {"enabled": False},
-        "peer": {"enabled": True},
-        "memory_types": ["events", "profile"],
+        "self": {"enabled": False, "memory_types": ["events", "profile"]},
+        "peer": {"enabled": True, "memory_types": ["events", "profile"]},
     }
 
 
@@ -95,7 +94,29 @@ def test_memory_policy_rejects_invalid_memory_types():
     with pytest.raises(InvalidArgumentError, match="missing"):
         policy.validate_memory_types({"profile"})
 
-    assert MemoryPolicy.from_dict({"memory_types": ["experiences"]}).memory_types == {"experiences"}
+    policy = MemoryPolicy.from_dict({"memory_types": ["experiences"]})
+    assert policy.self_memory_types == {"experiences"}
+    assert policy.resolve(
+        {"cases", "events", "experiences", "profile", "trajectories"},
+        agent_evolution_enabled=True,
+    ).self_memory_types == {"cases", "experiences", "trajectories"}
+
+
+def test_memory_policy_supports_independent_self_and_peer_types():
+    policy = MemoryPolicy.from_dict(
+        {
+            "self": {"enabled": True, "memory_types": ["profile", "experiences"]},
+            "peer": {"enabled": True, "memory_types": ["events"]},
+        }
+    )
+
+    assert policy.self_memory_types == {"experiences", "profile"}
+    assert policy.peer_memory_types == {"events"}
+
+
+def test_memory_policy_rejects_agent_types_for_peer_memory():
+    with pytest.raises(InvalidArgumentError, match="does not support agent memory types"):
+        MemoryPolicy.from_dict({"peer": {"enabled": True, "memory_types": ["experiences"]}})
 
 
 async def test_initialize_memory_files_respects_memory_type_filter(monkeypatch):

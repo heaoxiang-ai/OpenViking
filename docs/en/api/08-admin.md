@@ -117,6 +117,31 @@ Content-Type: application/json
 Before an existing setting is replaced, it is backed up to
 `/local/{account_id}/_system/setting.backup.json`.
 
+### user_settings
+
+ROOT can manage any User and ADMIN can manage Users in its own account. The
+User settings endpoint currently allowlists only `memory_policy`. Each target
+has its own `enabled` switch and `memory_types` filter. Agent memory types are
+self-only; configuring them for `peer` is rejected.
+
+```http
+GET /api/v1/admin/accounts/{account_id}/users/{user_id}/settings
+PATCH /api/v1/admin/accounts/{account_id}/users/{user_id}/settings
+Content-Type: application/json
+
+{
+  "memory_policy": {
+    "self": {"enabled": true, "memory_types": ["profile", "experiences"]},
+    "peer": {"enabled": false, "memory_types": []}
+  }
+}
+```
+
+The response contains the explicit `overrides`, the effective `settings`, and
+the account-level `agent_evolution_enabled` switch. Updates are backed up to
+the User's `settings/user_config.backup.json` before replacement. A Session
+without an explicit policy reads the latest User policy when it is committed.
+
 ---
 
 ### create_account
