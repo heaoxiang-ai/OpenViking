@@ -387,6 +387,8 @@ async def test_embedding_auth_error_fails_terminally_without_reenqueue(monkeypat
 @pytest.mark.asyncio
 async def test_embedding_handler_treats_shutdown_write_lock_as_success(monkeypatch):
     class _ClosingDuringUpsertVikingDB:
+        uses_content_field = False
+
         def __init__(self):
             self.is_closing = False
             self.calls = 0
@@ -445,6 +447,60 @@ async def test_embedding_handler_propagates_account_id_on_success(monkeypatch):
     await handler.on_dequeue(_build_queue_payload_for_account("acct-embed-success"))
 
     assert captured["account_id"] == "acct-embed-success"
+
+
+@pytest.mark.asyncio
+async def test_embedding_handler_materialize_content_read_failure_is_not_hidden(monkeypatch):
+    class _DummyVikingDB:
+        is_closing = False
+
+    class _BrokenFS:
+        async def read_file(self, uri, *, ctx):
+            raise FileNotFoundError(uri)
+
+    embedder = _DummyEmbedder()
+    monkeypatch.setattr(
+        "openviking_cli.utils.config.get_openviking_config",
+        lambda: _DummyConfig(embedder),
+    )
+    monkeypatch.setattr("openviking.storage.viking_fs.get_viking_fs", lambda: _BrokenFS())
+    handler = TextEmbeddingHandler(_DummyVikingDB())
+    msg = EmbeddingMsg(
+        "embedding text",
+        {
+            "uri": "viking://resources/missing.txt",
+            "abstract": "abstract fallback",
+            "is_leaf": True,
+            "context_type": "resource",
+        },
+    )
+    ctx = RequestContext(user=UserIdentifier("default", "default"), role=Role.ROOT)
+
+    with pytest.raises(FileNotFoundError):
+        await handler._materialize_content(msg, ctx)
+
+
+@pytest.mark.asyncio
+async def test_embedding_handler_materialize_content_keeps_inline(monkeypatch):
+    class _DummyVikingDB:
+        is_closing = False
+
+    embedder = _DummyEmbedder()
+    monkeypatch.setattr(
+        "openviking_cli.utils.config.get_openviking_config",
+        lambda: _DummyConfig(embedder),
+    )
+
+    handler = TextEmbeddingHandler(_DummyVikingDB())
+    msg = EmbeddingMsg(
+        "already inline",
+        {"abstract": "abstract fallback", "is_leaf": False},
+    )
+    ctx = RequestContext(user=UserIdentifier("default", "default"), role=Role.ROOT)
+
+    content = await handler._materialize_content(msg, ctx)
+
+    assert content == "already inline"
 
 
 @pytest.mark.asyncio
@@ -577,6 +633,7 @@ async def test_embedding_handler_preserves_parent_uri_for_backend_upsert_logic(m
     class _CapturingVikingDB:
         is_closing = False
         mode = "local"
+        uses_content_field = False
 
         async def upsert(self, data, *, ctx, options=UpsertOptions()):
             assert options.partial_update is True
@@ -607,6 +664,7 @@ async def test_embedding_handler_marks_success_only_after_tracker_completion(mon
     class _CapturingVikingDB:
         is_closing = False
         mode = "local"
+        uses_content_field = False
 
         async def upsert(self, _data, *, ctx, options=UpsertOptions()):
             assert options.partial_update is True
