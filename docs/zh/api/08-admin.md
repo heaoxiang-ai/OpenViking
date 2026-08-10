@@ -119,8 +119,7 @@ Content-Type: application/json
 
 ROOT 可管理任意 User，ADMIN 仅可管理所属 account 内的 User。User 配置接口当前
 仅允许修改 `memory_policy`。`self` 和 `peer` 分别配置 `enabled` 与
-`memory_types`，两者均可配置已注册的记忆类型；最终能否写入 Peer 目录仍由对应
-Memory Schema 的 `peer_enabled` 决定。
+`memory_types`；Agent 记忆只允许写入 self，peer 配置 Agent 记忆类型会被拒绝。
 
 ```http
 GET /api/v1/admin/accounts/{account_id}/users/{user_id}/settings

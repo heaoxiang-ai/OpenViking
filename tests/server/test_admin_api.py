@@ -366,7 +366,7 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
         json={
             "memory_policy": {
                 "self": {"enabled": True, "memory_types": ["experiences"]},
-                "peer": {"enabled": True, "memory_types": ["events", "experiences"]},
+                "peer": {"enabled": True, "memory_types": ["events"]},
             }
         },
         headers=root_headers(),
@@ -374,15 +374,9 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
     assert patch_settings.status_code == 200, patch_settings.text
     configured = patch_settings.json()["result"]["overrides"]["memory_policy"]
     assert configured["self"]["memory_types"] == ["experiences"]
-    assert configured["peer"]["memory_types"] == ["events", "experiences"]
+    assert configured["peer"]["memory_types"] == ["events"]
     assert patch_settings.json()["result"]["settings"]["memory_policy"]["self"]["memory_types"] == [
         "cases",
-        "experiences",
-        "trajectories",
-    ]
-    assert patch_settings.json()["result"]["settings"]["memory_policy"]["peer"]["memory_types"] == [
-        "cases",
-        "events",
         "experiences",
         "trajectories",
     ]

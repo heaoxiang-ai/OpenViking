@@ -144,7 +144,13 @@ class MemoryPolicy:
         if not self_types_explicit:
             self_types = None if legacy_types is None else set(legacy_types)
         if not peer_types_explicit:
-            peer_types = None if legacy_types is None else set(legacy_types)
+            peer_types = None if legacy_types is None else set(legacy_types) - AGENT_MEMORY_TYPES
+
+        if peer_types and peer_types & AGENT_MEMORY_TYPES:
+            raise InvalidArgumentError(
+                "memory_policy.peer.memory_types does not support agent memory types: "
+                + ", ".join(sorted(peer_types & AGENT_MEMORY_TYPES))
+            )
 
         return cls(
             self_enabled=self_enabled,
@@ -185,11 +191,8 @@ class MemoryPolicy:
             if self.peer_memory_types is None
             else set(self.peer_memory_types)
         )
-        if "experiences" in peer_types:
-            peer_types.update(_EXPERIENCE_DEPENDENCIES)
         if not agent_evolution_enabled:
             self_types -= AGENT_MEMORY_TYPES
-            peer_types -= AGENT_MEMORY_TYPES
         return MemoryPolicy(
             self_enabled=self.self_enabled,
             peer_enabled=self.peer_enabled,
