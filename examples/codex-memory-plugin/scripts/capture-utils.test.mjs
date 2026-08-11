@@ -5,7 +5,7 @@ import { extractCaptureTurns } from "./capture-utils.mjs";
 
 const CAPTURE_CONFIG = {
   captureAssistantTurns: true,
-  captureToolMaxChars: 2000,
+  captureToolMaxChars: 1000000,
   captureMaxLength: 24000,
 };
 
@@ -396,7 +396,7 @@ test("preserves generic read input when Codex truncates a long MCP result", () =
   assert.deepEqual(running.tool_input, { uri });
 });
 
-test("keeps generic find Experience URIs parseable when snippets exceed the capture limit", () => {
+test("keeps search Experience results parseable when snippets are long", () => {
   const uri = "viking://user/test/memories/experiences/long-search-result.md";
   const turns = extractCaptureTurns(
     [
@@ -431,5 +431,69 @@ test("keeps generic find Experience URIs parseable when snippets exceed the capt
   const completed = turns
     .flatMap((turn) => turn.parts)
     .find((part) => part.tool_status === "completed");
-  assert.ok(completed.tool_output.includes(uri));
+  assert.deepEqual(JSON.parse(completed.tool_output), {
+    results: [{ uri, title: "换货经验", snippet: "x".repeat(3000) }],
+  });
+});
+
+test("reports tool output verbatim so the server can externalize it", () => {
+  const output = "x".repeat(50_000);
+  const turns = extractCaptureTurns(
+    [
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          call_id: "call-large-output",
+          name: "shell",
+          arguments: { command: "cat big.txt" },
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-large-output",
+          output,
+        },
+      },
+    ],
+    CAPTURE_CONFIG,
+  );
+
+  const completed = turns
+    .flatMap((turn) => turn.parts)
+    .find((part) => part.tool_status === "completed");
+  assert.equal(completed.tool_output, output);
+});
+
+test("captureToolMaxChars still caps tool output when an operator lowers it", () => {
+  const turns = extractCaptureTurns(
+    [
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          call_id: "call-capped-output",
+          name: "shell",
+          arguments: { command: "cat big.txt" },
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "call-capped-output",
+          output: "y".repeat(5000),
+        },
+      },
+    ],
+    { ...CAPTURE_CONFIG, captureToolMaxChars: 1000 },
+  );
+
+  const completed = turns
+    .flatMap((turn) => turn.parts)
+    .find((part) => part.tool_status === "completed");
+  assert.ok(completed.tool_output.length <= 1000);
+  assert.match(completed.tool_output, /\[truncated\]$/);
 });

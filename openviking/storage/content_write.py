@@ -829,7 +829,6 @@ class ContentWriteCoordinator:
             parent_uri=parent.uri,
             context_type=context_type,
             ctx=ctx,
-            register_request_wait=True,
         )
 
     def _validate_mode(self, mode: str) -> None:

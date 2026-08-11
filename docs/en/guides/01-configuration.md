@@ -631,7 +631,7 @@ Vision Language Model for semantic extraction (L0/L1 generation).
 | `model` | str | Model name |
 | `api_base` | str | API endpoint (optional) |
 | `thinking` | bool | Enable thinking mode for VolcEngine models (default: `false`) |
-| `max_concurrent` | int | Maximum concurrent semantic LLM calls (default: `64`) |
+| `max_concurrent` | int | Maximum concurrent semantic LLM calls (default: `32`) |
 | `max_retries` | int | Maximum retry attempts for transient VLM provider errors (default: `3`; `0` disables retry) |
 | `credentials` | array | Ordered VLM credential/model list, with index 0 having the highest priority. Each item can override `provider`, `model`, `api_key`, `api_base`, `api_version`, `extra_headers`, `extra_request_body`, and `stream` |
 | `failback_timeout_seconds` | float | Time threshold for attempting a step back toward a higher-priority credential after failover (default: `600`) |
@@ -1209,7 +1209,7 @@ Legacy compatibility example:
 Notes:
 
 - `memory.session_auto_commit` is a server-wide control surface, not a per-session business policy.
-- Per-session auto-commit behavior is configured through the session-level `auto_commit_policy` (see the table below). It is set only when creating a session (`POST /api/v1/sessions` with a top-level `auto_commit_policy` field) and viewed via `GET /api/v1/sessions/{session_id}`; runtime config PATCH is not supported.
+- Per-session auto-commit behavior is configured through the session-level `auto_commit_policy` (see the table below). Set it when creating a session with `POST /api/v1/sessions`, or partially update it through `PATCH /api/v1/sessions/{session_id}/config`. Omitting `auto_commit_policy` from a PATCH preserves it; sending `null` disables automatic commits. Use `GET /api/v1/sessions/{session_id}` to inspect the effective policy.
 - When `default_enabled=false`, sessions created without `auto_commit_policy` keep auto commit disabled and return `auto_commit_policy: null`. Providing `{}` or any policy field explicitly enables auto commit for that session and fills missing fields from the defaults below.
 - When `default_enabled=true`, sessions created without `auto_commit_policy` get the default policy below.
 - When `idle_enabled=false`:
@@ -1400,7 +1400,7 @@ OpenViking uses two config files:
 
 | File | Purpose | Default Path |
 |------|---------|-------------|
-| `ov.conf` | SDK embedded mode + server config | `~/.openviking/ov.conf` |
+| `ov.conf` | OpenViking Server configuration | `~/.openviking/ov.conf` |
 | `ovcli.conf` | HTTP client and CLI connection to remote server | `~/.openviking/ovcli.conf` |
 
 When config files are at the default path, OpenViking loads them automatically — no additional setup needed.
@@ -1438,7 +1438,7 @@ openviking-server --config /path/to/ov.conf
 
 ### ov.conf
 
-The config sections documented above (embedding, vlm, rerank, retrieval, grep, storage) all belong to `ov.conf`. SDK embedded mode and server share this file.
+The config sections documented above (embedding, vlm, rerank, retrieval, grep, storage) all belong to the server's `ov.conf`.
 
 For memory-related settings, add a `memory` section in `ov.conf`:
 
@@ -1784,7 +1784,7 @@ For detailed encryption explanations, see [Data Encryption](../concepts/10-encry
     "model": "string",
     "api_base": "string",
     "thinking": false,
-    "max_concurrent": 64,
+    "max_concurrent": 32,
     "max_retries": 3,
     "extra_headers": {},
     "extra_request_body": {},

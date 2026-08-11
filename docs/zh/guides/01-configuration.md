@@ -600,7 +600,7 @@ provider，并设置 `storage.vectordb.sparse_weight > 0`。自托管模型的�
 | `model` | str | 模型名称 |
 | `api_base` | str | API 端点（可选） |
 | `thinking` | bool | 启用思考模式（仅对部分火山模型生效，默认：`false`） |
-| `max_concurrent` | int | 语义处理阶段 LLM 最大并发调用数（默认：`64`） |
+| `max_concurrent` | int | 语义处理阶段 LLM 最大并发调用数（默认：`32`） |
 | `max_retries` | int | VLM provider 瞬时错误的最大重试次数（默认：`3`；`0` 表示禁用重试） |
 | `credentials` | array | 有序 VLM 凭据/模型列表，索引 0 优先级最高。每项可单独覆盖 `provider`、`model`、`api_key`、`api_base`、`api_version`、`extra_headers`、`extra_request_body` 和 `stream` |
 | `failback_timeout_seconds` | float | 切换到低优先级 credential 后，尝试逐级切回的时间阈值（默认：`600`） |
@@ -1295,7 +1295,7 @@ Redis Sentinel 分别配置数据节点和 Sentinel 的 ACL：
 说明：
 
 - `memory.session_auto_commit` 是服务端全局配置，不是单个 session 的业务 policy。
-- session 级别的自动触发参数通过 session 级 `auto_commit_policy` 设置（见下表）。它只能在创建 session 时通过 `POST /api/v1/sessions` 的顶层 `auto_commit_policy` 字段设置，之后通过 `GET /api/v1/sessions/{session_id}` 查看；不支持运行期 PATCH 修改。
+- session 级别的自动触发参数通过 session 级 `auto_commit_policy` 设置（见下表）。可以在创建 session 时通过 `POST /api/v1/sessions` 设置，也可以通过 `PATCH /api/v1/sessions/{session_id}/config` 部分更新。PATCH 时省略 `auto_commit_policy` 会保留现有策略，传 `null` 会禁用自动 commit；通过 `GET /api/v1/sessions/{session_id}` 查看生效策略。
 - `default_enabled=false` 时，未传 `auto_commit_policy` 创建的 session 保持 auto commit 关闭，返回 `auto_commit_policy: null`。显式传 `{}` 或任意 policy 字段会为该 session 开启 auto commit，并用下方默认值补齐缺失字段。
 - `default_enabled=true` 时，未传 `auto_commit_policy` 创建的 session 会带上下方默认 policy。
 - `idle_enabled=false` 时：
@@ -1486,7 +1486,7 @@ OpenViking 使用两个配置文件：
 
 | 配置文件 | 用途 | 默认路径 |
 |---------|------|---------|
-| `ov.conf` | SDK 嵌入模式 + 服务端配置 | `~/.openviking/ov.conf` |
+| `ov.conf` | OpenViking Server 配置 | `~/.openviking/ov.conf` |
 | `ovcli.conf` | HTTP 客户端和 CLI 连接远程服务端 | `~/.openviking/ovcli.conf` |
 
 配置文件放在默认路径时，OpenViking 自动加载，无需额外设置。
@@ -1520,7 +1520,7 @@ openviking-server --config /path/to/ov.conf
 
 ### ov.conf
 
-本文档上方各配置段（embedding、vlm、rerank、storage）均属于 `ov.conf`。SDK 嵌入模式和服务端共用此文件。
+本文档上方各配置段（embedding、vlm、rerank、storage）均属于服务端的 `ov.conf`。
 
 如需配置 memory 相关行为，可在 `ov.conf` 中添加 `memory` 段：
 
@@ -1865,7 +1865,7 @@ Task 记录文件位于所属账号的系统目录：
     "model": "string",
     "api_base": "string",
     "thinking": false,
-    "max_concurrent": 64,
+    "max_concurrent": 32,
     "max_retries": 3,
     "extra_headers": {},
     "extra_request_body": {},

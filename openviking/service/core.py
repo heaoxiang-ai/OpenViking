@@ -132,6 +132,8 @@ class OpenVikingService:
             max_concurrent_embedding=config.embedding.max_concurrent,
             max_concurrent_semantic=config.vlm.max_concurrent,
             max_concurrent_external_parse=config.queue_workers.external_parse.max_concurrent,
+            max_concurrent_add_resource=config.queue_workers.add_resource.max_concurrent,
+            max_concurrent_session_commit=config.queue_workers.session_commit.max_concurrent,
             binding_config=binding_config,
             git_config=config.git,
         )
@@ -146,8 +148,10 @@ class OpenVikingService:
         self,
         config: StorageConfig,
         max_concurrent_embedding: int = 10,
-        max_concurrent_semantic: int = 64,
+        max_concurrent_semantic: int = 32,
         max_concurrent_external_parse: int = 4,
+        max_concurrent_add_resource: int = 4,
+        max_concurrent_session_commit: int = 4,
         binding_config: Any = None,
         *,
         git_config: Optional[GitConfig] = None,
@@ -169,6 +173,8 @@ class OpenVikingService:
                 max_concurrent_embedding=max_concurrent_embedding,
                 max_concurrent_semantic=max_concurrent_semantic,
                 max_concurrent_external_parse=max_concurrent_external_parse,
+                max_concurrent_add_resource=max_concurrent_add_resource,
+                max_concurrent_session_commit=max_concurrent_session_commit,
             )
         else:
             logger.warning("RAGFS client not initialized, skipping queue manager")
@@ -309,6 +315,12 @@ class OpenVikingService:
                 max_concurrent_semantic=self._config.vlm.max_concurrent,
                 max_concurrent_external_parse=(
                     self._config.queue_workers.external_parse.max_concurrent
+                ),
+                max_concurrent_add_resource=(
+                    self._config.queue_workers.add_resource.max_concurrent
+                ),
+                max_concurrent_session_commit=(
+                    self._config.queue_workers.session_commit.max_concurrent
                 ),
                 binding_config=self._build_ragfs_binding_config(),
                 git_config=self._config.git,
@@ -467,6 +479,13 @@ class OpenVikingService:
                 ),
                 allow_create=True,
             )
+            # Auth state is initialized by the HTTP server after the core service.
+            # Register the durable queue now so task tracking can rebuild its work;
+            # the user-deletion service binds the handler once auth is ready.
+            self._queue_manager.get_queue(
+                self._queue_manager.USER_DELETION,
+                allow_create=True,
+            )
             await self._queue_manager.prepare_task_tracking(get_task_tracker())
 
         if self._config.enable_watch_scheduler:
@@ -478,14 +497,6 @@ class OpenVikingService:
         if self._queue_manager:
             self._queue_manager.start()
             logger.info("QueueManager workers started")
-
-        # Register as the process-wide service so flows that resolve the
-        # service via the dependency global (e.g. background reindex tasks
-        # triggered by git restore) work in embedded mode, not just under the
-        # HTTP server which calls set_service() during bootstrap.
-        from openviking.server.dependencies import set_service
-
-        set_service(self)
 
         self._initialized = True
         logger.info("OpenVikingService initialized")

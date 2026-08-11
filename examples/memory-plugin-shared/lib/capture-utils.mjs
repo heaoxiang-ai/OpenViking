@@ -16,6 +16,11 @@ const TOOL_RESULT_TYPES = new Set([
   "functioncalloutput",
 ]);
 
+// Tool output is reported verbatim; the server owns truncation via
+// tool_output_externalization (threshold_chars, default 20000). This cap only
+// guards against pathological payloads.
+const DEFAULT_TOOL_MAX_CHARS = 1000000;
+
 const ACK_RE = /^(?:ok|okay|k|yes|yep|no|nope|thanks|thank you|thx|done|收到|好的|好|嗯|可以|继续|不用|不需要|没了|好了)[.!?。！？\s]*$/i;
 const SLASH_COMMAND_RE = /^\/[a-z0-9_-]{1,64}\b/i;
 const METADATA_KEYS = [
@@ -94,9 +99,9 @@ function blockText(block) {
 function toolName(block) {
   return oneLine(
     block?.name ||
-    block?.tool ||
     block?.tool_name ||
     block?.toolName ||
+    block?.tool ||
     block?.function?.name ||
     block?.call?.name ||
     "",
@@ -159,7 +164,7 @@ function setToolInput(part, payload) {
     : { value: input };
 }
 
-function buildToolPart(block, kind, { toolMaxChars = 2000, toolNameById = {} } = {}) {
+function buildToolPart(block, kind, { toolMaxChars = DEFAULT_TOOL_MAX_CHARS, toolNameById = {} } = {}) {
   const id = toolId(block);
   const name = toolName(block) || (id ? toolNameById[id] : "");
   const payload = toolPayload(block, kind);
@@ -211,7 +216,7 @@ function blockToText(block, options) {
 }
 
 export function extractTextFromContent(content, options = {}) {
-  const opts = { toolMaxChars: 2000, ...options };
+  const opts = { toolMaxChars: DEFAULT_TOOL_MAX_CHARS, ...options };
   if (!content) return "";
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -231,7 +236,7 @@ export function extractTextFromPayload(payload, options = {}) {
   const chunks = [];
   const directType = normalizeType(payload.type || payload.kind || payload.role);
   if (TOOL_RESULT_TYPES.has(directType) || directType === "tool" || TOOL_CALL_TYPES.has(directType)) {
-    const direct = blockToText(payload, { toolMaxChars: 2000, ...options });
+    const direct = blockToText(payload, { toolMaxChars: DEFAULT_TOOL_MAX_CHARS, ...options });
     if (direct) return direct;
   }
 
@@ -251,7 +256,7 @@ export function extractTextFromPayload(payload, options = {}) {
   }
 
   if (chunks.length === 0) {
-    const direct = blockToText(payload, { toolMaxChars: 2000, ...options });
+    const direct = blockToText(payload, { toolMaxChars: DEFAULT_TOOL_MAX_CHARS, ...options });
     if (direct) chunks.push(direct);
   }
 
@@ -291,7 +296,7 @@ function collectToolNamesByIdFromPayload(payload, out) {
 }
 
 function extractPartsFromContent(content, options = {}) {
-  const opts = { toolMaxChars: 2000, toolNameById: {}, ...options };
+  const opts = { toolMaxChars: DEFAULT_TOOL_MAX_CHARS, toolNameById: {}, ...options };
   const parts = [];
   if (!content) return parts;
   if (typeof content === "string") {
@@ -319,7 +324,7 @@ function extractPartsFromContent(content, options = {}) {
 
 export function extractPartsFromPayload(payload, options = {}) {
   if (!payload || typeof payload !== "object") return [];
-  const opts = { toolMaxChars: 2000, toolNameById: {}, ...options };
+  const opts = { toolMaxChars: DEFAULT_TOOL_MAX_CHARS, toolNameById: {}, ...options };
   if (payload.message && typeof payload.message === "object") {
     return extractPartsFromPayload(payload.message, opts);
   }
