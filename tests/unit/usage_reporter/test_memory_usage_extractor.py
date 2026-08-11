@@ -109,7 +109,15 @@ async def test_memory_usage_extractor_ignores_removed_dedicated_experience_tools
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "tool_name",
-    ["find", "search", "ov_search", "mcp__openviking__find", "mcp__openviking__search"],
+    [
+        "find",
+        "search",
+        "openviking_find",
+        "openviking_search",
+        "ov_search",
+        "mcp__openviking__find",
+        "mcp__openviking__search",
+    ],
 )
 async def test_memory_usage_extractor_recognizes_generic_search_tools(tool_name):
     experience_uris = [
@@ -180,7 +188,9 @@ async def test_memory_usage_extractor_does_not_count_search_scope_as_result():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("tool_name", ["list", "ov_list", "mcp__openviking__list"])
+@pytest.mark.parametrize(
+    "tool_name", ["list", "openviking_list", "ov_list", "mcp__openviking__list"]
+)
 async def test_memory_usage_extractor_list_counts_only_experience_files(tool_name):
     experience_uri = "viking://user/test/memories/experiences/listed.md"
     messages = [
@@ -259,6 +269,7 @@ async def test_memory_usage_extractor_parses_mcp_text_search_and_list_results():
     ("tool_name", "tool_input"),
     [
         ("read", {"uris": "viking://user/test/memories/experiences/read.md"}),
+        ("openviking_read", {"uris": "viking://user/test/memories/experiences/read.md"}),
         ("ov_read", {"uri": "viking://user/test/memories/experiences/read.md"}),
         (
             "mcp__openviking__read",
@@ -293,7 +304,13 @@ async def test_memory_usage_extractor_recognizes_generic_read_tools(tool_name, t
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "tool_name", ["multi_read", "ov_multi_read", "mcp__openviking__multi_read"]
+    "tool_name",
+    [
+        "multi_read",
+        "openviking_multi_read",
+        "ov_multi_read",
+        "mcp__openviking__multi_read",
+    ],
 )
 async def test_memory_usage_extractor_multi_read_counts_only_successful_experiences(tool_name):
     success_uri = "viking://user/test/memories/experiences/success.md"

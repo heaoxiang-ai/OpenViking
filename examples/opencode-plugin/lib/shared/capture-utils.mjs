@@ -95,6 +95,7 @@ function blockText(block) {
 function toolName(block) {
   return oneLine(
     block?.name ||
+    block?.tool ||
     block?.tool_name ||
     block?.toolName ||
     block?.function?.name ||
@@ -107,6 +108,7 @@ function toolPayload(block, kind) {
   if (!block || typeof block !== "object") return "";
   if (kind === "call") {
     return block.input ??
+      block.state?.input ??
       block.arguments ??
       block.args ??
       block.params ??
@@ -117,8 +119,10 @@ function toolPayload(block, kind) {
       "";
   }
   return block.output ??
+    block.state?.output ??
     block.result ??
     block.error ??
+    block.state?.error ??
     block.data ??
     block.content ??
     block.text ??
@@ -129,6 +133,7 @@ function toolId(block) {
   return oneLine(
     block?.call_id ||
     block?.callId ||
+    block?.callID ||
     block?.tool_call_id ||
     block?.toolCallId ||
     block?.tool_use_id ||
@@ -142,9 +147,17 @@ function toolId(block) {
 
 function toolStatus(block, kind) {
   if (kind === "call") return "running";
-  if (block?.is_error || block?.error) return "error";
-  const status = oneLine(block?.status || "");
+  if (block?.is_error || block?.error || block?.state?.error) return "error";
+  const status = oneLine(block?.status || block?.state?.status || "");
   return status || "completed";
+}
+
+function setToolInput(part, payload) {
+  const input = parseMaybeJson(payload);
+  if (input === "" || input == null) return;
+  part.tool_input = typeof input === "object" && !Array.isArray(input)
+    ? input
+    : { value: input };
 }
 
 function buildToolPart(block, kind, { toolMaxChars = 2000, toolNameById = {} } = {}) {
@@ -158,13 +171,11 @@ function buildToolPart(block, kind, { toolMaxChars = 2000, toolNameById = {} } =
     tool_status: toolStatus(block, kind),
   };
   if (kind === "call") {
-    const input = parseMaybeJson(payload);
-    if (input !== "" && input != null) {
-      part.tool_input = typeof input === "object" && !Array.isArray(input)
-        ? input
-        : { value: input };
-    }
+    setToolInput(part, payload);
   } else {
+    if (block?.state?.input !== undefined) {
+      setToolInput(part, block.state.input);
+    }
     part.tool_output = stringifyCompact(payload, toolMaxChars);
   }
   return part;

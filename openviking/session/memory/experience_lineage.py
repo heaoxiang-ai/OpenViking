@@ -17,6 +17,8 @@ _EXPERIENCE_SIDECAR_FILENAMES = {".abstract.md", ".overview.md", ".relations.jso
 _READ_TOOL_OPERATIONS = {
     "read": "read",
     "multi_read": "multi_read",
+    "openviking_read": "read",
+    "openviking_multi_read": "multi_read",
     "ov_read": "read",
     "ov_multi_read": "multi_read",
 }

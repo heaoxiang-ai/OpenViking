@@ -96,7 +96,8 @@ UsageEvent 是可独立传输和消费的完整事件。`UsageContext` 只用于
 
 - 成功的 `find`、`search`、`list` 调用结果中出现 Experience URI，产生 `memory.recalled`。
 - 成功的 `read`、`multi_read` 调用实际读取 Experience URI，产生 `memory.injected`。
-- 支持 `ov_*` 形式和 `mcp__openviking__*` 命名空间形式；仅按受支持的工具名精确识别。
+- 支持 OpenCode 的 `openviking_*`、OpenClaw 的 `ov_*` 和
+  `mcp__openviking__*` 命名空间形式；仅按受支持的工具名精确识别。
 - 通用工具返回其他记忆类型时，只保留当前用户 `memories/experiences/` 目录下的规范文件 URI。
 - `search_experience`、`read_experience` 已下线，不再生成使用事件或 Experience 应用关系。
 

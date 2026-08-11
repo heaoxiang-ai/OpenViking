@@ -22,12 +22,17 @@ _RECALL_TOOL_OPERATIONS: dict[str, ToolOperation] = {
     "find": "find",
     "search": "search",
     "list": "list",
+    "openviking_find": "find",
+    "openviking_search": "search",
+    "openviking_list": "list",
     "ov_search": "search",
     "ov_list": "list",
 }
 _INJECTION_TOOL_OPERATIONS: dict[str, ToolOperation] = {
     "read": "read",
     "multi_read": "multi_read",
+    "openviking_read": "read",
+    "openviking_multi_read": "multi_read",
     "ov_read": "read",
     "ov_multi_read": "multi_read",
 }

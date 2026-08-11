@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
 # SPDX-License-Identifier: AGPL-3.0
 
+import pytest
+
 from openviking.message import Message, ToolPart
 from openviking.server.identity import RequestContext, Role
 from openviking.session.memory.dataclass import ResolvedOperation, ResolvedOperations
@@ -22,6 +24,7 @@ def _ctx() -> RequestContext:
 
 def test_collect_read_experience_uris_supports_generic_openviking_reads():
     uri = "viking://user/alice/memories/experiences/order-exchange.md"
+    opencode_uri = "viking://user/alice/memories/experiences/opencode.md"
     messages = [
         Message(
             id="call",
@@ -54,8 +57,14 @@ def test_collect_read_experience_uris_supports_generic_openviking_reads():
                 ),
                 ToolPart(
                     tool_id="read-2",
-                    tool_name="ov_read",
+                    tool_name="openviking_read",
                     tool_input={"uri": "viking://user/bob/memories/experiences/other.md"},
+                    tool_status="completed",
+                ),
+                ToolPart(
+                    tool_id="read-2-current-user",
+                    tool_name="openviking_read",
+                    tool_input={"uri": opencode_uri},
                     tool_status="completed",
                 ),
                 ToolPart(
@@ -68,10 +77,11 @@ def test_collect_read_experience_uris_supports_generic_openviking_reads():
         ),
     ]
 
-    assert collect_read_experience_uris(messages, ctx=_ctx()) == [uri]
+    assert collect_read_experience_uris(messages, ctx=_ctx()) == [uri, opencode_uri]
 
 
-def test_collect_read_experience_uris_filters_failed_multi_read_results():
+@pytest.mark.parametrize("tool_name", ["multi_read", "openviking_multi_read"])
+def test_collect_read_experience_uris_filters_failed_multi_read_results(tool_name):
     first_uri = "viking://user/alice/memories/experiences/first.md"
     failed_uri = "viking://user/alice/memories/experiences/failed.md"
     messages = [
@@ -81,7 +91,7 @@ def test_collect_read_experience_uris_filters_failed_multi_read_results():
             parts=[
                 ToolPart(
                     tool_id="multi-read-1",
-                    tool_name="multi_read",
+                    tool_name=tool_name,
                     tool_input={"uris": [first_uri, failed_uri]},
                     tool_status="completed",
                     tool_output=(
