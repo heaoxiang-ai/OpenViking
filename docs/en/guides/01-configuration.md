@@ -1603,10 +1603,10 @@ Set the environment variable named by `resource_id_env` before starting the serv
 Each line has the following form:
 
 ```json
-{"event_time":"2026-08-05 11:30:00","tenant_id":"resource_id:ov-example;account_id:default;user_id:default;resource_uri:viking://user/default/memories/experiences/example.md","event_name":"experience.recall","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
+{"event_time":"2026-08-05 11:30:00","tenant_id":"resource_id:ov-example;account_id:default;user_id:default;resource_uri:viking://user/default/memories/experiences/example.md","event_name":"experience.recall.count","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
 ```
 
-`event_time` is UTC. `tenant_id` combines the deployment resource ID, event account, user, and Experience URI. `memory.recalled` maps to `experience.recall`, while `memory.injected` maps to `experience.inject`. `object_id` is the stable Usage Event ID and can be used for downstream deduplication. Aggregate usage with `sum(count)` after filtering by `tenant_id`, `event_name`, and the desired `event_time` range. File collection and downstream delivery remain best-effort.
+`event_time` is UTC. `tenant_id` combines the deployment resource ID, event account, user, and Experience URI. `memory.recalled` maps to `experience.recall.count`, while `memory.injected` maps to `experience.inject.count`. `object_id` is the stable Usage Event ID and can be used for downstream deduplication. Aggregate usage with `sum(count)` after filtering by `tenant_id`, `event_name`, and the desired `event_time` range. File collection and downstream delivery remain best-effort.
 
 Supported add target URIs:
 

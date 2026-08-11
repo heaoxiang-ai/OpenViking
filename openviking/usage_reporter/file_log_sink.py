@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from .models import UsageEvent
 
 _EVENT_NAMES = {
-    "memory.recalled": "experience.recall",
-    "memory.injected": "experience.inject",
+    "memory.recalled": "experience.recall.count",
+    "memory.injected": "experience.inject.count",
 }
 
 

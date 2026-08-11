@@ -143,7 +143,7 @@ HTTP 请求。日志文件使用 UTC 小时滚动，默认保留 168 个小时�
 一行：
 
 ```json
-{"event_time":"2026-08-05 11:30:00","tenant_id":"resource_id:ov-xxx;account_id:new;user_id:test;resource_uri:viking://user/test/memories/experiences/example.md","event_name":"experience.recall","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
+{"event_time":"2026-08-05 11:30:00","tenant_id":"resource_id:ov-xxx;account_id:new;user_id:test;resource_uri:viking://user/test/memories/experiences/example.md","event_name":"experience.recall.count","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
 ```
 
 字段映射：
@@ -151,8 +151,8 @@ HTTP 请求。日志文件使用 UTC 小时滚动，默认保留 168 个小时�
 - `event_time` 由 `occurred_at` 转换为 UTC `YYYY-MM-DD HH:MM:SS`。
 - `tenant_id` 固定为
   `resource_id:<resource_id>;account_id:<account_id>;user_id:<user_id>;resource_uri:<resource_uri>`。
-- `memory.recalled` 映射为 `event_name=experience.recall`。
-- `memory.injected` 映射为 `event_name=experience.inject`。
+- `memory.recalled` 映射为 `event_name=experience.recall.count`。
+- `memory.injected` 映射为 `event_name=experience.inject.count`。
 - `object_id` 使用稳定的 `event_id`。
 - `count` 固定为 `1`。
 - `tags.resource_type` 固定记录被使用资源的类型；本期只产生

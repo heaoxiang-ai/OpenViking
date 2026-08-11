@@ -33,7 +33,7 @@
 {
   "event_time": "2026-08-05 11:30:00",
   "tenant_id": "resource_id:ov-resource-id;account_id:2101858484;user_id:user-1;resource_uri:viking://user/user-1/memories/experiences/exchange.md",
-  "event_name": "experience.recall",
+  "event_name": "experience.recall.count",
   "object_id": "ue_recall",
   "count": 1,
   "tags": {
@@ -44,8 +44,8 @@
 
 映射规则：
 
-- `memory.recalled` 映射为 `event_name=experience.recall`。
-- `memory.injected` 映射为 `event_name=experience.inject`。
+- `memory.recalled` 映射为 `event_name=experience.recall.count`。
+- `memory.injected` 映射为 `event_name=experience.inject.count`。
 - `count` 固定为 `1`。
 - `occurred_at` 转换为 UTC `YYYY-MM-DD HH:MM:SS`。
 - `event_id` 写入 `object_id`，为空时拒绝写入。

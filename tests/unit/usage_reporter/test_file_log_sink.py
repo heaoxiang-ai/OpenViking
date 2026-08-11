@@ -71,7 +71,7 @@ async def test_file_log_sink_writes_usage_event_record(tmp_path):
             "resource_id:ov-test;account_id:default;user_id:default;resource_uri:"
             "viking://user/default/memories/experiences/生成请假邮件通用模版.md"
         ),
-        "event_name": "experience.recall",
+        "event_name": "experience.recall.count",
         "object_id": "ue_recall",
         "count": 1,
         "tags": {"resource_type": "experience"},
@@ -89,7 +89,7 @@ async def test_file_log_sink_maps_injection_event_name(tmp_path):
         sink.close()
 
     record = _parse_line(log_path.read_text(encoding="utf-8").strip())
-    assert record["event_name"] == "experience.inject"
+    assert record["event_name"] == "experience.inject.count"
 
 
 @pytest.mark.asyncio
