@@ -31,7 +31,7 @@ async def test_memory_usage_extractor_emits_recall_and_injection_events():
                 TextPart("我要处理无订单号换货"),
                 ToolPart(
                     tool_id="call-search",
-                    tool_name="search_experience",
+                    tool_name="find",
                     tool_status="completed",
                     tool_input={"query": "无订单号换货"},
                     tool_output={"results": [{"uri": experience_uri}, {"uri": "viking://other"}]},
@@ -44,7 +44,7 @@ async def test_memory_usage_extractor_emits_recall_and_injection_events():
             parts=[
                 ToolPart(
                     tool_id="call-read",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": experience_uri},
                     tool_output="## Situation\n用户未提供订单号但要求换货。",
@@ -57,7 +57,7 @@ async def test_memory_usage_extractor_emits_recall_and_injection_events():
             parts=[
                 ToolPart(
                     tool_id="call-pending",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="running",
                     tool_input={"uri": experience_uri},
                 )
@@ -74,9 +74,36 @@ async def test_memory_usage_extractor_emits_recall_and_injection_events():
         "archive_uri": _context().archive_uri,
         "message_id": "msg-1",
         "tool_call_id": "call-search",
-        "tool_name": "search_experience",
+        "tool_name": "find",
     }
-    assert events[1].evidence["tool_name"] == "read_experience"
+    assert events[1].evidence["tool_name"] == "read"
+
+
+@pytest.mark.asyncio
+async def test_memory_usage_extractor_ignores_removed_dedicated_experience_tools():
+    experience_uri = "viking://user/test/memories/experiences/legacy.md"
+    messages = [
+        Message(
+            id="msg-legacy",
+            role="user",
+            parts=[
+                ToolPart(
+                    tool_id="call-search",
+                    tool_name="search_experience",
+                    tool_status="completed",
+                    tool_output={"results": [{"uri": experience_uri}]},
+                ),
+                ToolPart(
+                    tool_id="call-read",
+                    tool_name="read_experience",
+                    tool_status="completed",
+                    tool_input={"uri": experience_uri},
+                ),
+            ],
+        )
+    ]
+
+    assert await MemoryUsageExtractor().extract(messages=messages, context=_context()) == []
 
 
 @pytest.mark.asyncio
@@ -366,7 +393,7 @@ async def test_memory_usage_extractor_uses_message_time_for_event_time():
             parts=[
                 ToolPart(
                     tool_id="call-read",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": experience_uri},
                 )
@@ -388,7 +415,7 @@ async def test_memory_usage_extractor_ignores_non_experience_memory_uris():
             parts=[
                 ToolPart(
                     tool_id="call-search",
-                    tool_name="search_experience",
+                    tool_name="find",
                     tool_status="completed",
                     tool_output={
                         "results": [
@@ -399,7 +426,7 @@ async def test_memory_usage_extractor_ignores_non_experience_memory_uris():
                 ),
                 ToolPart(
                     tool_id="call-read",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": "viking://user/default/memories/trajectories/a.md"},
                 ),
@@ -423,13 +450,13 @@ async def test_memory_usage_extractor_ignores_other_users_experience_uris():
             parts=[
                 ToolPart(
                     tool_id="call-search",
-                    tool_name="search_experience",
+                    tool_name="find",
                     tool_status="completed",
                     tool_output={"results": [{"uri": own_uri}, {"uri": other_uri}]},
                 ),
                 ToolPart(
                     tool_id="call-read",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": other_uri},
                 ),
@@ -454,7 +481,7 @@ async def test_memory_usage_extractor_ignores_noncanonical_experience_uris():
             parts=[
                 ToolPart(
                     tool_id="call-search",
-                    tool_name="search_experience",
+                    tool_name="find",
                     tool_status="completed",
                     tool_output={
                         "results": [
@@ -466,13 +493,13 @@ async def test_memory_usage_extractor_ignores_noncanonical_experience_uris():
                 ),
                 ToolPart(
                     tool_id="call-read-query",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": query_alias},
                 ),
                 ToolPart(
                     tool_id="call-read-fragment",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": fragment_alias},
                 ),
@@ -495,7 +522,7 @@ async def test_memory_usage_extractor_ignores_internal_experience_sidecars():
             parts=[
                 ToolPart(
                     tool_id="call-search",
-                    tool_name="search_experience",
+                    tool_name="find",
                     tool_status="completed",
                     tool_output={
                         "results": [
@@ -507,7 +534,7 @@ async def test_memory_usage_extractor_ignores_internal_experience_sidecars():
                 ),
                 ToolPart(
                     tool_id="call-read",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": "viking://user/test/memories/experiences/.abstract.md"},
                 ),
@@ -530,7 +557,7 @@ async def test_memory_usage_extractor_correlates_read_input_by_tool_id():
             parts=[
                 ToolPart(
                     tool_id="call-read",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="running",
                     tool_input={"uri": experience_uri},
                 )
@@ -542,7 +569,7 @@ async def test_memory_usage_extractor_correlates_read_input_by_tool_id():
             parts=[
                 ToolPart(
                     tool_id="call-read",
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_output='{"uri":"truncated',
                 )
@@ -603,12 +630,12 @@ async def test_memory_usage_extractor_ignores_completed_tools_without_tool_id():
             role="user",
             parts=[
                 ToolPart(
-                    tool_name="search_experience",
+                    tool_name="find",
                     tool_status="completed",
                     tool_output={"results": [{"uri": experience_uri}]},
                 ),
                 ToolPart(
-                    tool_name="read_experience",
+                    tool_name="read",
                     tool_status="completed",
                     tool_input={"uri": experience_uri},
                 ),

@@ -35,7 +35,7 @@ class FakeUsageEvent:
                 "archive_uri": ("viking://user/user-1/sessions/session-1/history/archive_001"),
                 "message_id": "msg-1",
                 "tool_call_id": "call-1",
-                "tool_name": "search_experience",
+                "tool_name": "find",
             },
             "attributes": {"note": "contains spaces\tand tabs"},
         }

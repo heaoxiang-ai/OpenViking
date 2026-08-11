@@ -19,7 +19,6 @@ ToolOperation = Literal["find", "search", "list", "read", "multi_read"]
 
 _EXPERIENCE_SIDECAR_FILENAMES = {".abstract.md", ".overview.md", ".relations.json"}
 _RECALL_TOOL_OPERATIONS: dict[str, ToolOperation] = {
-    "search_experience": "search",
     "find": "find",
     "search": "search",
     "list": "list",
@@ -27,7 +26,6 @@ _RECALL_TOOL_OPERATIONS: dict[str, ToolOperation] = {
     "ov_list": "list",
 }
 _INJECTION_TOOL_OPERATIONS: dict[str, ToolOperation] = {
-    "read_experience": "read",
     "read": "read",
     "multi_read": "multi_read",
     "ov_read": "read",

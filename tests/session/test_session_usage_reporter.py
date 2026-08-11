@@ -40,7 +40,7 @@ async def test_commit_reports_memory_usage_events_to_sink(session):
         [
             ToolPart(
                 tool_id="call-read",
-                tool_name="read_experience",
+                tool_name="read",
                 tool_status="completed",
                 tool_input={"uri": experience_uri},
             )

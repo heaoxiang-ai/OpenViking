@@ -78,7 +78,7 @@ UsageEvent 是 OpenViking 内核和外部 Sink 之间的稳定协议。
     "archive_uri": "viking://user/test/sessions/510bb5f9/history/archive_001",
     "message_id": "msg_xxx",
     "tool_call_id": "call_xxx",
-    "tool_name": "read_experience"
+    "tool_name": "mcp__openviking__read"
   },
   "attributes": {}
 }
@@ -89,6 +89,16 @@ UsageEvent 是 OpenViking 内核和外部 Sink 之间的稳定协议。
 `resource_uri` 和 `resource_type` 描述被使用的资源，不限定为记忆文件；事件类型特有的数据写入 `attributes`。当前 `MemoryUsageExtractor` 只接受属于 `UsageContext.user_id` 的规范 experience URI，其他用户 URI 不生成 UsageEvent。ToolPart 必须包含非空 `tool_id`，无法稳定标识具体调用的 ToolPart 不进入统计。
 
 UsageEvent 是可独立传输和消费的完整事件。`UsageContext` 只用于 Extractor 构造事件，不再重复传给 Sink。
+
+### 5.1 Experience 使用事件识别
+
+插件使用 OpenViking 原生通用工具消费 Experience，不额外注册 Experience 专用工具：
+
+- 成功的 `find`、`search`、`list` 调用结果中出现 Experience URI，产生 `memory.recalled`。
+- 成功的 `read`、`multi_read` 调用实际读取 Experience URI，产生 `memory.injected`。
+- 支持 `ov_*` 形式和 `mcp__openviking__*` 命名空间形式；仅按受支持的工具名精确识别。
+- 通用工具返回其他记忆类型时，只保留当前用户 `memories/experiences/` 目录下的规范文件 URI。
+- `search_experience`、`read_experience` 已下线，不再生成使用事件或 Experience 应用关系。
 
 ## 6. UsageSink 机制
 
