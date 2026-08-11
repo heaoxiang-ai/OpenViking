@@ -6,7 +6,7 @@
 **Architecture:** `MemoryUsageExtractor` 继续生成内部 `UsageEvent`。
 `FileLogUsageSink` 在写入专用日志文件前执行单向转换，每行保存一个扁平 JSON
 计量事件。`object_id` 作为稳定事件标识，供下游在 best-effort 投递发生重复时
-去重。
+与 `tenant_id` 组成复合键去重。
 
 **Tech Stack:** Python 3.10+、dataclasses、标准库
 `datetime` / `json` / `logging`、pytest、Ruff。
@@ -66,8 +66,9 @@
 文件。多个 server worker 写入同一路径时，文件追加和滚动通过进程间锁串行化。
 
 文件落盘及后续采集均采用 best-effort 语义。下游必须按
-`object_id` 去重。次数查询按 `tenant_id`、`event_name` 和 `event_time` 范围过滤，
-并计算 `sum(count)`。
+`(tenant_id, object_id)` 复合键去重，不能跨 tenant 仅按 `object_id` 全局去重。
+次数查询按 `tenant_id`、`event_name` 和 `event_time` 范围过滤，并计算
+`sum(count)`。
 
 ## 验证
 

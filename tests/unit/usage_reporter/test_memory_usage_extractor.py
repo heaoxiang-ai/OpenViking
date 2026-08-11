@@ -265,6 +265,58 @@ async def test_memory_usage_extractor_parses_mcp_text_search_and_list_results():
 
 
 @pytest.mark.asyncio
+async def test_memory_usage_extractor_preserves_spaces_in_openclaw_table_uri():
+    experience_uri = "viking://user/test/memories/experiences/order exchange.md"
+    messages = [
+        Message(
+            id="msg-openclaw-table",
+            role="user",
+            parts=[
+                ToolPart(
+                    tool_id="call-search",
+                    tool_name="ov_search",
+                    tool_status="completed",
+                    tool_output=(
+                        "no  type    uri                                                        "
+                        "level  score  abstract\n"
+                        f"1   memory  {experience_uri}  2      0.91   exchange procedure"
+                    ),
+                )
+            ],
+        )
+    ]
+
+    events = await MemoryUsageExtractor().extract(messages=messages, context=_context())
+
+    assert [event.resource_uri for event in events] == [experience_uri]
+
+
+@pytest.mark.asyncio
+async def test_memory_usage_extractor_canonicalizes_short_user_list_uri():
+    messages = [
+        Message(
+            id="msg-short-list",
+            role="user",
+            parts=[
+                ToolPart(
+                    tool_id="call-list",
+                    tool_name="mcp__openviking__list",
+                    tool_status="completed",
+                    tool_input={"uri": "viking://user/memories/experiences"},
+                    tool_output="[file] listed experience.md",
+                )
+            ],
+        )
+    ]
+
+    events = await MemoryUsageExtractor().extract(messages=messages, context=_context())
+
+    assert [event.resource_uri for event in events] == [
+        "viking://user/test/memories/experiences/listed experience.md"
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("tool_name", "tool_input"),
     [
@@ -389,6 +441,30 @@ async def test_memory_usage_extractor_ignores_generic_read_not_found_result():
                     tool_status="completed",
                     tool_input={"uris": experience_uri},
                     tool_output=f"(nothing found at {experience_uri})",
+                )
+            ],
+        )
+    ]
+
+    events = await MemoryUsageExtractor().extract(messages=messages, context=_context())
+
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_memory_usage_extractor_ignores_short_user_read_not_found_result():
+    short_uri = "viking://user/memories/experiences/missing.md"
+    messages = [
+        Message(
+            id="msg-missing-short-read",
+            role="user",
+            parts=[
+                ToolPart(
+                    tool_id="call-read",
+                    tool_name="mcp__openviking__read",
+                    tool_status="completed",
+                    tool_input={"uris": short_uri},
+                    tool_output=f"(nothing found at {short_uri})",
                 )
             ],
         )

@@ -101,6 +101,12 @@ UsageEvent 是可独立传输和消费的完整事件。`UsageContext` 只用于
 - 通用工具返回其他记忆类型时，只保留当前用户 `memories/experiences/` 目录下的规范文件 URI。
 - `search_experience`、`read_experience` 已下线，不再生成使用事件或 Experience 应用关系。
 
+升级时应先升级 Agent 插件，或让插件与 OpenViking 内核同步升级。若先升级内核、
+仍由旧插件调用 `search_experience`、`read_experience`，工具调用本身不受影响，但升级
+窗口内不会生成 Experience 使用事件。历史 archive 中的专用工具记录不做追溯转换。
+OpenClaw 旧配置中的 `enabledTools: ["experience"]` 仍可启动，该 selector 作为迁移
+别名映射到通用 `ov_search`、`ov_read`；新配置不再使用该别名。
+
 ## 6. UsageSink 机制
 
 OpenViking 开源包定义统一的 Sink 抽象：
@@ -164,7 +170,8 @@ HTTP 请求。日志文件使用 UTC 小时滚动，默认保留 168 个小时�
   `resource_id:<resource_id>;account_id:<account_id>;user_id:<user_id>;resource_uri:<resource_uri>`。
 - `memory.recalled` 映射为 `event_name=experience.recall.count`。
 - `memory.injected` 映射为 `event_name=experience.inject.count`。
-- `object_id` 使用稳定的 `event_id`。
+- `object_id` 使用稳定的 `event_id`。下游以 `(tenant_id, object_id)` 作为复合去重键，
+  不跨 tenant 单独按 `object_id` 去重。
 - `count` 固定为 `1`。
 - `tags.resource_type` 固定记录被使用资源的类型；本期只产生
   `experience` 使用事件。
@@ -264,7 +271,8 @@ Usage Reporter 采用 best-effort 投递语义：
 - 多个 Sink 相互隔离，某个 Sink 失败不影响其他 Sink。
 - Sink 失败时事件可能丢失，因此本机制不保证 at-least-once。
 - 如果 Sink 已写入成功，但进程在 phase2 写入完成标记前退出，phase2 恢复执行时可能重复发送同一事件。
-- 每个事件包含稳定的 `event_id`。Sink 可将其作为 Kafka message key，消费端可按 `event_id` 去重。
+- 每个事件包含稳定的 `event_id`。Sink 可将其作为 Kafka message key；消费端按
+  `(tenant_id, object_id)` 复合键去重。
 - `event_id` 只用于识别重复事件，不代表事件一定成功送达。
 
 `event_id` 为以下字段规范序列化后的 SHA-256：
@@ -286,4 +294,4 @@ schema_version
 
 内置文件日志 Sink 在 `write()` 返回前完成本地追加，但不负责 TLS 采集、Kafka
 投递或下游确认。文件写入、TLS 采集和下游消费任一阶段都可能在故障时产生丢失
-或重复，消费端需按 `object_id` 去重，整体保持 best-effort 语义。
+或重复，消费端需按 `(tenant_id, object_id)` 复合键去重，整体保持 best-effort 语义。

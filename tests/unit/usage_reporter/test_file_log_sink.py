@@ -116,6 +116,32 @@ async def test_file_log_sink_preserves_tenant_id_values(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_file_log_sink_uses_tenant_and_object_as_deduplication_key(tmp_path, monkeypatch):
+    event = FakeUsageEvent(event_id="ue_same_event")
+
+    monkeypatch.setenv("OV_RESOURCE_ID", "ov-first")
+    first = FileLogUsageSink(path=tmp_path / "first.log")
+    monkeypatch.setenv("OV_RESOURCE_ID", "ov-second")
+    second = FileLogUsageSink(path=tmp_path / "second.log")
+    try:
+        await first.write(events=[event])
+        await second.write(events=[event])
+    finally:
+        first.close()
+        second.close()
+
+    first_record = _parse_line((tmp_path / "first.log").read_text(encoding="utf-8").strip())
+    second_record = _parse_line((tmp_path / "second.log").read_text(encoding="utf-8").strip())
+
+    assert first_record["object_id"] == second_record["object_id"] == "ue_same_event"
+    assert first_record["tenant_id"] != second_record["tenant_id"]
+    assert (first_record["tenant_id"], first_record["object_id"]) != (
+        second_record["tenant_id"],
+        second_record["object_id"],
+    )
+
+
+@pytest.mark.asyncio
 async def test_file_log_sink_preserves_records_when_workers_roll_over(tmp_path):
     log_path = tmp_path / "usage.log"
     first = FileLogUsageSink(path=log_path)

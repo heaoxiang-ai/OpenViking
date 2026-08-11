@@ -38,8 +38,15 @@ _INJECTION_TOOL_OPERATIONS: dict[str, ToolOperation] = {
 }
 _MCP_OPENVIKING_TOOL_RE = re.compile(r"^mcp__openviking__(find|search|list|read|multi_read)$")
 _MCP_SEARCH_RESULT_RE = re.compile(r"^- \[[^]]+\]\s+(viking://.+?)\s*$")
-_OPENVIKING_SEARCH_ROW_RE = re.compile(r"^\s*\d+\s+(?:memory|resource|skill)\s+(viking://\S+)")
+_OPENVIKING_SEARCH_TABLE_ROW_RE = re.compile(
+    r"^\s*\d+\s{2,}(?:memory|resource|skill)\s{2,}"
+    r"(viking://.+?)\s{2,}(?:\d+)?\s{2,}(?:\d+(?:\.\d+)?)?\s{2,}.*$"
+)
+_OPENVIKING_SEARCH_SIMPLE_ROW_RE = re.compile(
+    r"^\s*\d+\s+(?:memory|resource|skill)\s+(viking://\S+)\s*$"
+)
 _LIST_FILE_RE = re.compile(r"^\s*\[file\]\s+(.+?)\s*$")
+_USER_MEMORY_SHORTHAND_PREFIX = "viking://user/memories/"
 
 
 class UsageExtractor(Protocol):
@@ -131,12 +138,20 @@ def _unique_uris(uris: Iterable[str], context: UsageContext) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for raw_uri in uris:
-        uri = raw_uri.strip()
+        uri = _canonicalize_usage_uri(raw_uri, context)
         if uri in seen or not _is_experience_uri(uri, context):
             continue
         seen.add(uri)
         result.append(uri)
     return result
+
+
+def _canonicalize_usage_uri(uri: str, context: UsageContext) -> str:
+    normalized = uri.strip()
+    if normalized.startswith(_USER_MEMORY_SHORTHAND_PREFIX):
+        relative = normalized.removeprefix(_USER_MEMORY_SHORTHAND_PREFIX)
+        return f"viking://user/{context.user_id}/memories/{relative}"
+    return normalized
 
 
 def _join_uri(parent: str, child: str) -> str:
@@ -190,16 +205,20 @@ def _read_result_statuses(value: Any) -> dict[str, bool]:
     return statuses
 
 
-def _read_failed_in_text(uri: str, texts: Iterable[str]) -> bool:
-    missing_marker = f"(nothing found at {uri})"
+def _read_failed_in_text(uri: str, texts: Iterable[str], context: UsageContext) -> bool:
+    aliases = [uri]
+    canonical_prefix = f"viking://user/{context.user_id}/memories/"
+    if uri.startswith(canonical_prefix):
+        aliases.append(f"{_USER_MEMORY_SHORTHAND_PREFIX}{uri.removeprefix(canonical_prefix)}")
     for text in texts:
-        if missing_marker in text:
-            return True
-        section_marker = f"--- START OF {uri} ---"
-        if section_marker in text:
-            section = text.split(section_marker, 1)[1].split(f"--- END OF {uri} ---", 1)[0]
-            if section.lstrip().startswith("ERROR:"):
+        for alias in aliases:
+            if f"(nothing found at {alias})" in text:
                 return True
+            section_marker = f"--- START OF {alias} ---"
+            if section_marker in text:
+                section = text.split(section_marker, 1)[1].split(f"--- END OF {alias} ---", 1)[0]
+                if section.lstrip().startswith("ERROR:"):
+                    return True
     return False
 
 
@@ -318,9 +337,11 @@ class MemoryUsageExtractor:
                 for line in text.splitlines():
                     match = _MCP_SEARCH_RESULT_RE.fullmatch(line)
                     if match is None:
-                        match = _OPENVIKING_SEARCH_ROW_RE.match(line)
+                        match = _OPENVIKING_SEARCH_TABLE_ROW_RE.fullmatch(line)
+                    if match is None:
+                        match = _OPENVIKING_SEARCH_SIMPLE_ROW_RE.fullmatch(line)
                     if match is not None:
-                        candidates.append(match.group(1))
+                        candidates.append(match.group(1).strip())
 
         return [
             self._build_event(
@@ -350,12 +371,19 @@ class MemoryUsageExtractor:
         candidates = list(_iter_named_uris(tool_input))
         if not candidates:
             candidates.extend(_iter_named_uris(output))
-        statuses = _read_result_statuses(output) if operation == "multi_read" else {}
+        statuses = (
+            {
+                _canonicalize_usage_uri(uri, context): success
+                for uri, success in _read_result_statuses(output).items()
+            }
+            if operation == "multi_read"
+            else {}
+        )
         texts = list(_iter_text_fields(output))
 
         events: list[UsageEvent] = []
         for uri in _unique_uris(candidates, context):
-            if statuses.get(uri) is False or _read_failed_in_text(uri, texts):
+            if statuses.get(uri) is False or _read_failed_in_text(uri, texts, context):
                 continue
             events.append(
                 self._build_event(
