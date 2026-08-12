@@ -105,7 +105,9 @@ UsageEvent 是可独立传输和消费的完整事件。`UsageContext` 只用于
 仍由旧插件调用 `search_experience`、`read_experience`，工具调用本身不受影响，但升级
 窗口内不会生成 Experience 使用事件。历史 archive 中的专用工具记录不做追溯转换。
 OpenClaw 旧配置中的 `enabledTools: ["experience"]` 仍可启动，该 selector 作为迁移
-别名映射到通用 `ov_search`、`ov_read`；新配置不再使用该别名。
+别名映射到通用 `ov_search`、`ov_read`。精确 selector `search_experience`、
+`read_experience` 也分别映射到 `ov_search`、`ov_read`；这些别名只兼容配置，
+不会恢复已下线的专用工具，新配置应使用 `resource_query` 或当前工具名。
 
 ## 6. UsageSink 机制
 
