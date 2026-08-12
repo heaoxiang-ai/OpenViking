@@ -150,8 +150,22 @@ class VolcengineApiKeyCollection(ICollection):
                 sanitized_list.append(y)
         return sanitized_list
 
+    @classmethod
+    def _normalize_date_time_filter(cls, obj: Any) -> Any:
+        if isinstance(obj, list):
+            return [cls._normalize_date_time_filter(item) for item in obj]
+        if not isinstance(obj, dict):
+            return obj
+
+        normalized = {key: cls._normalize_date_time_filter(value) for key, value in obj.items()}
+        if normalized.get("op") == "range" and normalized.get("field") == "created_at":
+            normalized["op"] = "time_range"
+        return normalized
+
     def _data_post(self, path: str, data: Dict[str, Any]):
         safe_data = self._sanitize_payload(data)
+        if isinstance(safe_data, dict) and "filter" in safe_data:
+            safe_data["filter"] = self._normalize_date_time_filter(safe_data["filter"])
         response = self.data_client.do_req("POST", path, req_body=safe_data)
         if response.status_code != 200:
             raise self._build_response_error(response, path)
