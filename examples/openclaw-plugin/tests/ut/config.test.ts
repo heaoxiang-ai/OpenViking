@@ -87,6 +87,24 @@ describe("memoryOpenVikingConfigSchema.parse()", () => {
     expect(cfg.enabledTools).toEqual(["ov_search", "ov_read"]);
   });
 
+  it("maps legacy experience tool selectors to generic query tools", () => {
+    const cfg = memoryOpenVikingConfigSchema.parse({
+      enabledTools: ["search_experience", "read_experience"],
+    });
+
+    expect(cfg.enabledTools).toEqual(["ov_search", "ov_read"]);
+  });
+
+  it("maps legacy experience tool selectors in the disabled list", () => {
+    const cfg = memoryOpenVikingConfigSchema.parse({
+      disabledTools: ["search_experience", "read_experience"],
+    });
+
+    expect(cfg.disabledTools).toEqual(expect.arrayContaining(["ov_search", "ov_read"]));
+    expect(cfg.enabledTools).not.toContain("ov_search");
+    expect(cfg.enabledTools).not.toContain("ov_read");
+  });
+
   it("does not expose add_resource through enabledTools without enableAddResourceTool", () => {
     const cfg = memoryOpenVikingConfigSchema.parse({ enabledTools: "all" });
     expect(cfg.enabledTools).not.toContain("add_resource");
