@@ -81,28 +81,12 @@ describe("memoryOpenVikingConfigSchema.parse()", () => {
     expect(cfg.disabledTools).toEqual(["memory_forget", "add_resource"]);
   });
 
-  it("maps the legacy experience group to generic query tools", () => {
-    const cfg = memoryOpenVikingConfigSchema.parse({ enabledTools: ["experience"] });
-
-    expect(cfg.enabledTools).toEqual(["ov_search", "ov_read"]);
-  });
-
-  it("maps legacy experience tool selectors to generic query tools", () => {
-    const cfg = memoryOpenVikingConfigSchema.parse({
-      enabledTools: ["search_experience", "read_experience"],
-    });
-
-    expect(cfg.enabledTools).toEqual(["ov_search", "ov_read"]);
-  });
-
-  it("maps legacy experience tool selectors in the disabled list", () => {
-    const cfg = memoryOpenVikingConfigSchema.parse({
-      disabledTools: ["search_experience", "read_experience"],
-    });
-
-    expect(cfg.disabledTools).toEqual(expect.arrayContaining(["ov_search", "ov_read"]));
-    expect(cfg.enabledTools).not.toContain("ov_search");
-    expect(cfg.enabledTools).not.toContain("ov_read");
+  it("rejects unpublished experience tool selectors", () => {
+    for (const selector of ["experience", "search_experience", "read_experience"]) {
+      expect(() =>
+        memoryOpenVikingConfigSchema.parse({ enabledTools: [selector] }),
+      ).toThrow("unknown tool selectors");
+    }
   });
 
   it("does not expose add_resource through enabledTools without enableAddResourceTool", () => {

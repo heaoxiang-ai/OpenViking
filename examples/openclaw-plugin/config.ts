@@ -190,9 +190,6 @@ export const OPENVIKING_TOOL_GROUPS: Record<string, readonly OpenVikingToolName[
   default: OPENVIKING_DEFAULT_ENABLED_TOOL_NAMES,
   memory: ["memory_recall", "memory_store", "memory_forget"],
   resource_query: ["ov_search", "ov_read", "ov_multi_read", "ov_list"],
-  // Migration alias for configurations that previously selected the removed
-  // search_experience/read_experience tools.
-  experience: ["ov_search", "ov_read"],
   import: ["add_resource", "add_skill"],
   recall_trace: ["ov_recall_trace"],
   archive: ["ov_archive_search", "ov_archive_expand"],
@@ -201,13 +198,6 @@ export const OPENVIKING_TOOL_GROUPS: Record<string, readonly OpenVikingToolName[
     "openviking_tool_result_search",
     "openviking_tool_result_list",
   ],
-};
-const OPENVIKING_LEGACY_TOOL_SELECTOR_ALIASES: Record<
-  string,
-  readonly OpenVikingToolName[]
-> = {
-  search_experience: ["ov_search"],
-  read_experience: ["ov_read"],
 };
 const DEFAULT_AGENT_EXPERIENCE = {
   enabled: false,
@@ -429,7 +419,7 @@ function expandToolSelectors(value: unknown, fallback: string[], label: string):
   for (const rawEntry of entries) {
     const entry = rawEntry.trim();
     const group = OPENVIKING_TOOL_GROUPS[entry];
-    const tools = group ?? OPENVIKING_LEGACY_TOOL_SELECTOR_ALIASES[entry] ??
+    const tools = group ??
       ((OPENVIKING_ALL_TOOL_NAMES as readonly string[]).includes(entry)
         ? [entry as OpenVikingToolName]
         : undefined);
@@ -958,7 +948,7 @@ export const memoryOpenVikingConfigSchema = {
     enabledTools: {
       label: "Enabled Tools",
       placeholder: "default",
-      help: "Agent-visible tool allowlist. Accepts tool names or groups: default, all, memory, resource_query, experience (legacy alias), import, recall_trace, archive, tool_result. Legacy search_experience/read_experience selectors map to ov_search/ov_read. add_resource also requires enableAddResourceTool=true.",
+      help: "Agent-visible tool allowlist. Accepts tool names or groups: default, all, memory, resource_query, import, recall_trace, archive, tool_result. add_resource also requires enableAddResourceTool=true.",
       advanced: true,
     },
     disabledTools: {
