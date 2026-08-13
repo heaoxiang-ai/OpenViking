@@ -154,7 +154,7 @@ HTTP 请求。日志文件使用 UTC 小时滚动，默认保留 168 个小时�
 一行：
 
 ```json
-{"event_time":"2026-08-05 11:30:00","tenant_id":"resource_id:ov-xxx;account_id:new;user_id:test;resource_uri:viking://user/test/memories/experiences/example.md","event_name":"experience.recall.count","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
+{"event_time":"2026-08-05T11:30:00Z","tenant_id":"resource_id:ov-xxx;account_id:new;user_id:test;resource_uri:viking://user/test/memories/experiences/example.md","event_name":"experience.recall.count","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
 ```
 
 字段映射：

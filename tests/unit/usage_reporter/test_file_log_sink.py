@@ -18,6 +18,7 @@ class FakeUsageEvent:
         event_id: str = "ue_recall",
         event_type: str = "memory.recalled",
         session_id: str = "session-1",
+        occurred_at: str = "2026-08-05T19:30:00+08:00",
         resource_uri: str = ("viking://user/default/memories/experiences/生成请假邮件通用模版.md"),
     ) -> None:
         self._record = {
@@ -28,7 +29,7 @@ class FakeUsageEvent:
             "user_id": "default",
             "session_id": session_id,
             "task_id": "task-1",
-            "occurred_at": "2026-08-05T19:30:00+08:00",
+            "occurred_at": occurred_at,
             "resource_uri": resource_uri,
             "resource_type": "experience",
             "evidence": {
@@ -66,7 +67,7 @@ async def test_file_log_sink_writes_usage_event_record(tmp_path):
     lines = log_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     assert _parse_line(lines[0]) == {
-        "event_time": "2026-08-05 11:30:00",
+        "event_time": "2026-08-05T11:30:00Z",
         "tenant_id": (
             "resource_id:ov-test;account_id:default;user_id:default;resource_uri:"
             "viking://user/default/memories/experiences/生成请假邮件通用模版.md"
@@ -76,6 +77,28 @@ async def test_file_log_sink_writes_usage_event_record(tmp_path):
         "count": 1,
         "tags": {"resource_type": "experience"},
     }
+
+
+@pytest.mark.parametrize(
+    ("occurred_at", "expected"),
+    [
+        ("2026-08-05T11:30:00Z", "2026-08-05T11:30:00Z"),
+        ("2026-08-05T11:30:00", "2026-08-05T11:30:00Z"),
+        ("2026-08-05T07:30:00-04:00", "2026-08-05T11:30:00Z"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_file_log_sink_emits_rfc3339_utc_event_time(tmp_path, occurred_at, expected):
+    log_path = tmp_path / "usage.log"
+    sink = FileLogUsageSink(path=log_path)
+
+    try:
+        await sink.write(events=[FakeUsageEvent(occurred_at=occurred_at)])
+    finally:
+        sink.close()
+
+    record = _parse_line(log_path.read_text(encoding="utf-8").strip())
+    assert record["event_time"] == expected
 
 
 @pytest.mark.asyncio

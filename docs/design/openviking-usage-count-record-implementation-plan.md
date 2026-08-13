@@ -31,7 +31,7 @@
 
 ```json
 {
-  "event_time": "2026-08-05 11:30:00",
+  "event_time": "2026-08-05T11:30:00Z",
   "tenant_id": "resource_id:ov-resource-id;account_id:2101858484;user_id:user-1;resource_uri:viking://user/user-1/memories/experiences/exchange.md",
   "event_name": "experience.recall.count",
   "object_id": "ue_recall",
