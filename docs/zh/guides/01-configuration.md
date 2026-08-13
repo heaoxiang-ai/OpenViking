@@ -1684,10 +1684,10 @@ openviking add-resource ./docs --exclude "*.tmp"
 每行格式如下：
 
 ```json
-{"event_time":"2026-08-05 11:30:00","tenant_id":"resource_id:ov-example;account_id:default;user_id:default;resource_uri:viking://user/default/memories/experiences/example.md","event_name":"experience.recall.count","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
+{"event_time":"2026-08-05T11:30:00Z","tenant_id":"resource_id:ov-example;account_id:default;user_id:default;resource_uri:viking://user/default/memories/experiences/example.md","event_name":"experience.recall.count","object_id":"ue_<sha256>","count":1,"tags":{"resource_type":"experience"}}
 ```
 
-`event_time` 使用 UTC 时间。`tenant_id` 由部署 resource ID、事件所属的 account、user 和 Experience URI 拼接。`memory.recalled` 映射为 `experience.recall.count`，`memory.injected` 映射为 `experience.inject.count`。`object_id` 是稳定的 Usage Event ID。下游必须使用 `(tenant_id, object_id)` 复合键去重，不能跨 tenant 仅按 `object_id` 全局去重。查询时按 `tenant_id`、`event_name` 和 `event_time` 范围过滤，再通过 `sum(count)` 汇总。文件采集和下游投递仍为 best-effort。
+`event_time` 使用 RFC 3339 UTC 时间格式，并显式携带 `Z` 后缀。`tenant_id` 由部署 resource ID、事件所属的 account、user 和 Experience URI 拼接。`memory.recalled` 映射为 `experience.recall.count`，`memory.injected` 映射为 `experience.inject.count`。`object_id` 是稳定的 Usage Event ID。下游必须使用 `(tenant_id, object_id)` 复合键去重，不能跨 tenant 仅按 `object_id` 全局去重。查询时按 `tenant_id`、`event_name` 和 `event_time` 范围过滤，再通过 `sum(count)` 汇总。文件采集和下游投递仍为 best-effort。
 
 支持的 add target URI：
 
