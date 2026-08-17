@@ -236,29 +236,21 @@ def _check_user_exists(request: Request, account_id: str, user_id: str) -> None:
         raise NotFoundError(user_id, "user")
 
 
-async def _user_settings_result(
+def _user_settings_result(
     account_id: str,
     user_id: str,
     user_config: UserConfig,
-    *,
-    agent_evolution_enabled: bool | None = None,
 ) -> dict:
-    configured = user_config.memory_policy
-    policy = MemoryPolicy.from_dict(configured)
+    policy = MemoryPolicy.from_dict(user_config.memory_policy)
     policy.validate_memory_types(set(MemoryTypeRegistry().list_names(include_disabled=False)))
-    enabled = agent_evolution_enabled
-    if enabled is None:
-        enabled = await get_service().sessions.get_agent_evolution_enabled(account_id)
-    effective = policy.resolve(
+    memory_policy = policy.resolve(
         set(MemoryTypeRegistry().list_names(include_disabled=False)),
-        agent_evolution_enabled=enabled,
+        agent_evolution_enabled=True,
     )
     return {
         "account_id": account_id,
         "user_id": user_id,
-        "settings": {"memory_policy": effective.to_dict()},
-        "overrides": {"memory_policy": configured} if configured is not None else {},
-        "agent_evolution_enabled": enabled,
+        "memory_policy": memory_policy.to_dict(),
     }
 
 
@@ -574,20 +566,13 @@ async def batch_get_user_settings(
     for user_id in user_ids:
         _check_user_exists(request, account_id, user_id)
 
-    enabled = await service.sessions.get_agent_evolution_enabled(account_id)
-
     async def _read_one(user_id: str) -> dict:
         user_ctx = RequestContext(
             user=UserIdentifier(account_id, user_id),
             role=Role.USER,
         )
         user_config = await read_user_config(service.viking_fs, user_ctx)
-        return await _user_settings_result(
-            account_id,
-            user_id,
-            user_config,
-            agent_evolution_enabled=enabled,
-        )
+        return _user_settings_result(account_id, user_id, user_config)
 
     users = await asyncio.gather(*(_read_one(user_id) for user_id in user_ids))
     return Response(
@@ -621,7 +606,7 @@ async def get_user_settings(
     user_config = await read_user_config(service.viking_fs, user_ctx)
     return Response(
         status="ok",
-        result=await _user_settings_result(account_id, user_id, user_config),
+        result=_user_settings_result(account_id, user_id, user_config),
     )
 
 
@@ -649,7 +634,7 @@ async def patch_user_settings(
     user_config = await read_user_config(service.viking_fs, user_ctx)
     return Response(
         status="ok",
-        result=await _user_settings_result(account_id, user_id, user_config),
+        result=_user_settings_result(account_id, user_id, user_config),
     )
 
 

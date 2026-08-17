@@ -137,10 +137,12 @@ Content-Type: application/json
 }
 ```
 
-The response contains the explicit `overrides`, the effective `settings`, and
-the account-level `agent_evolution_enabled` switch. Updates are backed up to
-the User's `settings/user_config.backup.json` before replacement. A Session
-without an explicit policy reads the latest User policy when it is committed.
+The response contains the User-level `memory_policy`, expanded with its default
+memory types and Agent-memory dependencies. It is independent of the
+account-level Agent Evolution switch, which is managed through the dedicated
+account endpoint. Updates are backed up to the User's
+`settings/user_config.backup.json` before replacement. A Session without an
+explicit policy reads the latest User policy when it is committed.
 
 Use the batch endpoint when a management page needs multiple User policies:
 
@@ -151,8 +153,8 @@ Content-Type: application/json
 {"user_ids": ["user-a", "user-b"]}
 ```
 
-The request accepts 1 to 200 User IDs and returns the same settings shape in a
-`users` array. The account-level Agent Evolution switch is read once per batch.
+The request accepts 1 to 200 User IDs and returns the same User-level policy
+shape in a `users` array.
 
 ---
 

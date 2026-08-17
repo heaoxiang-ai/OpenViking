@@ -134,10 +134,10 @@ Content-Type: application/json
 }
 ```
 
-响应同时返回显式 `overrides`、生效 `settings` 和 account 级
-`agent_evolution_enabled`。更新前会备份到该 User 的
-`settings/user_config.backup.json`。未显式配置策略的 Session 在 commit 时读取
-该 User 最新策略。
+响应直接返回 User 级 `memory_policy`，并展开默认记忆类型和 Agent 记忆依赖；
+该结果不受 account 级 Agent 进化开关影响，Account 开关由独立接口管理。
+更新前会备份到该 User 的 `settings/user_config.backup.json`。未显式配置策略的
+Session 在 commit 时读取该 User 最新策略。
 
 管理页面需要读取多个 User 策略时使用批量接口：
 
@@ -149,7 +149,7 @@ Content-Type: application/json
 ```
 
 一次请求支持 1 到 200 个 User ID，响应在 `users` 数组中返回与单 User 接口
-相同的配置结构；account 级 Agent 进化总开关每批只读取一次。
+相同的 User 级策略结构。
 
 ---
 

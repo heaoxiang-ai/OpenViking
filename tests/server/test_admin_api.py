@@ -369,7 +369,7 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
         headers=root_headers(),
     )
     assert get_settings.status_code == 200, get_settings.text
-    assert get_settings.json()["result"]["overrides"]["memory_policy"]["self"] == {
+    assert get_settings.json()["result"]["memory_policy"]["self"] == {
         "enabled": True,
         "memory_types": ["profile"],
     }
@@ -385,21 +385,21 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
         headers=root_headers(),
     )
     assert patch_settings.status_code == 200, patch_settings.text
-    configured = patch_settings.json()["result"]["overrides"]["memory_policy"]
-    assert configured["self"]["memory_types"] == ["experiences"]
-    assert configured["peer"]["memory_types"] == ["events"]
-    assert patch_settings.json()["result"]["settings"]["memory_policy"]["self"]["memory_types"] == [
+    memory_policy = patch_settings.json()["result"]["memory_policy"]
+    assert memory_policy["self"]["memory_types"] == [
         "cases",
         "experiences",
         "trajectories",
     ]
+    assert memory_policy["peer"]["memory_types"] == ["events"]
 
     viking_fs = lightweight_admin_app.state.fake_service.viking_fs
     persisted = await read_user_config(
         viking_fs,
         RequestContext(user=UserIdentifier(acct, "bob"), role=Role.USER),
     )
-    assert persisted.memory_policy == configured
+    assert persisted.memory_policy["self"]["memory_types"] == ["experiences"]
+    assert persisted.memory_policy["peer"]["memory_types"] == ["events"]
     user_ctx = RequestContext(user=UserIdentifier(acct, "bob"), role=Role.USER)
     backup = json.loads(viking_fs.files[user_config_backup_uri(user_ctx)])
     assert backup["memory_policy"]["self"]["memory_types"] == ["profile"]
@@ -407,7 +407,7 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
     writes_before_noop = len(viking_fs.writes)
     noop_patch = await lightweight_admin_client.patch(
         f"/api/v1/admin/accounts/{acct}/users/bob/settings",
-        json={"memory_policy": configured},
+        json={"memory_policy": persisted.memory_policy},
         headers=root_headers(),
     )
     assert noop_patch.status_code == 200, noop_patch.text
@@ -450,15 +450,12 @@ async def test_user_memory_policy_batch_read_returns_requested_users(
     result = response.json()["result"]
     assert result["account_id"] == acct
     assert [item["user_id"] for item in result["users"]] == ["bob", "alice"]
-    assert result["users"][0]["overrides"]["memory_policy"]["self"]["memory_types"] == [
-        "experiences"
-    ]
-    assert result["users"][0]["settings"]["memory_policy"]["self"]["memory_types"] == [
+    assert result["users"][0]["memory_policy"]["self"]["memory_types"] == [
         "cases",
         "experiences",
         "trajectories",
     ]
-    assert result["users"][1]["overrides"] == {}
+    assert "experiences" in result["users"][1]["memory_policy"]["self"]["memory_types"]
 
 
 async def test_user_memory_policy_batch_read_rejects_unknown_user(
