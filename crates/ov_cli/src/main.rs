@@ -374,7 +374,7 @@ enum Commands {
         /// Wait until processing is complete
         #[arg(long, help_heading = "Common options")]
         wait: bool,
-        /// Wait timeout in seconds (only used with --wait)
+        /// Request timeout in seconds. Used with --wait and by Manifest private Git imports
         #[arg(
             long,
             value_parser = config::parse_positive_timeout,
@@ -1080,6 +1080,13 @@ enum Commands {
             value_name = "seconds"
         )]
         timeout: Option<f64>,
+        /// Server-side runtime limit in seconds; reaching it saves partial resource output
+        #[arg(
+            long = "runtime-timeout",
+            value_parser = config::parse_positive_timeout,
+            value_name = "seconds"
+        )]
+        runtime_timeout: Option<f64>,
     },
 
     // --- Status & Observability ---
@@ -1169,6 +1176,17 @@ enum Commands {
         /// Preview prune_orphans deletions without mutating vectors
         #[arg(long, help_heading = "Common options")]
         dry_run: bool,
+        /// Explicit k=v retrieval tag for rebuilt vector records. Can be repeated.
+        #[arg(long = "tag", value_name = "k=v", help_heading = "Common options")]
+        tags: Vec<String>,
+        /// Tag update mode when --tag is provided
+        #[arg(
+            long = "tag-mode",
+            default_value = "replace",
+            value_parser = ["replace", "append"],
+            help_heading = "Common options"
+        )]
+        tag_mode: String,
     },
 }
 
@@ -3438,6 +3456,7 @@ async fn main() {
             reason,
             wait,
             timeout,
+            runtime_timeout,
         } => {
             let client = ctx.get_client();
             commands::compile::run(
@@ -3448,6 +3467,7 @@ async fn main() {
                 reason,
                 wait,
                 timeout,
+                runtime_timeout,
                 ctx.output_format,
                 ctx.compact,
             )
@@ -3523,7 +3543,9 @@ async fn main() {
             mode,
             wait,
             dry_run,
-        } => handlers::handle_reindex(uri, mode, wait, dry_run, ctx).await,
+            tags,
+            tag_mode,
+        } => handlers::handle_reindex(uri, mode, wait, dry_run, tags, tag_mode, ctx).await,
         Commands::Get { uri, local_path } => handlers::handle_get(uri, local_path, ctx).await,
         Commands::Find {
             query,
@@ -3836,6 +3858,8 @@ mod tests {
             "--wait",
             "--timeout",
             "10",
+            "--runtime-timeout",
+            "86400",
         ])
         .expect("compile flags should parse");
         match cli.command {
@@ -3845,6 +3869,7 @@ mod tests {
                 reason,
                 wait,
                 timeout,
+                runtime_timeout,
                 ..
             } => {
                 assert_eq!(from_uris.len(), 3);
@@ -3852,6 +3877,7 @@ mod tests {
                 assert!(reason.is_none());
                 assert!(wait);
                 assert_eq!(timeout, Some(10.0));
+                assert_eq!(runtime_timeout, Some(86_400.0));
             }
             _ => panic!("expected compile command"),
         }
@@ -5372,9 +5398,20 @@ mod tests {
             "prune_orphans",
             "--wait=false",
             "--dry-run",
+            "--tag",
+            "team=search",
+            "--tag-mode",
+            "append",
         ]);
 
-        assert!(result.is_ok(), "reindex command should parse");
+        let cli = result.expect("reindex command should parse");
+        match cli.command {
+            Commands::Reindex { tags, tag_mode, .. } => {
+                assert_eq!(tags, vec!["team=search"]);
+                assert_eq!(tag_mode, "append");
+            }
+            _ => panic!("expected reindex command"),
+        }
     }
 
     #[test]

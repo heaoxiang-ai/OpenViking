@@ -205,6 +205,23 @@ async def test_async_http_client_reindex_posts_content_reindex():
 
 
 @pytest.mark.asyncio
+async def test_async_http_client_reindex_sends_explicit_empty_tags():
+    client = AsyncHTTPClient(url="http://localhost:1933")
+    fake_http = SimpleNamespace(post=AsyncMock(return_value=object()))
+    client._http = fake_http
+    client._handle_response = lambda _response: {"status": "completed"}
+
+    await client.reindex(
+        "viking://resources/demo",
+        tags=[],
+        tag_mode="replace",
+    )
+
+    assert fake_http.post.await_args.kwargs["json"]["tags"] == []
+    assert fake_http.post.await_args.kwargs["json"]["tag_mode"] == "replace"
+
+
+@pytest.mark.asyncio
 async def test_async_http_client_write_forwards_processing_mode():
     client = AsyncHTTPClient(url="http://localhost:1933")
     fake_http = SimpleNamespace(post=AsyncMock(return_value=object()))
@@ -959,6 +976,24 @@ async def test_rm_uses_delete_request_with_timeout_when_provided():
             "timeout": 5.0,
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_batch_write_http_timeout_outlives_server_wait_timeout():
+    client = AsyncHTTPClient(url="http://localhost:1933", timeout=180.0)
+    client._request = AsyncMock(return_value=object())
+    client._handle_response_data = lambda _response: {"result": {}}
+
+    await client.batch_write(
+        "viking://resources/wiki",
+        [],
+        wait=True,
+        timeout=300.0,
+    )
+
+    request_timeout = client._request.await_args.kwargs["timeout"]
+    assert request_timeout.read == 330.0
+    assert request_timeout.connect == 180.0
 
 
 @pytest.mark.asyncio

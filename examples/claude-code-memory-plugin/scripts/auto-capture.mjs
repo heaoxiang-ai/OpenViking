@@ -276,17 +276,14 @@ function extractToolResultText(content) {
 
 // Tool output retention for the part path. Unlike the legacy prose path
 // (TOOL_RESULT_MAX_CHARS, which drops outputs to keep the extractor's text
-// clean), results here land in a separable tool_output field, so we keep them —
-// bounded so we don't store whole files / web pages / command stdout verbatim.
-const TOOL_OUTPUT_PART_MAX_CHARS = 2000;
-
+// clean), results here land in a separable tool_output field and are reported
+// verbatim — the server externalizes anything oversized and leaves a stub plus
+// tool_output_ref, so truncating here would only destroy what it stores.
 function truncateToolOutput(s) {
   if (typeof s !== "string") s = String(s ?? "");
-  if (s.length <= TOOL_OUTPUT_PART_MAX_CHARS) return s;
-  return (
-    s.slice(0, TOOL_OUTPUT_PART_MAX_CHARS) +
-    `\n... [truncated, ${s.length - TOOL_OUTPUT_PART_MAX_CHARS} more chars]`
-  );
+  const max = cfg.captureToolMaxChars;
+  if (s.length <= max) return s;
+  return s.slice(0, max) + `\n... [truncated, ${s.length - max} more chars]`;
 }
 
 // tool_result blocks carry only tool_use_id, not the tool name. Pre-scan all
@@ -713,6 +710,7 @@ async function main() {
   // OV's Session._auto_commit_threshold is not consumed by addMessage, so we
   // poll pending_tokens ourselves and commit when the threshold is crossed.
   let committed = false;
+  let commitTraceId = "";
   let pendingTokens = 0;
   let commitCount = 0;
   let totalMessageCount = 0;
@@ -727,10 +725,12 @@ async function main() {
         keep_recent_count: cfg.commitKeepRecentCount,
       });
       committed = commitRes.ok;
+      commitTraceId = commitRes.traceId || commitRes.result?.trace_id || "";
       if (committed) commitCount += 1;
       log("commit", {
         ovSessionId,
         ok: commitRes.ok,
+        trace_id: commitTraceId || undefined,
         pending: pendingTokens,
         keepRecentCount: cfg.commitKeepRecentCount,
       });
@@ -767,7 +767,9 @@ async function main() {
   if (result.ok > 0) {
     approve(
       `captured ${result.ok} turns to ov session ${ovSessionId}` +
-      (committed ? " (committed)" : ""),
+      (committed
+        ? ` (committed${commitTraceId ? `; trace_id=${commitTraceId}` : ""})`
+        : ""),
     );
   } else {
     approve();

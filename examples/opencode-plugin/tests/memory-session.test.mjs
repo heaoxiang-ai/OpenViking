@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createMemorySessionManager } from "../lib/memory-session.mjs"
+import { initLogger } from "../lib/utils.mjs"
 
 async function withTempDir(prefix, fn) {
   const dir = await mkdtemp(join(tmpdir(), prefix))
@@ -215,6 +216,96 @@ test("assistant messages are captured even when finish is not stop", async () =>
   })
 })
 
+test("OpenCode tool parts preserve completed and error state fields", async () => {
+  await withCaptureServer(async ({ endpoint, requests }) => {
+    await withTempDir("ov-oc-session-", async (dir) => {
+      const manager = createMemorySessionManager({ config: baseConfig(endpoint), pluginRoot: dir })
+      const sessionID = "oc-tool-parts"
+      const uri = "viking://user/test/memories/experiences/exchange.md"
+
+      await manager.init()
+      for (const [messageID, part] of [
+        [
+          "msg-tool-completed",
+          {
+            id: "part-tool-completed",
+            sessionID,
+            messageID: "msg-tool-completed",
+            type: "tool",
+            callID: "call-tool-completed",
+            tool: "openviking_read",
+            state: {
+              status: "completed",
+              input: { uris: uri },
+              output: "experience contents",
+            },
+          },
+        ],
+        [
+          "msg-tool-error",
+          {
+            id: "part-tool-error",
+            sessionID,
+            messageID: "msg-tool-error",
+            type: "tool",
+            callID: "call-tool-error",
+            tool: "openviking_read",
+            state: {
+              status: "error",
+              input: { uris: uri },
+              error: "OpenViking request failed",
+            },
+          },
+        ],
+      ]) {
+        await manager.handleEvent({
+          type: "message.updated",
+          properties: { info: { id: messageID, sessionID, role: "assistant" } },
+        })
+        await manager.handleEvent({
+          type: "message.part.updated",
+          properties: { part },
+        })
+      }
+
+      await manager.handleEvent({ type: "session.idle", properties: { sessionID } })
+
+      const addMessage = requests.find((request) => request.url === "/api/v1/sessions/oc-oc-tool-parts/messages/batch")
+      assert.ok(addMessage, "session.idle should capture OpenCode tool parts")
+      const body = JSON.parse(addMessage.body)
+      assert.deepEqual(body.messages, [
+        {
+          role: "assistant",
+          parts: [
+            {
+              type: "tool",
+              tool_id: "call-tool-completed",
+              tool_name: "openviking_read",
+              tool_status: "completed",
+              tool_input: { uris: uri },
+              tool_output: "experience contents",
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          parts: [
+            {
+              type: "tool",
+              tool_id: "call-tool-error",
+              tool_name: "openviking_read",
+              tool_status: "error",
+              tool_input: { uris: uri },
+              tool_output: "OpenViking request failed",
+            },
+          ],
+        },
+      ])
+      await manager.flushAll({ commit: false })
+    })
+  })
+})
+
 test("concurrent saves never race the shared state file (#3877)", async (t) => {
   // Widen the race window: concurrent saveState() calls share the same
   // `${statePath}.tmp` temp file. A slow writeFile keeps the shared .tmp
@@ -283,4 +374,42 @@ test("concurrent saves never race the shared state file (#3877)", async (t) => {
     // shared `.tmp` file. With serialized saves no ENOENT can occur.
     assert.equal(raceDetected, false)
   })
+})
+
+test("explicit commit writes the response trace_id to the plugin log", async () => {
+  const requests = []
+  const server = createServer(async (req, res) => {
+    let body = ""
+    req.setEncoding("utf8")
+    for await (const chunk of req) body += chunk
+    requests.push({ method: req.method, url: req.url, body })
+    res.setHeader("Content-Type", "application/json")
+    res.end(JSON.stringify({
+      status: "ok",
+      result: {
+        status: "accepted",
+        task_id: "task-opencode-trace",
+        trace_id: "trace-opencode-commit",
+      },
+    }))
+  })
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  try {
+    await withTempDir("ov-oc-session-trace-", async (dir) => {
+      const { port } = server.address()
+      initLogger(dir)
+      const manager = createMemorySessionManager({
+        config: { ...baseConfig(`http://127.0.0.1:${port}`), autoCapture: false },
+        pluginRoot: dir,
+      })
+
+      const result = await manager.commitSession("oc-explicit-trace")
+      assert.equal(result.traceId, "trace-opencode-commit")
+      assert.equal(requests[0].url, "/api/v1/sessions/oc-explicit-trace/commit")
+      const raw = await fs.promises.readFile(join(dir, "openviking-memory.log"), "utf8")
+      assert.match(raw, /"trace_id":"trace-opencode-commit"/)
+    })
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
 })
