@@ -401,9 +401,7 @@ class AsyncHTTPClient:
         self._ldap_username = config.ldap_username
         self._ldap_password = config.ldap_password
         self._oidc_token = config.oidc_token
-        self._event_hooks = {
-            event: list(hooks) for event, hooks in (event_hooks or {}).items()
-        }
+        self._event_hooks = {event: list(hooks) for event, hooks in (event_hooks or {}).items()}
         self._http: Optional[httpx.AsyncClient] = None
         self._observer: Optional[_HTTPObserver] = None
         self._snapshot: Optional["AsyncHTTPSnapshotNamespace"] = None
@@ -422,6 +420,7 @@ class AsyncHTTPClient:
         # LDAP Basic Auth
         if self._auth_mode == "ldap" and self._ldap_username and self._ldap_password:
             from .config import get_basic_auth_header
+
             headers["Authorization"] = get_basic_auth_header(
                 self._ldap_username, self._ldap_password
             )
@@ -1479,6 +1478,7 @@ class AsyncHTTPClient:
         session_id: str,
         telemetry: Any = False,
         *,
+        memory_policy: Optional[Dict[str, Any]] = None,
         keep_recent_count: int = 0,
         retention_mode: str | None = None,
         keep_recent_turn_count: int | None = None,
@@ -1490,6 +1490,8 @@ class AsyncHTTPClient:
             "keep_recent_count": keep_recent_count,
             "telemetry": telemetry,
         }
+        if memory_policy is not None:
+            payload["memory_policy"] = memory_policy
         optional = {
             "retention_mode": retention_mode,
             "keep_recent_turn_count": keep_recent_turn_count,
@@ -2473,6 +2475,7 @@ class SyncHTTPClient:
         session_id: str,
         telemetry: Any = False,
         *,
+        memory_policy: Optional[Dict[str, Any]] = None,
         keep_recent_count: int = 0,
         retention_mode: str | None = None,
         keep_recent_turn_count: int | None = None,
@@ -2481,6 +2484,8 @@ class SyncHTTPClient:
         event_tags: list[str] | None = None,
     ) -> Dict[str, Any]:
         kwargs = {"keep_recent_count": keep_recent_count}
+        if memory_policy is not None:
+            kwargs["memory_policy"] = memory_policy
         kwargs.update(
             {
                 key: value
@@ -2863,9 +2868,7 @@ class SyncHTTPSnapshotNamespace:
         from_ref: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compare one file between two snapshot refs."""
-        return run_async(
-            self._ns().diff(path, from_ref=from_ref, to_ref=to_ref)
-        )
+        return run_async(self._ns().diff(path, from_ref=from_ref, to_ref=to_ref))
 
     def get_gitignore(self) -> str:
         return run_async(self._ns().get_gitignore())

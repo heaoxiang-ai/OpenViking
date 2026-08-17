@@ -330,13 +330,17 @@ describe("OpenVikingClient", () => {
     const memoryExtractionConfig = {
       events: { tags: ["team=search", "channel=web"] },
     };
+    const memoryPolicy = {
+      self: { enabled: true, memory_types: ["experiences"] },
+      peer: { enabled: false, memory_types: [] },
+    };
 
     await client.createSession({ sessionId: "tagged", memoryExtractionConfig });
     await client.updateSessionConfig("tagged", {
       memoryExtractionConfig,
       autoCommitPolicy: { message_count_threshold: 25 },
     });
-    await client.commitSession("tagged", 0, undefined, []);
+    await client.commitSession("tagged", 0, undefined, [], memoryPolicy);
 
     expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toEqual({
       session_id: "tagged",
@@ -347,6 +351,7 @@ describe("OpenVikingClient", () => {
       auto_commit_policy: { message_count_threshold: 25 },
     });
     expect(JSON.parse(String(fetcher.mock.calls[2]![1]?.body))).toEqual({
+      memory_policy: memoryPolicy,
       keep_recent_count: 0,
       extraction_metadata: { event: { tags: [] } },
     });

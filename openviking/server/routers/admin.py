@@ -5,8 +5,9 @@
 import asyncio
 
 from fastapi import APIRouter, Body, Depends, Path, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from openviking.core.namespace import canonical_user_root
 from openviking.server.account_settings import (
     AccountAgentEvolutionSettings,
     AccountSettings,
@@ -26,7 +27,6 @@ from openviking.server.dependencies import get_service
 from openviking.server.identity import RequestContext, Role
 from openviking.server.models import Response
 from openviking.server.user_config import (
-    delete_user_config,
     read_user_config,
     validate_add_targets,
     validate_user_memory_policy,
@@ -91,6 +91,12 @@ class SetAgentEvolutionRequest(BaseModel):
 
 class UserSettingsPatch(BaseModel):
     memory_policy: dict
+
+    model_config = {"extra": "forbid"}
+
+
+class BatchGetUserSettingsRequest(BaseModel):
+    user_ids: list[str] = Field(min_length=1, max_length=200)
 
     model_config = {"extra": "forbid"}
 
@@ -234,11 +240,15 @@ async def _user_settings_result(
     account_id: str,
     user_id: str,
     user_config: UserConfig,
+    *,
+    agent_evolution_enabled: bool | None = None,
 ) -> dict:
     configured = user_config.memory_policy
     policy = MemoryPolicy.from_dict(configured)
     policy.validate_memory_types(set(MemoryTypeRegistry().list_names(include_disabled=False)))
-    enabled = await get_service().sessions.get_agent_evolution_enabled(account_id)
+    enabled = agent_evolution_enabled
+    if enabled is None:
+        enabled = await get_service().sessions.get_agent_evolution_enabled(account_id)
     effective = policy.resolve(
         set(MemoryTypeRegistry().list_names(include_disabled=False)),
         agent_evolution_enabled=enabled,
@@ -492,10 +502,14 @@ async def register_user(
         )
         if service.viking_fs is not None:
             try:
-                await delete_user_config(service.viking_fs, user_ctx)
+                await service.viking_fs.rm(
+                    canonical_user_root(user_ctx),
+                    recursive=True,
+                    ctx=user_ctx,
+                )
             except Exception:
                 logger.warning(
-                    "Failed to remove user config while rolling back %s/%s",
+                    "Failed to remove user data while rolling back %s/%s",
                     account_id,
                     body.user_id,
                     exc_info=True,
@@ -537,6 +551,52 @@ async def list_users(
         account_id, limit=limit, name_filter=name, role_filter=role, expose_key=expose_key
     )
     return Response(status="ok", result=users)
+
+
+@router.post("/accounts/{account_id}/users/settings/batch")
+@require_auth_root_or_admin
+async def batch_get_user_settings(
+    body: BatchGetUserSettingsRequest,
+    request: Request,
+    account_id: str = Path(..., description="Account ID"),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Return memory policies for multiple Users in one request."""
+    _check_account_access(ctx, account_id)
+    _check_account_exists(request, account_id)
+    service = get_service()
+    if service.viking_fs is None:
+        raise FailedPreconditionError("OpenViking service is not initialized.")
+
+    user_ids = list(dict.fromkeys(user_id.strip() for user_id in body.user_ids))
+    if any(not user_id for user_id in user_ids):
+        raise InvalidArgumentError("user_ids must contain non-empty strings")
+    for user_id in user_ids:
+        _check_user_exists(request, account_id, user_id)
+
+    enabled = await service.sessions.get_agent_evolution_enabled(account_id)
+
+    async def _read_one(user_id: str) -> dict:
+        user_ctx = RequestContext(
+            user=UserIdentifier(account_id, user_id),
+            role=Role.USER,
+        )
+        user_config = await read_user_config(service.viking_fs, user_ctx)
+        return await _user_settings_result(
+            account_id,
+            user_id,
+            user_config,
+            agent_evolution_enabled=enabled,
+        )
+
+    users = await asyncio.gather(*(_read_one(user_id) for user_id in user_ids))
+    return Response(
+        status="ok",
+        result={
+            "account_id": account_id,
+            "users": users,
+        },
+    )
 
 
 @router.get("/accounts/{account_id}/users/{user_id}/settings")

@@ -135,6 +135,7 @@ func (c *Client) CommitSession(ctx context.Context, sessionID string, opts *Comm
 	payload := map[string]any{
 		"keep_recent_count": opts.KeepRecentCount,
 	}
+	setAny(payload, "memory_policy", opts.MemoryPolicy)
 	setAny(payload, "telemetry", opts.Telemetry)
 	if opts.EventTags != nil {
 		payload["extraction_metadata"] = map[string]any{

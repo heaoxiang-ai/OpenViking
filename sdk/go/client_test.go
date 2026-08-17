@@ -1392,7 +1392,8 @@ func TestSessionAPIsSendEventMemoryTags(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := client.CommitSession(context.Background(), "tagged", &CommitSessionOptions{
-		EventTags: []string{},
+		EventTags:    []string{},
+		MemoryPolicy: map[string]any{"self": map[string]any{"enabled": false}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1427,6 +1428,9 @@ func TestSessionAPIsSendEventMemoryTags(t *testing.T) {
 		t.Fatalf("patch auto_commit_policy = %#v", patchBody["auto_commit_policy"])
 	}
 	commitBody := requests[2]["body"].(map[string]any)
+	if _, ok := commitBody["memory_policy"].(map[string]any); !ok {
+		t.Fatalf("commit memory_policy = %#v", commitBody["memory_policy"])
+	}
 	metadata := commitBody["extraction_metadata"].(map[string]any)
 	event := metadata["event"].(map[string]any)
 	if tags, ok := event["tags"].([]any); !ok || len(tags) != 0 {

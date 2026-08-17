@@ -327,6 +327,39 @@ async def test_sdk_commit_session_sends_turn_budget_retention_fields():
     ]
 
 
+async def test_sdk_commit_session_sends_memory_policy_override():
+    calls = []
+
+    class _FakeHTTP:
+        async def post(self, path, json):
+            calls.append((path, json))
+            return httpx.Response(
+                200,
+                json={"status": "success", "result": {"task_id": "task-policy"}},
+            )
+
+    client = AsyncHTTPClient(url="http://127.0.0.1:1933")
+    client._http = _FakeHTTP()
+    policy = {
+        "self": {"enabled": True, "memory_types": ["experiences"]},
+        "peer": {"enabled": False, "memory_types": []},
+    }
+
+    result = await client.commit_session("s1", memory_policy=policy)
+
+    assert result == {"task_id": "task-policy"}
+    assert calls == [
+        (
+            "/api/v1/sessions/s1/commit",
+            {
+                "keep_recent_count": 0,
+                "telemetry": False,
+                "memory_policy": policy,
+            },
+        )
+    ]
+
+
 async def test_sdk_get_session_archive(http_client):
     client, svc = http_client
 

@@ -232,6 +232,7 @@ class AsyncHTTPClient(import_openviking_sdk().AsyncHTTPClient):
         session_id: str,
         telemetry: Any = False,
         *,
+        memory_policy: Dict[str, Any] | None = None,
         keep_recent_count: int = 0,
         retention_mode: str | None = None,
         keep_recent_turn_count: int | None = None,
@@ -244,6 +245,8 @@ class AsyncHTTPClient(import_openviking_sdk().AsyncHTTPClient):
             "keep_recent_count": keep_recent_count,
             "telemetry": telemetry,
         }
+        if memory_policy is not None:
+            payload["memory_policy"] = memory_policy
         optional = {
             "retention_mode": retention_mode,
             "keep_recent_turn_count": keep_recent_turn_count,
@@ -316,6 +319,7 @@ class SyncHTTPClient(import_openviking_sdk().SyncHTTPClient):
         session_id: str,
         telemetry: Any = False,
         *,
+        memory_policy: Dict[str, Any] | None = None,
         keep_recent_count: int = 0,
         retention_mode: str | None = None,
         keep_recent_turn_count: int | None = None,
@@ -327,6 +331,7 @@ class SyncHTTPClient(import_openviking_sdk().SyncHTTPClient):
             self._async_client.commit_session(
                 session_id,
                 telemetry=telemetry,
+                memory_policy=memory_policy,
                 keep_recent_count=keep_recent_count,
                 retention_mode=retention_mode,
                 keep_recent_turn_count=keep_recent_turn_count,

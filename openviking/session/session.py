@@ -119,18 +119,24 @@ def _apply_agent_evolution_setting(
 
 def _effective_memory_types(policy: MemoryPolicy) -> set[str]:
     enabled_types = _enabled_memory_types()
-    self_types = (
-        enabled_types if policy.self_memory_types is None else set(policy.self_memory_types)
-    )
-    peer_types = (
-        enabled_types - AGENT_EVOLUTION_MEMORY_TYPES
-        if policy.peer_memory_types is None
-        else set(policy.peer_memory_types)
-    )
+    self_types = set()
+    if policy.self_enabled:
+        self_types = (
+            enabled_types if policy.self_memory_types is None else set(policy.self_memory_types)
+        )
+    peer_types = set()
+    if policy.peer_enabled:
+        peer_types = (
+            enabled_types - AGENT_EVOLUTION_MEMORY_TYPES
+            if policy.peer_memory_types is None
+            else set(policy.peer_memory_types)
+        )
     return self_types | peer_types
 
 
 def _effective_self_memory_types(policy: MemoryPolicy) -> set[str]:
+    if not policy.self_enabled:
+        return set()
     if policy.self_memory_types is None:
         return _enabled_memory_types()
     return set(policy.self_memory_types)
@@ -830,9 +836,7 @@ class Session:
         update_auto_commit_policy: bool = False,
     ) -> None:
         """Update mutable session config without overwriting concurrent meta changes."""
-        update_auto_commit_policy = (
-            update_auto_commit_policy or auto_commit_policy is not None
-        )
+        update_auto_commit_policy = update_auto_commit_policy or auto_commit_policy is not None
         session_path = self._viking_fs._uri_to_path(self._session_uri, ctx=self.ctx)
         lease = await self._viking_fs._async_agfs.pathlock_acquire_tree(
             session_path, timeout_secs=_SESSION_PHASE1_LOCK_TIMEOUT_SECONDS
@@ -1889,10 +1893,13 @@ class Session:
             raise ValueError("retained_message_token_budget must be greater than 0")
         in_memory_default_memory_policy = self._meta.memory_policy
         initial_policy = memory_policy
+        memory_policy_source = "commit"
         if initial_policy is None:
             initial_policy = self._meta.memory_policy
+            memory_policy_source = "session"
         if initial_policy is None:
             initial_policy = await self._provided_memory_policy()
+            memory_policy_source = "user" if initial_policy is not None else "default"
         effective_policy = MemoryPolicy.from_dict(initial_policy)
         _validate_memory_policy_types(effective_policy)
         agent_evolution_enabled = self._agent_evolution_enabled
@@ -1969,8 +1976,10 @@ class Session:
             # override.
             if memory_policy is None:
                 resolved_policy = self._meta.memory_policy
+                memory_policy_source = "session"
                 if resolved_policy is None:
                     resolved_policy = await self._provided_memory_policy()
+                    memory_policy_source = "user" if resolved_policy is not None else "default"
                 effective_policy = MemoryPolicy.from_dict(resolved_policy)
                 _validate_memory_policy_types(effective_policy)
                 effective_policy = _apply_agent_evolution_setting(
@@ -2085,6 +2094,7 @@ class Session:
                 archive_uri=archive_uri,
                 user=self.ctx.user.to_dict(),
                 memory_policy=effective_memory_policy,
+                memory_policy_source=memory_policy_source,
                 usage_uris=list(dict.fromkeys(u.uri for u in usage_snapshot if u.uri)),
                 record_auto_commit_success=record_auto_commit_success,
                 event_search_tags=list(effective_event_tags),
@@ -2350,6 +2360,7 @@ class Session:
             first_message_id=archive_messages[0].id,
             last_message_id=archive_messages[-1].id,
             memory_policy=msg.memory_policy,
+            memory_policy_source=msg.memory_policy_source,
             agent_evolution_enabled=agent_evolution_enabled,
             agent_memory_skip_reason=agent_memory_skip_reason,
             user_config_error=user_config_error,
@@ -2390,6 +2401,7 @@ class Session:
         first_message_id: str,
         last_message_id: str,
         memory_policy: Optional[Dict[str, Any]],
+        memory_policy_source: str = "unknown",
         agent_evolution_enabled: bool = True,
         agent_memory_skip_reason: Optional[str] = None,
         user_config_error: Optional[str] = None,
@@ -2793,6 +2805,8 @@ class Session:
                 "effective_memory_types": sorted(
                     _effective_memory_types(MemoryPolicy.from_dict(memory_policy))
                 ),
+                "effective_memory_policy": MemoryPolicy.from_dict(memory_policy).to_dict(),
+                "memory_policy_source": memory_policy_source,
                 "agent_evolution_enabled": agent_evolution_enabled,
                 "agent_memory_skip_reason": agent_memory_skip_reason,
                 "token_usage": {
@@ -3887,9 +3901,7 @@ class Session:
         if archive_index <= 1 or not self._viking_fs:
             return True
 
-        predecessor_uri = (
-            f"{self._session_uri}/history/archive_{archive_index - 1:03d}"
-        )
+        predecessor_uri = f"{self._session_uri}/history/archive_{archive_index - 1:03d}"
         if not await self._viking_fs.exists(predecessor_uri, ctx=self.ctx):
             return True
         if await self._archive_terminal_state(predecessor_uri) != "pending":

@@ -291,6 +291,7 @@ type BatchAddMessagesOptions struct {
 // CommitSessionOptions controls CommitSession.
 type CommitSessionOptions struct {
 	KeepRecentCount int
+	MemoryPolicy    map[string]any
 	Telemetry       any
 	EventTags       []string
 }

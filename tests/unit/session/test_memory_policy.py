@@ -11,6 +11,7 @@ from openviking.session.memory.dataclass import MemoryField, MemoryTypeSchema
 from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
 from openviking.session.memory.merge_op.base import FieldType
 from openviking.session.memory_policy import MemoryPolicy
+from openviking.session.session import _effective_memory_types, _effective_self_memory_types
 from openviking_cli.exceptions import InvalidArgumentError
 
 
@@ -28,6 +29,18 @@ def test_memory_policy_can_disable_peer_memory():
 
     assert policy.self_enabled is True
     assert policy.peer_enabled is False
+
+
+def test_effective_memory_types_respect_disabled_targets():
+    policy = MemoryPolicy.from_dict(
+        {
+            "self": {"enabled": False, "memory_types": ["experiences"]},
+            "peer": {"enabled": False, "memory_types": ["profile"]},
+        }
+    )
+
+    assert _effective_self_memory_types(policy) == set()
+    assert _effective_memory_types(policy) == set()
 
 
 def test_memory_policy_uses_top_level_memory_types():
@@ -94,9 +107,7 @@ def test_memory_policy_rejects_invalid_memory_types():
     with pytest.raises(InvalidArgumentError, match="missing"):
         policy.validate_memory_types({"profile"})
 
-    policy = MemoryPolicy.from_dict(
-        {"self": {"enabled": True, "memory_types": ["experiences"]}}
-    )
+    policy = MemoryPolicy.from_dict({"self": {"enabled": True, "memory_types": ["experiences"]}})
     assert policy.self_memory_types == {"experiences"}
     assert policy.resolve(
         {"cases", "events", "experiences", "profile", "trajectories"},

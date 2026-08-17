@@ -1404,6 +1404,13 @@ Commit a session. Message archiving (Phase 1) completes immediately. Summary gen
 |-----------|------|----------|---------|-------------|
 | session_id | str | Yes | - | Session ID to commit |
 | keep_recent_count | int | No | 0 | Number of recent live messages to retain (kept live, not archived) after commit. `0` (default) archives all messages. |
+| memory_policy | object | No | None | Per-commit extraction override. It has higher priority than the Session policy and the latest User policy. `self` and `peer` each accept `enabled` and `memory_types`. |
+
+The effective policy is resolved in this order: commit request, Session
+`.meta.json`, latest `settings/user_config.json`, then the kernel default. The
+fully resolved policy is stored in the queued task before Phase 2 starts. A
+completed task returns `effective_memory_policy` and `memory_policy_source` for
+diagnostics.
 
 #### 3. Usage Examples
 
@@ -1417,7 +1424,13 @@ POST /api/v1/sessions/{session_id}/commit
 # Commit session (returns immediately)
 curl -X POST http://localhost:1933/api/v1/sessions/a1b2c3d4/commit \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-key"
+  -H "X-API-Key: your-key" \
+  -d '{
+    "memory_policy": {
+      "self": {"enabled": true, "memory_types": ["experiences"]},
+      "peer": {"enabled": false, "memory_types": []}
+    }
+  }'
 
 # Poll task status
 curl -X GET http://localhost:1933/api/v1/tasks/{task_id} \

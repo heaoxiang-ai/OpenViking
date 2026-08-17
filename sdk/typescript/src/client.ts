@@ -691,12 +691,14 @@ export class OpenVikingClient {
     keepRecentCount = 0,
     telemetry?: unknown,
     eventTags?: string[],
+    memoryPolicy?: JsonObject,
   ): Promise<JsonObject> {
     return this.request(
       "POST",
       `/api/v1/sessions/${pathPart(sessionId)}/commit`,
       {
         body: compact({
+          memory_policy: memoryPolicy,
           keep_recent_count: keepRecentCount,
           telemetry,
           extraction_metadata:

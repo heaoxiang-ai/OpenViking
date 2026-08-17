@@ -1198,6 +1198,33 @@ async def test_compress_session(client: httpx.AsyncClient):
     assert "telemetry" not in body
 
 
+async def test_commit_session_accepts_memory_policy_override(client: httpx.AsyncClient):
+    create_resp = await client.post("/api/v1/sessions", json={})
+    session_id = create_resp.json()["result"]["session_id"]
+    await client.post(
+        f"/api/v1/sessions/{session_id}/messages",
+        json=_message_request("user", content="Remember my preference"),
+    )
+
+    commit_resp = await client.post(
+        f"/api/v1/sessions/{session_id}/commit",
+        json={
+            "memory_policy": {
+                "self": {"enabled": False, "memory_types": []},
+                "peer": {"enabled": False, "memory_types": []},
+            }
+        },
+    )
+    assert commit_resp.status_code == 200, commit_resp.text
+    task = await _wait_for_task(client, commit_resp.json()["result"]["task_id"])
+    assert task["status"] == "completed"
+    assert task["result"]["memory_policy_source"] == "commit"
+    assert task["result"]["effective_memory_policy"] == {
+        "self": {"enabled": False, "memory_types": []},
+        "peer": {"enabled": False, "memory_types": []},
+    }
+
+
 async def test_commit_updates_archive_metadata_before_background_task(client: httpx.AsyncClient):
     create_resp = await client.post("/api/v1/sessions", json={})
     session_id = create_resp.json()["result"]["session_id"]

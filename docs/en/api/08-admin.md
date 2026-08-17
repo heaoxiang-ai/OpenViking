@@ -142,6 +142,18 @@ the account-level `agent_evolution_enabled` switch. Updates are backed up to
 the User's `settings/user_config.backup.json` before replacement. A Session
 without an explicit policy reads the latest User policy when it is committed.
 
+Use the batch endpoint when a management page needs multiple User policies:
+
+```http
+POST /api/v1/admin/accounts/{account_id}/users/settings/batch
+Content-Type: application/json
+
+{"user_ids": ["user-a", "user-b"]}
+```
+
+The request accepts 1 to 200 User IDs and returns the same settings shape in a
+`users` array. The account-level Agent Evolution switch is read once per batch.
+
 ---
 
 ### create_account
