@@ -66,24 +66,6 @@ def test_memory_policy_uses_top_level_memory_types():
     }
 
 
-def test_memory_policy_legacy_fallback_does_not_expand_asymmetric_user_types():
-    policy = MemoryPolicy.from_dict(
-        {
-            "self": {"enabled": True, "memory_types": ["profile", "experiences"]},
-            "peer": {"enabled": True, "memory_types": ["events"]},
-        }
-    ).resolve(
-        {"cases", "events", "experiences", "profile", "trajectories"},
-        agent_evolution_enabled=True,
-    )
-
-    assert policy.to_legacy_fallback_dict() == {
-        "self": {"enabled": True},
-        "peer": {"enabled": True},
-        "memory_types": ["cases", "experiences", "trajectories"],
-    }
-
-
 def test_memory_policy_legacy_serialization_preserves_types_when_self_is_disabled():
     policy = MemoryPolicy.from_dict(
         {
@@ -96,11 +78,6 @@ def test_memory_policy_legacy_serialization_preserves_types_when_self_is_disable
         "self": {"enabled": False},
         "peer": {"enabled": True},
         "memory_types": ["cases", "experiences", "trajectories"],
-    }
-    assert policy.to_legacy_fallback_dict() == {
-        "self": {"enabled": False},
-        "peer": {"enabled": True},
-        "memory_types": [],
     }
 
 

@@ -1861,14 +1861,9 @@ async def test_stale_worker_uses_lock_snapshot_memory_policy_for_queue_message(
     assert result["archived"] is True
     queued_policy = queued[0]["memory_policy"]
     assert queued_policy["working_memory"] == {"enabled": False}
-    assert queued_policy["self"] == {"enabled": False}
-    assert queued_policy["peer"] == {"enabled": False}
-    assert set(queued_policy["memory_types"]).isdisjoint(AGENT_EVOLUTION_MEMORY_TYPES)
-    queued_policy_v2 = queued[0]["memory_policy_v2"]
-    assert queued_policy_v2["working_memory"] == {"enabled": False}
-    assert queued_policy_v2["self"]["enabled"] is False
-    assert queued_policy_v2["peer"]["enabled"] is False
-    assert set(queued_policy_v2["self"]["memory_types"]).isdisjoint(AGENT_EVOLUTION_MEMORY_TYPES)
+    assert queued_policy["self"]["enabled"] is False
+    assert queued_policy["peer"]["enabled"] is False
+    assert set(queued_policy["self"]["memory_types"]).isdisjoint(AGENT_EVOLUTION_MEMORY_TYPES)
     assert queued[0]["memory_policy_source"] == "session"
     assert "agent_evolution_enabled" not in queued[0]
     archive_meta = json.loads(

@@ -3,7 +3,7 @@
 """Persistent Session Phase 2 queue message."""
 
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -13,12 +13,7 @@ class SessionCommitMsg:
     session_uri: str
     archive_uri: str
     user: Dict[str, str]
-    # Backward-compatible fallback consumed by workers that only understand one
-    # shared top-level memory_types filter.
     memory_policy: Dict[str, Any] = field(default_factory=dict)
-    # Exact self/peer policy for current workers. Older workers ignore unknown
-    # queue fields and consume memory_policy instead.
-    memory_policy_v2: Optional[Dict[str, Any]] = None
     memory_policy_source: str = "unknown"
     usage_uris: List[str] = field(default_factory=list)
     # When True, Phase 2's final meta merge also clears the auto-commit error

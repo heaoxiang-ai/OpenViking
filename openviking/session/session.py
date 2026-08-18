@@ -2084,8 +2084,7 @@ class Session:
                 session_uri=self._session_uri,
                 archive_uri=archive_uri,
                 user=self.ctx.user.to_dict(),
-                memory_policy=effective_policy.to_legacy_fallback_dict(),
-                memory_policy_v2=effective_memory_policy,
+                memory_policy=effective_memory_policy,
                 memory_policy_source=memory_policy_source,
                 usage_uris=list(dict.fromkeys(u.uri for u in usage_snapshot if u.uri)),
                 record_auto_commit_success=record_auto_commit_success,
@@ -2316,10 +2315,7 @@ class Session:
             )
             return True
 
-        queued_memory_policy = (
-            msg.memory_policy_v2 if msg.memory_policy_v2 is not None else msg.memory_policy
-        )
-        queued_policy = MemoryPolicy.from_dict(queued_memory_policy)
+        queued_policy = MemoryPolicy.from_dict(msg.memory_policy)
         archive_meta = await self._read_archive_meta(msg.archive_uri)
         agent_evolution_snapshot = archive_meta.get("agent_evolution")
         if not isinstance(agent_evolution_snapshot, dict):

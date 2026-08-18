@@ -245,37 +245,3 @@ class MemoryPolicy:
         if self.self_memory_types is not None:
             data["memory_types"] = sorted(self.self_memory_types)
         return data
-
-    def to_legacy_fallback_dict(self) -> dict[str, Any]:
-        """Serialize a conservative fallback for workers with one shared type filter."""
-        data: dict[str, Any] = {
-            "self": {"enabled": self.self_enabled},
-            "peer": {"enabled": self.peer_enabled},
-        }
-        if not self.working_memory_enabled:
-            data["working_memory"] = {"enabled": False}
-
-        self_types = self.self_memory_types
-        peer_types = self.peer_memory_types
-        legacy_types: Optional[set[str]]
-        if not self.self_enabled:
-            legacy_types = None if peer_types is None else set(peer_types)
-        elif not self.peer_enabled:
-            legacy_types = None if self_types is None else set(self_types)
-        elif self_types is None and peer_types is None:
-            legacy_types = None
-        elif self_types is None:
-            legacy_types = set(peer_types or set())
-        elif peer_types is None:
-            legacy_types = set(self_types)
-        else:
-            # Old workers use one filter for both targets. Preserve types that
-            # both targets allow, plus self-only Agent types. For asymmetric
-            # user-memory policies, under-extraction is safer than writing a
-            # type to a target that explicitly disabled it.
-            legacy_types = (set(self_types) & set(peer_types)) | (
-                set(self_types) & AGENT_MEMORY_TYPES
-            )
-        if legacy_types is not None:
-            data["memory_types"] = sorted(legacy_types)
-        return data
