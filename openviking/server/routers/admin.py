@@ -7,7 +7,6 @@ import asyncio
 from fastapi import APIRouter, Body, Depends, Path, Request
 from pydantic import BaseModel
 
-from openviking.core.namespace import canonical_user_root
 from openviking.server.account_settings import (
     AccountAgentEvolutionSettings,
     AccountSettings,
@@ -478,39 +477,8 @@ async def register_user(
         str(resolved_role),
         seed=body.seed,
     )
-    try:
-        await service.initialize_user_directories(user_ctx)
-        await _write_initial_user_config(service, user_ctx, body.user_config)
-    except Exception:
-        logger.exception(
-            "Failed to initialize user %s in account %s; rolling back registration",
-            body.user_id,
-            account_id,
-        )
-        if service.viking_fs is not None:
-            try:
-                await service.viking_fs.rm(
-                    canonical_user_root(user_ctx),
-                    recursive=True,
-                    ctx=user_ctx,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to remove user data while rolling back %s/%s",
-                    account_id,
-                    body.user_id,
-                    exc_info=True,
-                )
-        try:
-            await manager.remove_user(account_id, body.user_id)
-        except Exception:
-            logger.warning(
-                "Failed to remove user registration while rolling back %s/%s",
-                account_id,
-                body.user_id,
-                exc_info=True,
-            )
-        raise
+    await service.initialize_user_directories(user_ctx)
+    await _write_initial_user_config(service, user_ctx, body.user_config)
     result = {
         "account_id": account_id,
         "user_id": body.user_id,
