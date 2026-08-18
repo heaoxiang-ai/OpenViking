@@ -139,18 +139,6 @@ Content-Type: application/json
 更新前会备份到该 User 的 `settings/user_config.backup.json`。未显式配置策略的
 Session 在 commit 时读取该 User 最新策略。
 
-管理页面需要读取多个 User 策略时使用批量接口：
-
-```http
-POST /api/v1/admin/accounts/{account_id}/users/settings/batch
-Content-Type: application/json
-
-{"user_ids": ["user-a", "user-b"]}
-```
-
-一次请求支持 1 到 200 个 User ID，响应在 `users` 数组中返回与单 User 接口
-相同的 User 级策略结构。
-
 ---
 
 ### create_account

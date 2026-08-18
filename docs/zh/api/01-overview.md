@@ -479,7 +479,6 @@ JSON 输出 - 错误：
 | DELETE | `/api/v1/admin/accounts/{account_id}` | 删除账号 |
 | POST | `/api/v1/admin/accounts/{account_id}/users` | 注册用户 |
 | GET | `/api/v1/admin/accounts/{account_id}/users` | 列出用户 |
-| POST | `/api/v1/admin/accounts/{account_id}/users/settings/batch` | 批量获取 User 记忆策略 |
 | GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | 获取用户记忆策略 |
 | PATCH | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | 更新用户记忆策略 |
 | DELETE | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | 移除用户 |

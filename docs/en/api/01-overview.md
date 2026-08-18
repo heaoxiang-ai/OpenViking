@@ -484,7 +484,6 @@ This catalog follows the routes actually mounted by the server. Each group headi
 | DELETE | `/api/v1/admin/accounts/{account_id}` | Delete an account |
 | POST | `/api/v1/admin/accounts/{account_id}/users` | Register a user |
 | GET | `/api/v1/admin/accounts/{account_id}/users` | List users |
-| POST | `/api/v1/admin/accounts/{account_id}/users/settings/batch` | Batch get User memory policies |
 | GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | Get a user's memory policy |
 | PATCH | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | Update a user's memory policy |
 | DELETE | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | Remove a user |

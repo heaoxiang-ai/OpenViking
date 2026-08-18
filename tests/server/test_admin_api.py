@@ -414,69 +414,6 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
     assert len(viking_fs.writes) == writes_before_noop
 
 
-async def test_user_memory_policy_batch_read_returns_requested_users(
-    lightweight_admin_client: httpx.AsyncClient,
-):
-    acct = _uid()
-    create_account = await lightweight_admin_client.post(
-        "/api/v1/admin/accounts",
-        json={"account_id": acct, "admin_user_id": "alice"},
-        headers=root_headers(),
-    )
-    assert create_account.status_code == 200, create_account.text
-
-    create_bob = await lightweight_admin_client.post(
-        f"/api/v1/admin/accounts/{acct}/users",
-        json={
-            "user_id": "bob",
-            "role": "user",
-            "user_config": {
-                "memory_policy": {
-                    "self": {"enabled": True, "memory_types": ["experiences"]},
-                    "peer": {"enabled": False, "memory_types": []},
-                }
-            },
-        },
-        headers=root_headers(),
-    )
-    assert create_bob.status_code == 200, create_bob.text
-
-    response = await lightweight_admin_client.post(
-        f"/api/v1/admin/accounts/{acct}/users/settings/batch",
-        json={"user_ids": ["bob", "alice", "bob"]},
-        headers=root_headers(),
-    )
-    assert response.status_code == 200, response.text
-    result = response.json()["result"]
-    assert result["account_id"] == acct
-    assert [item["user_id"] for item in result["users"]] == ["bob", "alice"]
-    assert result["users"][0]["memory_policy"]["self"]["memory_types"] == [
-        "cases",
-        "experiences",
-        "trajectories",
-    ]
-    assert "experiences" in result["users"][1]["memory_policy"]["self"]["memory_types"]
-
-
-async def test_user_memory_policy_batch_read_rejects_unknown_user(
-    lightweight_admin_client: httpx.AsyncClient,
-):
-    acct = _uid()
-    create_account = await lightweight_admin_client.post(
-        "/api/v1/admin/accounts",
-        json={"account_id": acct, "admin_user_id": "alice"},
-        headers=root_headers(),
-    )
-    assert create_account.status_code == 200, create_account.text
-
-    response = await lightweight_admin_client.post(
-        f"/api/v1/admin/accounts/{acct}/users/settings/batch",
-        json={"user_ids": ["missing"]},
-        headers=root_headers(),
-    )
-    assert response.status_code == 404, response.text
-
-
 async def test_create_user_paths_ignore_deprecated_agent_evolution_config(
     lightweight_admin_client: httpx.AsyncClient,
     lightweight_admin_app: FastAPI,

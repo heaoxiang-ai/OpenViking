@@ -5,7 +5,7 @@
 import asyncio
 
 from fastapi import APIRouter, Body, Depends, Path, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from openviking.core.namespace import canonical_user_root
 from openviking.server.account_settings import (
@@ -91,12 +91,6 @@ class SetAgentEvolutionRequest(BaseModel):
 
 class UserSettingsPatch(BaseModel):
     memory_policy: dict
-
-    model_config = {"extra": "forbid"}
-
-
-class BatchGetUserSettingsRequest(BaseModel):
-    user_ids: list[str] = Field(min_length=1, max_length=200)
 
     model_config = {"extra": "forbid"}
 
@@ -242,9 +236,10 @@ def _user_settings_result(
     user_config: UserConfig,
 ) -> dict:
     policy = MemoryPolicy.from_dict(user_config.memory_policy)
-    policy.validate_memory_types(set(MemoryTypeRegistry().list_names(include_disabled=False)))
+    known_memory_types = set(MemoryTypeRegistry().list_names(include_disabled=False))
+    policy.validate_memory_types(known_memory_types)
     memory_policy = policy.resolve(
-        set(MemoryTypeRegistry().list_names(include_disabled=False)),
+        known_memory_types,
         agent_evolution_enabled=True,
     )
     return {
@@ -543,45 +538,6 @@ async def list_users(
         account_id, limit=limit, name_filter=name, role_filter=role, expose_key=expose_key
     )
     return Response(status="ok", result=users)
-
-
-@router.post("/accounts/{account_id}/users/settings/batch")
-@require_auth_root_or_admin
-async def batch_get_user_settings(
-    body: BatchGetUserSettingsRequest,
-    request: Request,
-    account_id: str = Path(..., description="Account ID"),
-    ctx: RequestContext = Depends(get_request_context),
-):
-    """Return memory policies for multiple Users in one request."""
-    _check_account_access(ctx, account_id)
-    _check_account_exists(request, account_id)
-    service = get_service()
-    if service.viking_fs is None:
-        raise FailedPreconditionError("OpenViking service is not initialized.")
-
-    user_ids = list(dict.fromkeys(user_id.strip() for user_id in body.user_ids))
-    if any(not user_id for user_id in user_ids):
-        raise InvalidArgumentError("user_ids must contain non-empty strings")
-    for user_id in user_ids:
-        _check_user_exists(request, account_id, user_id)
-
-    async def _read_one(user_id: str) -> dict:
-        user_ctx = RequestContext(
-            user=UserIdentifier(account_id, user_id),
-            role=Role.USER,
-        )
-        user_config = await read_user_config(service.viking_fs, user_ctx)
-        return _user_settings_result(account_id, user_id, user_config)
-
-    users = await asyncio.gather(*(_read_one(user_id) for user_id in user_ids))
-    return Response(
-        status="ok",
-        result={
-            "account_id": account_id,
-            "users": users,
-        },
-    )
 
 
 @router.get("/accounts/{account_id}/users/{user_id}/settings")
