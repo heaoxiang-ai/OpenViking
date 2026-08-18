@@ -117,29 +117,24 @@ def _apply_agent_evolution_setting(
     )
 
 
-def _effective_memory_types(policy: MemoryPolicy) -> set[str]:
-    enabled_types = _enabled_memory_types()
-    self_types = set()
-    if policy.self_enabled:
-        self_types = (
-            enabled_types if policy.self_memory_types is None else set(policy.self_memory_types)
-        )
-    peer_types = set()
-    if policy.peer_enabled:
-        peer_types = (
-            enabled_types - AGENT_EVOLUTION_MEMORY_TYPES
-            if policy.peer_memory_types is None
-            else set(policy.peer_memory_types)
-        )
-    return self_types | peer_types
-
-
 def _effective_self_memory_types(policy: MemoryPolicy) -> set[str]:
     if not policy.self_enabled:
         return set()
     if policy.self_memory_types is None:
         return _enabled_memory_types()
     return set(policy.self_memory_types)
+
+
+def _effective_peer_memory_types(policy: MemoryPolicy) -> set[str]:
+    if not policy.peer_enabled:
+        return set()
+    if policy.peer_memory_types is None:
+        return _enabled_memory_types() - AGENT_EVOLUTION_MEMORY_TYPES
+    return set(policy.peer_memory_types)
+
+
+def _effective_memory_types(policy: MemoryPolicy) -> set[str]:
+    return _effective_self_memory_types(policy) | _effective_peer_memory_types(policy)
 
 
 def _agent_memory_skip_reason(
@@ -227,13 +222,7 @@ def _resolve_memory_extraction_scope(
         include_session_skills=config_session_skill_extraction_enabled and allow_self_memory,
         self_memory_types=(_effective_self_memory_types(policy) if allow_self_memory else set()),
         peer_memory_types=(
-            (
-                _enabled_memory_types() - AGENT_EVOLUTION_MEMORY_TYPES
-                if policy.peer_memory_types is None
-                else set(policy.peer_memory_types)
-            )
-            if allowed_peer_ids
-            else set()
+            _effective_peer_memory_types(policy) if allowed_peer_ids else set()
         ),
         memory_types=combined_memory_types,
     )
