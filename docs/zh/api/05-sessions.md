@@ -1376,12 +1376,10 @@ curl -X POST http://localhost:1933/api/v1/sessions/a1b2c3d4/used \
 |------|------|------|--------|------|
 | session_id | str | 是 | - | 要提交的会话 ID |
 | keep_recent_count | int | 否 | 0 | 提交后保留为 live 状态的最近消息数 (保持 live, 不归档)。`0` (默认) 归档全部消息。 |
-| memory_policy | object | 否 | None | 本次 Commit 的记忆抽取覆盖配置，优先级高于 Session 策略和最新 User 策略；`self`、`peer` 分别支持 `enabled` 与 `memory_types`。 |
 
-有效策略按 Commit 请求、Session `.meta.json`、最新
-`settings/user_config.json`、内核默认值的顺序解析。Phase 2 开始前会将完整有效
-策略固化到异步任务。任务完成结果返回 `effective_memory_policy` 和
-`memory_policy_source`，用于排障。
+有效策略按 Session `.meta.json`、最新 `settings/user_config.json`、内核默认值的
+顺序解析。Phase 2 开始前会将完整有效策略固化到异步任务。任务完成结果返回
+`effective_memory_policy` 和 `memory_policy_source`，用于排障。
 
 #### 3. 使用示例
 
@@ -1395,13 +1393,7 @@ POST /api/v1/sessions/{session_id}/commit
 # 提交会话（立即返回）
 curl -X POST http://localhost:1933/api/v1/sessions/a1b2c3d4/commit \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: your-key" \
-  -d '{
-    "memory_policy": {
-      "self": {"enabled": true, "memory_types": ["experiences"]},
-      "peer": {"enabled": false, "memory_types": []}
-    }
-  }'
+  -H "X-API-Key: your-key"
 
 # 查询任务状态
 curl -X GET http://localhost:1933/api/v1/tasks/{task_id} \

@@ -375,7 +375,6 @@ class SessionService:
         ctx: RequestContext,
         keep_recent_count: int = 0,
         *,
-        memory_policy: Optional[Dict[str, Any]] = None,
         retention_mode: Optional[str] = None,
         keep_recent_turn_count: Optional[int] = None,
         retained_message_token_budget: Optional[int] = None,
@@ -397,7 +396,6 @@ class SessionService:
             session_id,
             ctx,
             keep_recent_count=keep_recent_count,
-            memory_policy=memory_policy,
             retention_mode=retention_mode,
             keep_recent_turn_count=keep_recent_turn_count,
             retained_message_token_budget=retained_message_token_budget,
@@ -411,7 +409,6 @@ class SessionService:
         ctx: RequestContext,
         keep_recent_count: int = 0,
         *,
-        memory_policy: Optional[Dict[str, Any]] = None,
         retention_mode: Optional[str] = None,
         keep_recent_turn_count: Optional[int] = None,
         retained_message_token_budget: Optional[int] = None,
@@ -435,8 +432,6 @@ class SessionService:
         self._ensure_initialized()
         session = await self.get(session_id, ctx)
         commit_kwargs: Dict[str, Any] = {"keep_recent_count": keep_recent_count}
-        if memory_policy is not None:
-            commit_kwargs["memory_policy"] = memory_policy
         optional_retention = {
             "retention_mode": retention_mode,
             "keep_recent_turn_count": keep_recent_turn_count,
@@ -569,7 +564,9 @@ class SessionService:
                     return False
                 self._auto_commit_inflight.add(claim)
         except Exception:
-            logger.debug("Skipped auto-commit scheduling for %s", session_id, exc_info=True)
+            logger.debug(
+                "Skipped auto-commit scheduling for %s", session_id, exc_info=True
+            )
             return False
 
         task = asyncio.create_task(self.run_auto_commit(session_id, ctx, reason=reason_hint))

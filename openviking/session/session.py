@@ -836,7 +836,9 @@ class Session:
         update_auto_commit_policy: bool = False,
     ) -> None:
         """Update mutable session config without overwriting concurrent meta changes."""
-        update_auto_commit_policy = update_auto_commit_policy or auto_commit_policy is not None
+        update_auto_commit_policy = (
+            update_auto_commit_policy or auto_commit_policy is not None
+        )
         session_path = self._viking_fs._uri_to_path(self._session_uri, ctx=self.ctx)
         lease = await self._viking_fs._async_agfs.pathlock_acquire_tree(
             session_path, timeout_secs=_SESSION_PHASE1_LOCK_TIMEOUT_SECONDS
@@ -3901,7 +3903,9 @@ class Session:
         if archive_index <= 1 or not self._viking_fs:
             return True
 
-        predecessor_uri = f"{self._session_uri}/history/archive_{archive_index - 1:03d}"
+        predecessor_uri = (
+            f"{self._session_uri}/history/archive_{archive_index - 1:03d}"
+        )
         if not await self._viking_fs.exists(predecessor_uri, ctx=self.ctx):
             return True
         if await self._archive_terminal_state(predecessor_uri) != "pending":

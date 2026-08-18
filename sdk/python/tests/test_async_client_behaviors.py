@@ -112,10 +112,6 @@ async def test_async_http_client_sends_message_semantics_and_turn_retention():
     )
     await client.commit_session(
         "demo-session",
-        memory_policy={
-            "self": {"enabled": True, "memory_types": ["experiences"]},
-            "peer": {"enabled": False, "memory_types": []},
-        },
         retention_mode="turn_budget",
         keep_recent_turn_count=3,
         retained_message_token_budget=12_000,
@@ -132,10 +128,6 @@ async def test_async_http_client_sends_message_semantics_and_turn_retention():
     assert fake_http.post.await_args_list[1].kwargs["json"] == {
         "keep_recent_count": 0,
         "telemetry": False,
-        "memory_policy": {
-            "self": {"enabled": True, "memory_types": ["experiences"]},
-            "peer": {"enabled": False, "memory_types": []},
-        },
         "retention_mode": "turn_budget",
         "keep_recent_turn_count": 3,
         "retained_message_token_budget": 12_000,
