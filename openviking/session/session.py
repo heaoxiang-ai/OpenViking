@@ -2084,7 +2084,7 @@ class Session:
                 session_uri=self._session_uri,
                 archive_uri=archive_uri,
                 user=self.ctx.user.to_dict(),
-                memory_policy=effective_policy.to_legacy_dict(),
+                memory_policy=effective_policy.to_legacy_fallback_dict(),
                 memory_policy_v2=effective_memory_policy,
                 memory_policy_source=memory_policy_source,
                 usage_uris=list(dict.fromkeys(u.uri for u in usage_snapshot if u.uri)),

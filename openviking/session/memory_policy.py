@@ -235,7 +235,19 @@ class MemoryPolicy:
         return data
 
     def to_legacy_dict(self) -> dict[str, Any]:
-        """Serialize a conservative fallback for readers with one shared type filter."""
+        """Serialize a policy parsed from the legacy shared memory_types shape."""
+        data: dict[str, Any] = {
+            "self": {"enabled": self.self_enabled},
+            "peer": {"enabled": self.peer_enabled},
+        }
+        if not self.working_memory_enabled:
+            data["working_memory"] = {"enabled": False}
+        if self.self_memory_types is not None:
+            data["memory_types"] = sorted(self.self_memory_types)
+        return data
+
+    def to_legacy_fallback_dict(self) -> dict[str, Any]:
+        """Serialize a conservative fallback for workers with one shared type filter."""
         data: dict[str, Any] = {
             "self": {"enabled": self.self_enabled},
             "peer": {"enabled": self.peer_enabled},
