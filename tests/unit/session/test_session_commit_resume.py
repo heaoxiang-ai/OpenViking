@@ -73,7 +73,11 @@ async def test_resume_queued_commit_continues_phase2(monkeypatch):
         session_uri=session_uri,
         archive_uri=archive_uri,
         user={"account_id": "default", "user_id": "default"},
-        memory_policy={"memory_types": []},
+        memory_policy={"memory_types": ["profile"]},
+        memory_policy_v2={
+            "self": {"enabled": True, "memory_types": ["events"]},
+            "peer": {"enabled": False, "memory_types": []},
+        },
     )
 
     try:
@@ -84,6 +88,10 @@ async def test_resume_queued_commit_continues_phase2(monkeypatch):
     session._run_memory_extraction.assert_awaited_once()
     assert session._run_memory_extraction.await_args.kwargs["task_id"] == "task-1"
     assert session._run_memory_extraction.await_args.kwargs["agent_evolution_enabled"] is True
+    assert session._run_memory_extraction.await_args.kwargs["memory_policy"] == {
+        "self": {"enabled": True, "memory_types": ["events"]},
+        "peer": {"enabled": False, "memory_types": []},
+    }
     assert [
         item.id for item in session._run_memory_extraction.await_args.kwargs["messages"]
     ] == ["archived"]
@@ -211,3 +219,19 @@ def test_session_commit_message_ignores_unknown_fields():
 
     assert message.task_id == "task-1"
     assert "actor_peer_id" not in message.to_dict()
+
+
+def test_session_commit_message_loads_without_v2_memory_policy():
+    message = SessionCommitMsg.from_dict(
+        {
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "session_uri": "viking://user/sessions/session-1",
+            "archive_uri": "viking://user/sessions/session-1/history/archive_001",
+            "user": {"account_id": "default", "user_id": "default"},
+            "memory_policy": {"memory_types": ["profile"]},
+        }
+    )
+
+    assert message.memory_policy_v2 is None
+    assert message.memory_policy == {"memory_types": ["profile"]}

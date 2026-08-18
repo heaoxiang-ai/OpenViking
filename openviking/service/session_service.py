@@ -247,7 +247,14 @@ class SessionService:
                 policy.validate_memory_types(
                     set(MemoryTypeRegistry().list_names(include_disabled=False))
                 )
-                session.meta.memory_policy = policy.to_dict()
+                has_target_memory_types = not isinstance(memory_policy, dict) or any(
+                    isinstance(memory_policy.get(target), dict)
+                    and "memory_types" in memory_policy[target]
+                    for target in ("self", "peer")
+                )
+                session.meta.memory_policy = (
+                    policy.to_dict() if has_target_memory_types else policy.to_legacy_dict()
+                )
             # Auto-commit is enabled when the caller supplies a policy, or when
             # the server default turns it on. Absent both, it stays disabled.
             if update_auto_commit_policy and auto_commit_policy is None:
