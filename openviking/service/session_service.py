@@ -15,7 +15,6 @@ from openviking.core.namespace import canonical_session_uri
 from openviking.server.agent_evolution_config import AgentEvolutionConfigProvider
 from openviking.server.config import AgentEvolutionConfig, ToolOutputExternalizationConfig
 from openviking.server.identity import RequestContext
-from openviking.server.user_config import read_user_config
 from openviking.service.session_auto_commit import (
     compute_next_check_at,
     get_idle_timeout_seconds,
@@ -201,14 +200,8 @@ class SessionService:
             agent_evolution_enabled_provider=lambda: self.get_agent_evolution_enabled(
                 ctx.account_id
             ),
-            memory_policy_provider=lambda: self._get_user_memory_policy(ctx),
             usage_reporter=self._usage_reporter,
         )
-
-    async def _get_user_memory_policy(self, ctx: RequestContext) -> Optional[Dict[str, Any]]:
-        """Read the latest persisted User policy at commit time."""
-        config = await read_user_config(self._viking_fs, ctx)
-        return config.memory_policy
 
     async def create(
         self,
@@ -247,14 +240,7 @@ class SessionService:
                 policy.validate_memory_types(
                     set(MemoryTypeRegistry().list_names(include_disabled=False))
                 )
-                has_target_memory_types = not isinstance(memory_policy, dict) or any(
-                    isinstance(memory_policy.get(target), dict)
-                    and "memory_types" in memory_policy[target]
-                    for target in ("self", "peer")
-                )
-                session.meta.memory_policy = (
-                    policy.to_dict() if has_target_memory_types else policy.to_legacy_dict()
-                )
+                session.meta.memory_policy = policy.to_dict()
             # Auto-commit is enabled when the caller supplies a policy, or when
             # the server default turns it on. Absent both, it stays disabled.
             if update_auto_commit_policy and auto_commit_policy is None:

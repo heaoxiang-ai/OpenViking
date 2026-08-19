@@ -1836,8 +1836,6 @@ def _make_isolation_handler(
         allowed_memory_types=options.get("allowed_memory_types"),
         allow_self=options.get("allow_self", True),
         allowed_peer_ids=options.get("allowed_peer_ids"),
-        allowed_self_memory_types=options.get("allowed_self_memory_types"),
-        allowed_peer_memory_types=options.get("allowed_peer_memory_types"),
     )
 
 

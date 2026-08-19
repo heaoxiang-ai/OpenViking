@@ -105,6 +105,8 @@ def _enabled_memory_types() -> set[str]:
 
 
 def _validate_memory_policy_types(policy: MemoryPolicy) -> None:
+    if policy.memory_types is None:
+        return
     policy.validate_memory_types(_enabled_memory_types())
 
 
@@ -113,30 +115,24 @@ def _apply_agent_evolution_setting(
     *,
     agent_evolution_enabled: bool,
 ) -> MemoryPolicy:
-    return policy.resolve(
-        _enabled_memory_types(),
-        agent_evolution_enabled=agent_evolution_enabled,
+    if agent_evolution_enabled:
+        return policy
+    effective_types = (
+        _enabled_memory_types() if policy.memory_types is None else set(policy.memory_types)
+    )
+    effective_types -= AGENT_EVOLUTION_MEMORY_TYPES
+    return MemoryPolicy(
+        self_enabled=policy.self_enabled,
+        peer_enabled=policy.peer_enabled,
+        memory_types=effective_types,
+        working_memory_enabled=policy.working_memory_enabled,
     )
 
 
-def _effective_self_memory_types(policy: MemoryPolicy) -> set[str]:
-    if not policy.self_enabled:
-        return set()
-    if policy.self_memory_types is None:
-        return _enabled_memory_types()
-    return set(policy.self_memory_types)
-
-
-def _effective_peer_memory_types(policy: MemoryPolicy) -> set[str]:
-    if not policy.peer_enabled:
-        return set()
-    if policy.peer_memory_types is None:
-        return _enabled_memory_types() - AGENT_EVOLUTION_MEMORY_TYPES
-    return set(policy.peer_memory_types)
-
-
 def _effective_memory_types(policy: MemoryPolicy) -> set[str]:
-    return _effective_self_memory_types(policy) | _effective_peer_memory_types(policy)
+    if policy.memory_types is None:
+        return _enabled_memory_types()
+    return set(policy.memory_types)
 
 
 def _agent_memory_skip_reason(
@@ -190,8 +186,6 @@ class _MemoryExtractionScope:
     allow_self_memory: bool
     allowed_peer_ids: set[str]
     include_session_skills: bool
-    self_memory_types: set[str]
-    peer_memory_types: set[str]
     memory_types: Optional[set[str]]
 
 
@@ -204,29 +198,12 @@ def _resolve_memory_extraction_scope(
 ) -> _MemoryExtractionScope:
     allow_self_memory = policy.self_enabled
     allowed_peer_ids = _message_peer_ids(messages) if policy.peer_enabled else set()
-    configured_scope_types: list[Optional[set[str]]] = []
-    if allow_self_memory:
-        configured_scope_types.append(policy.self_memory_types)
-    if allowed_peer_ids:
-        configured_scope_types.append(policy.peer_memory_types)
-    if not configured_scope_types:
-        combined_memory_types: Optional[set[str]] = set()
-    elif any(memory_types is None for memory_types in configured_scope_types):
-        combined_memory_types = None
-    else:
-        combined_memory_types = set().union(
-            *(memory_types or set() for memory_types in configured_scope_types)
-        )
 
     return _MemoryExtractionScope(
         allow_self_memory=allow_self_memory,
         allowed_peer_ids=allowed_peer_ids,
         include_session_skills=config_session_skill_extraction_enabled and allow_self_memory,
-        self_memory_types=(_effective_self_memory_types(policy) if allow_self_memory else set()),
-        peer_memory_types=(
-            _effective_peer_memory_types(policy) if allowed_peer_ids else set()
-        ),
-        memory_types=combined_memory_types,
+        memory_types=policy.memory_types,
     )
 
 
@@ -618,7 +595,6 @@ class Session:
         agent_evolution_enabled: bool = True,
         usage_reporter: Optional["UsageReporter"] = None,
         agent_evolution_enabled_provider: Optional[Callable[[], bool | Awaitable[bool]]] = None,
-        memory_policy_provider: Optional[Callable[[], Any | Awaitable[Any]]] = None,
     ):
         self._viking_fs = viking_fs
         self._vikingdb_manager = vikingdb_manager
@@ -651,14 +627,7 @@ class Session:
         )
         self._agent_evolution_enabled = agent_evolution_enabled
         self._agent_evolution_enabled_provider = agent_evolution_enabled_provider
-        self._memory_policy_provider = memory_policy_provider
         self._usage_reporter = usage_reporter
-
-    async def _provided_memory_policy(self) -> Any:
-        if self._memory_policy_provider is None:
-            return None
-        provided = self._memory_policy_provider()
-        return await provided if inspect.isawaitable(provided) else provided
 
     async def load(self):
         """Load session data from storage."""
@@ -1883,15 +1852,9 @@ class Session:
         if turn_mode and effective_token_budget <= 0:
             raise ValueError("retained_message_token_budget must be greater than 0")
         in_memory_default_memory_policy = self._meta.memory_policy
-        initial_policy = memory_policy
-        memory_policy_source = "commit"
-        if initial_policy is None:
-            initial_policy = self._meta.memory_policy
-            memory_policy_source = "session"
-        if initial_policy is None:
-            initial_policy = await self._provided_memory_policy()
-            memory_policy_source = "user" if initial_policy is not None else "default"
-        effective_policy = MemoryPolicy.from_dict(initial_policy)
+        effective_policy = MemoryPolicy.from_dict(
+            memory_policy if memory_policy is not None else self._meta.memory_policy
+        )
         _validate_memory_policy_types(effective_policy)
         agent_evolution_enabled = self._agent_evolution_enabled
         if self._agent_evolution_enabled_provider is not None:
@@ -1906,9 +1869,10 @@ class Session:
             agent_evolution_enabled=agent_evolution_enabled,
         )
         effective_memory_policy = effective_policy.to_dict()
+        effective_memory_types = sorted(_effective_memory_types(effective_policy))
         agent_memory_skip_reason = _agent_memory_skip_reason(
             agent_evolution_enabled=agent_evolution_enabled,
-            effective_memory_types=_effective_self_memory_types(effective_policy),
+            effective_memory_types=set(effective_memory_types),
         )
         logger.info(
             f"[TRACER] session_commit started, trace_id={trace_id}, "
@@ -1966,21 +1930,17 @@ class Session:
             # messages being archived, unless this commit supplied an explicit
             # override.
             if memory_policy is None:
-                resolved_policy = self._meta.memory_policy
-                memory_policy_source = "session"
-                if resolved_policy is None:
-                    resolved_policy = await self._provided_memory_policy()
-                    memory_policy_source = "user" if resolved_policy is not None else "default"
-                effective_policy = MemoryPolicy.from_dict(resolved_policy)
+                effective_policy = MemoryPolicy.from_dict(self._meta.memory_policy)
                 _validate_memory_policy_types(effective_policy)
                 effective_policy = _apply_agent_evolution_setting(
                     effective_policy,
                     agent_evolution_enabled=agent_evolution_enabled,
                 )
                 effective_memory_policy = effective_policy.to_dict()
+                effective_memory_types = sorted(_effective_memory_types(effective_policy))
                 agent_memory_skip_reason = _agent_memory_skip_reason(
                     agent_evolution_enabled=agent_evolution_enabled,
-                    effective_memory_types=_effective_self_memory_types(effective_policy),
+                    effective_memory_types=set(effective_memory_types),
                 )
 
             self._compression.compression_index = max(
@@ -2085,7 +2045,6 @@ class Session:
                 archive_uri=archive_uri,
                 user=self.ctx.user.to_dict(),
                 memory_policy=effective_memory_policy,
-                memory_policy_source=memory_policy_source,
                 usage_uris=list(dict.fromkeys(u.uri for u in usage_snapshot if u.uri)),
                 record_auto_commit_success=record_auto_commit_success,
                 event_search_tags=list(effective_event_tags),
@@ -2350,8 +2309,7 @@ class Session:
             usage_records=[Usage(uri=uri, type="context") for uri in msg.usage_uris],
             first_message_id=archive_messages[0].id,
             last_message_id=archive_messages[-1].id,
-            memory_policy=queued_policy.to_dict(),
-            memory_policy_source=msg.memory_policy_source,
+            memory_policy=msg.memory_policy,
             agent_evolution_enabled=agent_evolution_enabled,
             agent_memory_skip_reason=agent_memory_skip_reason,
             user_config_error=user_config_error,
@@ -2392,7 +2350,6 @@ class Session:
         first_message_id: str,
         last_message_id: str,
         memory_policy: Optional[Dict[str, Any]],
-        memory_policy_source: str = "unknown",
         agent_evolution_enabled: bool = True,
         agent_memory_skip_reason: Optional[str] = None,
         user_config_error: Optional[str] = None,
@@ -2595,8 +2552,6 @@ class Session:
                     )
                     self_memory_enabled = extraction_scope.allow_self_memory
                     allowed_peer_ids = extraction_scope.allowed_peer_ids
-                    self_long_term_memory_types = extraction_scope.self_memory_types
-                    peer_long_term_memory_types = extraction_scope.peer_memory_types
                     long_term_memory_types = extraction_scope.memory_types
 
                     long_term_messages = [
@@ -2641,8 +2596,6 @@ class Session:
                                     latest_archive_overview=latest_archive_overview,
                                     archive_uri=archive_uri,
                                     allowed_memory_types=long_term_memory_types,
-                                    allowed_self_memory_types=self_long_term_memory_types,
-                                    allowed_peer_memory_types=peer_long_term_memory_types,
                                     agent_evolution_enabled=agent_evolution_enabled,
                                     allow_self_memory=self_memory_enabled,
                                     allowed_peer_ids=allowed_peer_ids,
@@ -2816,8 +2769,6 @@ class Session:
                 "effective_memory_types": sorted(
                     _effective_memory_types(MemoryPolicy.from_dict(memory_policy))
                 ),
-                "effective_memory_policy": MemoryPolicy.from_dict(memory_policy).to_dict(),
-                "memory_policy_source": memory_policy_source,
                 "agent_evolution_enabled": agent_evolution_enabled,
                 "agent_memory_skip_reason": agent_memory_skip_reason,
                 "token_usage": {
