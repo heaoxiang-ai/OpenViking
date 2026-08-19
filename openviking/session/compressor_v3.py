@@ -3,11 +3,11 @@
 """Session Compressor V3.
 
 V3 keeps the V2 extraction interface while changing user-memory commits to a
-patch-merge flow without directory-level memory locks.  Training cases are not
-extracted by a separate LLM call; they are a normal user-memory ``memory_type``
-(``cases``) emitted by the same ExtractLoop that extracts profile/preferences/
-events/etc.  When such case memories are produced, the same commit rollout is
-submitted to the process-global StreamingPolicyTrainer.
+patch-merge flow without directory-level memory locks. Training cases are a
+normal user-memory ``memory_type`` (``cases``). When Self and Peer scopes are
+both active, cases use a dedicated Self-only extraction pass so Peer memories
+cannot crowd them out of the structured output. Produced cases submit the same
+commit rollout to the process-global StreamingPolicyTrainer.
 """
 
 from __future__ import annotations
@@ -377,6 +377,7 @@ class SessionCompressorV3:
             message_list,
             allowed_memory_types,
         )
+        cases_allowed = allowed_memory_types is None or _CASES_MEMORY_TYPE in allowed_memory_types
         try:
             if fast_path_case is not None:
                 return await self._commit_training_case_fast_path(
@@ -390,23 +391,71 @@ class SessionCompressorV3:
                     allowed_memory_types=allowed_memory_types,
                 )
 
-            result = await self._extract_user_memories(
-                messages=message_list,
-                user=user,
-                session_id=session_id,
-                ctx=ctx,
-                strict_extract_errors=strict_extract_errors,
-                latest_archive_overview=latest_archive_overview,
-                archive_uri=archive_uri,
-                allowed_memory_types=allowed_memory_types,
-                allow_self_memory=allow_self_memory,
-                allowed_peer_ids=allowed_peer_ids,
-                event_search_tags=event_search_tags,
-            )
+            # Cases are Self-only training inputs. Keep them out of the mixed
+            # Self/Peer schema so Peer outputs cannot consume the structured
+            # response without producing the case required by Agent training.
+            if allow_self_memory and allowed_peer_ids and cases_allowed:
+                registry = create_default_registry()
+                user_memory_types = {
+                    schema.memory_type
+                    for schema in registry.list_all(include_disabled=False)
+                    if getattr(schema, "stage", "user") == "user"
+                }
+                if allowed_memory_types is not None:
+                    user_memory_types &= allowed_memory_types
+
+                scoped_results = []
+                non_case_memory_types = user_memory_types - {_CASES_MEMORY_TYPE}
+                if non_case_memory_types:
+                    scoped_results.append(
+                        await self._extract_user_memories(
+                            messages=message_list,
+                            user=user,
+                            session_id=session_id,
+                            ctx=ctx,
+                            strict_extract_errors=strict_extract_errors,
+                            latest_archive_overview=latest_archive_overview,
+                            archive_uri=archive_uri,
+                            allowed_memory_types=non_case_memory_types,
+                            allow_self_memory=allow_self_memory,
+                            allowed_peer_ids=allowed_peer_ids,
+                            event_search_tags=event_search_tags,
+                        )
+                    )
+                scoped_results.append(
+                    await self._extract_user_memories(
+                        messages=message_list,
+                        user=user,
+                        session_id=session_id,
+                        ctx=ctx,
+                        strict_extract_errors=strict_extract_errors,
+                        latest_archive_overview=latest_archive_overview,
+                        archive_uri=archive_uri,
+                        allowed_memory_types={_CASES_MEMORY_TYPE},
+                        allow_self_memory=True,
+                        allowed_peer_ids=set(),
+                        event_search_tags=event_search_tags,
+                    )
+                )
+                result = _merge_v3_extraction_results(
+                    scoped_results,
+                    archive_uri=archive_uri or "",
+                )
+            else:
+                result = await self._extract_user_memories(
+                    messages=message_list,
+                    user=user,
+                    session_id=session_id,
+                    ctx=ctx,
+                    strict_extract_errors=strict_extract_errors,
+                    latest_archive_overview=latest_archive_overview,
+                    archive_uri=archive_uri,
+                    allowed_memory_types=allowed_memory_types,
+                    allow_self_memory=allow_self_memory,
+                    allowed_peer_ids=allowed_peer_ids,
+                    event_search_tags=event_search_tags,
+                )
             agent_memory_types = _allowed_agent_memory_types(allowed_memory_types)
-            cases_allowed = (
-                allowed_memory_types is None or _CASES_MEMORY_TYPE in allowed_memory_types
-            )
             session_skills_enabled = self._session_skill_extraction_enabled()
             if (
                 agent_evolution_enabled
@@ -1230,6 +1279,33 @@ class _V3AppliedMemory:
     result: Any
     operations: ResolvedOperations
     memory_diff: dict[str, Any] | None = None
+
+
+def _merge_v3_extraction_results(
+    results: list[_V3ExtractionResult],
+    *,
+    archive_uri: str,
+) -> _V3ExtractionResult:
+    contexts: list[Context] = []
+    cases: list[Case] = []
+    case_uri_by_name: dict[str, str] = {}
+    memory_diffs: list[dict[str, Any]] = []
+
+    for result in results:
+        contexts.extend(result.contexts)
+        cases.extend(result.cases)
+        case_uri_by_name.update(result.case_uri_by_name)
+        if isinstance(result.memory_diff, dict):
+            memory_diffs.append(result.memory_diff)
+
+    return _V3ExtractionResult(
+        contexts=contexts,
+        cases=cases,
+        memory_diff=(
+            _merge_memory_diffs(memory_diffs, archive_uri=archive_uri) if memory_diffs else None
+        ),
+        case_uri_by_name=case_uri_by_name,
+    )
 
 
 def _contexts_from_update_result(result: Any) -> list[Context]:

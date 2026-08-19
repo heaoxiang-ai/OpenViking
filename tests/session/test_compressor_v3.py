@@ -295,6 +295,76 @@ async def test_v3_passes_allowed_execution_types_to_agent_training(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_v3_extracts_self_cases_separately_when_peer_scope_is_active(monkeypatch):
+    peer_context = SimpleNamespace(uri="viking://user/u/peers/alice/memories/preferences/p.md")
+    case_context = SimpleNamespace(uri="viking://user/u/memories/cases/c.md")
+    extraction_calls = []
+
+    monkeypatch.setattr(
+        "openviking.session.compressor_v3.get_viking_fs",
+        lambda: SimpleNamespace(),
+    )
+    compressor = SessionCompressorV3(vikingdb=None)
+
+    async def fake_extract_user_memories(**kwargs):
+        extraction_calls.append(kwargs)
+        if kwargs["allowed_memory_types"] == {"cases"}:
+            return SimpleNamespace(
+                contexts=[case_context],
+                cases=[_training_case()],
+                memory_diff={
+                    "operations": {
+                        "adds": [{"uri": case_context.uri}],
+                        "updates": [],
+                        "deletes": [],
+                    }
+                },
+                case_uri_by_name={"duplicate_booking": case_context.uri},
+            )
+        return SimpleNamespace(
+            contexts=[peer_context],
+            cases=[],
+            memory_diff={
+                "operations": {
+                    "adds": [{"uri": peer_context.uri}],
+                    "updates": [],
+                    "deletes": [],
+                }
+            },
+            case_uri_by_name={},
+        )
+
+    compressor._extract_user_memories = fake_extract_user_memories
+    compressor.train_from_extracted_cases = AsyncMock(
+        return_value={"case_count": 1, "submitted": 1}
+    )
+    compressor._write_final_memory_diff = AsyncMock()
+
+    contexts = await compressor.extract_long_term_memories(
+        messages=_messages(),
+        ctx=_ctx(),
+        archive_uri="viking://user/u/sessions/s/history/archive_001",
+        allowed_memory_types={"cases", "experiences", "preferences", "trajectories"},
+        allowed_peer_ids={"alice"},
+    )
+
+    assert len(extraction_calls) == 2
+    assert extraction_calls[0]["allowed_memory_types"] == {"preferences"}
+    assert extraction_calls[0]["allowed_peer_ids"] == {"alice"}
+    assert extraction_calls[1]["allowed_memory_types"] == {"cases"}
+    assert extraction_calls[1]["allow_self_memory"] is True
+    assert extraction_calls[1]["allowed_peer_ids"] == set()
+    assert compressor.train_from_extracted_cases.await_args.kwargs["cases"] == [_training_case()]
+    assert contexts == [peer_context, case_context]
+
+    merged_diff = compressor._write_final_memory_diff.await_args.kwargs["memory_diffs"][0]
+    assert [item["uri"] for item in merged_diff["operations"]["adds"]] == [
+        peer_context.uri,
+        case_context.uri,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_v3_initializes_only_allowed_memory_files(monkeypatch):
     initialized_with = []
 
