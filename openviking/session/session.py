@@ -23,6 +23,7 @@ from openviking.pyagfs.exceptions import AGFSClientError, AGFSHTTPError, AGFSNot
 from openviking.server.config import ToolOutputExternalizationConfig
 from openviking.server.identity import RequestContext, Role
 from openviking.session.auto_commit_policy import AutoCommitPolicy
+from openviking.session.memory.constants import AGENT_EVOLUTION_MEMORY_TYPES
 from openviking.session.memory_policy import MemoryPolicy
 from openviking.session.retention import (
     RETENTION_MODE_TURN_BUDGET,
@@ -104,6 +105,8 @@ def _enabled_memory_types() -> set[str]:
 
 
 def _validate_memory_policy_types(policy: MemoryPolicy) -> None:
+    if policy.memory_types is None:
+        return
     policy.validate_memory_types(_enabled_memory_types())
 
 
@@ -112,9 +115,17 @@ def _apply_agent_evolution_setting(
     *,
     agent_evolution_enabled: bool,
 ) -> MemoryPolicy:
-    return policy.resolve(
-        _enabled_memory_types(),
-        agent_evolution_enabled=agent_evolution_enabled,
+    if agent_evolution_enabled:
+        return policy
+    effective_types = (
+        _enabled_memory_types() if policy.memory_types is None else set(policy.memory_types)
+    )
+    effective_types -= AGENT_EVOLUTION_MEMORY_TYPES
+    return MemoryPolicy(
+        self_enabled=policy.self_enabled,
+        peer_enabled=policy.peer_enabled,
+        memory_types=effective_types,
+        working_memory_enabled=policy.working_memory_enabled,
     )
 
 
@@ -1850,13 +1861,10 @@ class Session:
             raise ValueError("retained_message_token_budget must be greater than 0")
         in_memory_default_memory_policy = self._meta.memory_policy
         initial_policy = memory_policy
-        memory_policy_source = "commit"
         if initial_policy is None:
             initial_policy = self._meta.memory_policy
-            memory_policy_source = "session"
         if initial_policy is None:
             initial_policy = await self._provided_memory_policy()
-            memory_policy_source = "user" if initial_policy is not None else "default"
         effective_policy = MemoryPolicy.from_dict(initial_policy)
         _validate_memory_policy_types(effective_policy)
         agent_evolution_enabled = self._agent_evolution_enabled
@@ -1872,13 +1880,10 @@ class Session:
             agent_evolution_enabled=agent_evolution_enabled,
         )
         effective_memory_policy = effective_policy.to_dict()
+        effective_memory_types = sorted(_effective_memory_types(effective_policy))
         agent_memory_skip_reason = _agent_memory_skip_reason(
             agent_evolution_enabled=agent_evolution_enabled,
-            effective_memory_types=(
-                _effective_memory_types(effective_policy)
-                if effective_policy.self_enabled
-                else set()
-            ),
+            effective_memory_types=set(effective_memory_types),
         )
         logger.info(
             f"[TRACER] session_commit started, trace_id={trace_id}, "
@@ -1937,10 +1942,8 @@ class Session:
             # override.
             if memory_policy is None:
                 resolved_policy = self._meta.memory_policy
-                memory_policy_source = "session"
                 if resolved_policy is None:
                     resolved_policy = await self._provided_memory_policy()
-                    memory_policy_source = "user" if resolved_policy is not None else "default"
                 effective_policy = MemoryPolicy.from_dict(resolved_policy)
                 _validate_memory_policy_types(effective_policy)
                 effective_policy = _apply_agent_evolution_setting(
@@ -1948,13 +1951,10 @@ class Session:
                     agent_evolution_enabled=agent_evolution_enabled,
                 )
                 effective_memory_policy = effective_policy.to_dict()
+                effective_memory_types = sorted(_effective_memory_types(effective_policy))
                 agent_memory_skip_reason = _agent_memory_skip_reason(
                     agent_evolution_enabled=agent_evolution_enabled,
-                    effective_memory_types=(
-                        _effective_memory_types(effective_policy)
-                        if effective_policy.self_enabled
-                        else set()
-                    ),
+                    effective_memory_types=set(effective_memory_types),
                 )
 
             self._compression.compression_index = max(
@@ -2059,7 +2059,6 @@ class Session:
                 archive_uri=archive_uri,
                 user=self.ctx.user.to_dict(),
                 memory_policy=effective_memory_policy,
-                memory_policy_source=memory_policy_source,
                 usage_uris=list(dict.fromkeys(u.uri for u in usage_snapshot if u.uri)),
                 record_auto_commit_success=record_auto_commit_success,
                 event_search_tags=list(effective_event_tags),
@@ -2324,8 +2323,7 @@ class Session:
             usage_records=[Usage(uri=uri, type="context") for uri in msg.usage_uris],
             first_message_id=archive_messages[0].id,
             last_message_id=archive_messages[-1].id,
-            memory_policy=queued_policy.to_dict(),
-            memory_policy_source=msg.memory_policy_source,
+            memory_policy=msg.memory_policy,
             agent_evolution_enabled=agent_evolution_enabled,
             agent_memory_skip_reason=agent_memory_skip_reason,
             user_config_error=user_config_error,
@@ -2366,7 +2364,6 @@ class Session:
         first_message_id: str,
         last_message_id: str,
         memory_policy: Optional[Dict[str, Any]],
-        memory_policy_source: str = "unknown",
         agent_evolution_enabled: bool = True,
         agent_memory_skip_reason: Optional[str] = None,
         user_config_error: Optional[str] = None,
@@ -2786,8 +2783,6 @@ class Session:
                 "effective_memory_types": sorted(
                     _effective_memory_types(MemoryPolicy.from_dict(memory_policy))
                 ),
-                "effective_memory_policy": MemoryPolicy.from_dict(memory_policy).to_dict(),
-                "memory_policy_source": memory_policy_source,
                 "agent_evolution_enabled": agent_evolution_enabled,
                 "agent_memory_skip_reason": agent_memory_skip_reason,
                 "token_usage": {

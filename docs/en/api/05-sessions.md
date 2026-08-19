@@ -1407,8 +1407,7 @@ Commit a session. Message archiving (Phase 1) completes immediately. Summary gen
 
 The effective policy is resolved in this order: Session `.meta.json`, latest
 `settings/user_config.json`, then the kernel default. The fully resolved policy
-is stored in the queued task before Phase 2 starts. A completed task returns
-`effective_memory_policy` and `memory_policy_source` for diagnostics.
+is stored in the queued task before Phase 2 starts.
 
 #### 3. Usage Examples
 

@@ -48,6 +48,9 @@ def _parse_enabled(value: Any, *, key: str) -> bool:
         if normalized in _FALSE_STRINGS:
             return False
 
+    # Preserve the permissive pre-v0.5 behavior for uncommon legacy values.
+    # This avoids breaking persisted policy dictionaries while callers migrate
+    # to genuine JSON booleans.
     return bool(value)
 
 
@@ -124,25 +127,6 @@ class MemoryPolicy:
             raise InvalidArgumentError(
                 "Unknown memory_policy.memory_types: " + ", ".join(sorted(unknown))
             )
-
-    def resolve(
-        self,
-        known_memory_types: set[str],
-        *,
-        agent_evolution_enabled: bool,
-    ) -> "MemoryPolicy":
-        """Expand defaults and apply the account-scoped Agent switch."""
-        memory_types = (
-            set(known_memory_types) if self.memory_types is None else set(self.memory_types)
-        )
-        if not agent_evolution_enabled:
-            memory_types -= AGENT_EVOLUTION_MEMORY_TYPES
-        return MemoryPolicy(
-            self_enabled=self.self_enabled,
-            peer_enabled=self.peer_enabled,
-            memory_types=memory_types,
-            working_memory_enabled=self.working_memory_enabled,
-        )
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {

@@ -164,9 +164,7 @@ class TestCommit:
             session_with_messages._session_compressor.extract_long_term_memories.call_args.kwargs
         )
         assert call_kwargs["agent_evolution_enabled"] is True
-        assert call_kwargs["allowed_memory_types"] == set(
-            task_result["result"]["effective_memory_types"]
-        )
+        assert call_kwargs["allowed_memory_types"] is None
 
     async def test_commit_reads_latest_user_memory_policy_when_session_has_no_override(
         self, session_with_messages: Session
@@ -182,12 +180,7 @@ class TestCommit:
         task_result = await _wait_for_task(result["task_id"])
 
         assert task_result["status"] == "completed"
-        assert task_result["result"]["memory_policy_source"] == "user"
-        assert task_result["result"]["effective_memory_policy"] == {
-            "self": {"enabled": True},
-            "peer": {"enabled": True},
-            "memory_types": ["profile"],
-        }
+        assert task_result["result"]["effective_memory_types"] == ["profile"]
         call_kwargs = (
             session_with_messages._session_compressor.extract_long_term_memories.call_args.kwargs
         )
@@ -256,9 +249,7 @@ class TestCommit:
         call_kwargs = (
             session_with_messages._session_compressor.extract_long_term_memories.call_args.kwargs
         )
-        assert call_kwargs["allowed_memory_types"] == set(
-            task_result["result"]["effective_memory_types"]
-        )
+        assert call_kwargs["allowed_memory_types"] is None
 
     async def test_commit_skips_session_skills_without_execution_memory_type(
         self, session_with_messages: Session, monkeypatch

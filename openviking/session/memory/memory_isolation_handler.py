@@ -247,6 +247,7 @@ class MemoryIsolationHandler:
 
         user_id = self.ctx.user.user_id
         operation.memory_fields["user_id"] = user_id
+
         target_ids: List[str] = []
         has_ranges = operation.memory_fields.get("ranges") is not None
         if not getattr(memory_type_schema, "peer_enabled", True):

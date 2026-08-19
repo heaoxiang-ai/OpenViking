@@ -11,7 +11,6 @@ from openviking.session.memory.dataclass import MemoryField, MemoryTypeSchema
 from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
 from openviking.session.memory.merge_op.base import FieldType
 from openviking.session.memory_policy import MemoryPolicy
-from openviking.session.session import _effective_memory_types
 from openviking_cli.exceptions import InvalidArgumentError
 
 
@@ -47,21 +46,6 @@ def test_memory_policy_uses_top_level_memory_types():
         "self": {"enabled": False},
         "peer": {"enabled": True},
         "memory_types": ["events", "profile"],
-    }
-
-
-def test_memory_policy_serialization_preserves_types_when_self_is_disabled():
-    policy = MemoryPolicy.from_dict(
-        {
-            "self": {"enabled": False},
-            "memory_types": ["experiences"],
-        }
-    )
-
-    assert policy.to_dict() == {
-        "self": {"enabled": False},
-        "peer": {"enabled": True},
-        "memory_types": ["cases", "experiences", "trajectories"],
     }
 
 
@@ -111,8 +95,6 @@ def test_memory_policy_rejects_invalid_memory_types():
     with pytest.raises(InvalidArgumentError, match="missing"):
         policy.validate_memory_types({"profile"})
 
-
-def test_memory_policy_agent_dependencies():
     evolution_policy = MemoryPolicy.from_dict({"memory_types": ["profile", "experiences"]})
     assert evolution_policy.memory_types == {
         "profile",
@@ -125,16 +107,6 @@ def test_memory_policy_agent_dependencies():
         {"memory_types": ["profile", "cases", "trajectories"]}
     )
     assert incomplete_policy.memory_types == {"profile"}
-
-
-def test_memory_policy_resolves_default_types_and_account_agent_switch():
-    known_types = {"cases", "events", "experiences", "profile", "trajectories"}
-
-    enabled = MemoryPolicy.default().resolve(known_types, agent_evolution_enabled=True)
-    assert _effective_memory_types(enabled) == known_types
-
-    disabled = MemoryPolicy.default().resolve(known_types, agent_evolution_enabled=False)
-    assert _effective_memory_types(disabled) == {"events", "profile"}
 
 
 async def test_initialize_memory_files_respects_memory_type_filter(monkeypatch):
