@@ -631,11 +631,14 @@ class Session:
         self._memory_policy_provider = memory_policy_provider
         self._usage_reporter = usage_reporter
 
-    async def _provided_memory_policy(self) -> Any:
-        if self._memory_policy_provider is None:
-            return None
-        provided = self._memory_policy_provider()
-        return await provided if inspect.isawaitable(provided) else provided
+    async def _resolve_memory_policy(
+        self, override: Optional[Dict[str, Any]] = None
+    ) -> MemoryPolicy:
+        policy = override if override is not None else self._meta.memory_policy
+        if policy is None and self._memory_policy_provider is not None:
+            provided = self._memory_policy_provider()
+            policy = await provided if inspect.isawaitable(provided) else provided
+        return MemoryPolicy.from_dict(policy)
 
     async def load(self):
         """Load session data from storage."""
@@ -1860,12 +1863,7 @@ class Session:
         if turn_mode and effective_token_budget <= 0:
             raise ValueError("retained_message_token_budget must be greater than 0")
         in_memory_default_memory_policy = self._meta.memory_policy
-        initial_policy = memory_policy
-        if initial_policy is None:
-            initial_policy = self._meta.memory_policy
-        if initial_policy is None:
-            initial_policy = await self._provided_memory_policy()
-        effective_policy = MemoryPolicy.from_dict(initial_policy)
+        effective_policy = await self._resolve_memory_policy(memory_policy)
         _validate_memory_policy_types(effective_policy)
         agent_evolution_enabled = self._agent_evolution_enabled
         if self._agent_evolution_enabled_provider is not None:
@@ -1941,10 +1939,7 @@ class Session:
             # messages being archived, unless this commit supplied an explicit
             # override.
             if memory_policy is None:
-                resolved_policy = self._meta.memory_policy
-                if resolved_policy is None:
-                    resolved_policy = await self._provided_memory_policy()
-                effective_policy = MemoryPolicy.from_dict(resolved_policy)
+                effective_policy = await self._resolve_memory_policy()
                 _validate_memory_policy_types(effective_policy)
                 effective_policy = _apply_agent_evolution_setting(
                     effective_policy,

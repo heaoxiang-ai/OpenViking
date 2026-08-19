@@ -237,14 +237,13 @@ def _user_settings_result(
     policy = MemoryPolicy.from_dict(user_config.memory_policy)
     known_memory_types = set(MemoryTypeRegistry().list_names(include_disabled=False))
     policy.validate_memory_types(known_memory_types)
-    memory_policy = policy.resolve(
-        known_memory_types,
-        agent_evolution_enabled=True,
-    )
+    memory_policy = policy.to_dict()
+    if policy.memory_types is None:
+        memory_policy["memory_types"] = sorted(known_memory_types)
     return {
         "account_id": account_id,
         "user_id": user_id,
-        "memory_policy": memory_policy.to_dict(),
+        "memory_policy": memory_policy,
     }
 
 
