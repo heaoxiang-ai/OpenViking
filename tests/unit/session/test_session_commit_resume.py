@@ -73,7 +73,11 @@ async def test_resume_queued_commit_continues_phase2(monkeypatch):
         session_uri=session_uri,
         archive_uri=archive_uri,
         user={"account_id": "default", "user_id": "default"},
-        memory_policy={"memory_types": []},
+        memory_policy={
+            "self": {"enabled": True},
+            "peer": {"enabled": False},
+            "memory_types": ["events"],
+        },
     )
 
     try:
@@ -84,6 +88,11 @@ async def test_resume_queued_commit_continues_phase2(monkeypatch):
     session._run_memory_extraction.assert_awaited_once()
     assert session._run_memory_extraction.await_args.kwargs["task_id"] == "task-1"
     assert session._run_memory_extraction.await_args.kwargs["agent_evolution_enabled"] is True
+    assert session._run_memory_extraction.await_args.kwargs["memory_policy"] == {
+        "self": {"enabled": True},
+        "peer": {"enabled": False},
+        "memory_types": ["events"],
+    }
     assert [
         item.id for item in session._run_memory_extraction.await_args.kwargs["messages"]
     ] == ["archived"]

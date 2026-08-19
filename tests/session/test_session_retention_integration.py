@@ -1860,10 +1860,11 @@ async def test_stale_worker_uses_lock_snapshot_memory_policy_for_queue_message(
 
     assert result["archived"] is True
     queued_policy = queued[0]["memory_policy"]
-    assert {
-        key: queued_policy[key] for key in updater.meta.memory_policy
-    } == updater.meta.memory_policy
+    assert queued_policy["working_memory"] == {"enabled": False}
+    assert queued_policy["self"]["enabled"] is False
+    assert queued_policy["peer"]["enabled"] is False
     assert set(queued_policy["memory_types"]).isdisjoint(AGENT_EVOLUTION_MEMORY_TYPES)
+    assert queued[0]["memory_policy_source"] == "session"
     assert "agent_evolution_enabled" not in queued[0]
     archive_meta = json.loads(
         await stale_session._viking_fs.read_file(

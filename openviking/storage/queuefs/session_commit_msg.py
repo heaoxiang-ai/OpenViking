@@ -14,6 +14,7 @@ class SessionCommitMsg:
     archive_uri: str
     user: Dict[str, str]
     memory_policy: Dict[str, Any] = field(default_factory=dict)
+    memory_policy_source: str = "unknown"
     usage_uris: List[str] = field(default_factory=list)
     # When True, Phase 2's final meta merge also clears the auto-commit error
     # fields and stamps last_auto_commit_at. Defaults keep old producers working.

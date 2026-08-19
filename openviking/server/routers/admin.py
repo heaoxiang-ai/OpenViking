@@ -25,7 +25,13 @@ from openviking.server.config import ServerConfig, UserConfig
 from openviking.server.dependencies import get_service
 from openviking.server.identity import RequestContext, Role
 from openviking.server.models import Response
-from openviking.server.user_config import validate_add_targets, write_user_config
+from openviking.server.user_config import (
+    read_user_config,
+    validate_add_targets,
+    validate_user_memory_policy,
+    write_user_config,
+    write_user_memory_policy,
+)
 from openviking.service.legacy_migration import LegacyDataMigration
 from openviking.service.task_store import (
     SYSTEM_TASK_ACCOUNT_ID,
@@ -34,6 +40,8 @@ from openviking.service.task_store import (
 from openviking.service.task_tracker import (
     get_task_tracker,
 )
+from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
+from openviking.session.memory_policy import MemoryPolicy
 from openviking.storage.viking_fs import get_viking_fs
 from openviking_cli.exceptions import (
     FailedPreconditionError,
@@ -78,6 +86,12 @@ class MigrateLegacyDataRequest(BaseModel):
 
 class SetAgentEvolutionRequest(BaseModel):
     enabled: bool
+
+
+class UserSettingsPatch(BaseModel):
+    memory_policy: dict
+
+    model_config = {"extra": "forbid"}
 
 
 def _agent_evolution_account_id(ctx: RequestContext) -> str:
@@ -177,7 +191,7 @@ def _has_add_targets(user_config: UserConfig | None) -> bool:
 
 
 def _has_initial_user_config(user_config: UserConfig | None) -> bool:
-    return _has_add_targets(user_config)
+    return bool(_has_add_targets(user_config) or (user_config and user_config.memory_policy))
 
 
 def _validate_initial_user_config(
@@ -185,15 +199,18 @@ def _validate_initial_user_config(
     user_ctx: RequestContext,
     user_config: UserConfig | None,
 ) -> None:
-    if not _has_add_targets(user_config):
+    if not _has_initial_user_config(user_config):
         return
     if service.viking_fs is None:
         raise FailedPreconditionError("OpenViking service is not initialized.")
-    validate_add_targets(
-        user_config.add_targets,
-        ctx=user_ctx,
-        viking_fs=service.viking_fs,
-    )
+    if _has_add_targets(user_config):
+        validate_add_targets(
+            user_config.add_targets,
+            ctx=user_ctx,
+            viking_fs=service.viking_fs,
+        )
+    if user_config is not None:
+        validate_user_memory_policy(user_config.memory_policy)
 
 
 async def _write_initial_user_config(
@@ -204,6 +221,31 @@ async def _write_initial_user_config(
     if not _has_initial_user_config(user_config):
         return
     await write_user_config(service.viking_fs, user_ctx, user_config)
+
+
+def _check_user_exists(request: Request, account_id: str, user_id: str) -> None:
+    manager = _get_api_key_manager(request)
+    if not manager.has_user(account_id, user_id):
+        raise NotFoundError(user_id, "user")
+
+
+def _user_settings_result(
+    account_id: str,
+    user_id: str,
+    user_config: UserConfig,
+) -> dict:
+    policy = MemoryPolicy.from_dict(user_config.memory_policy)
+    known_memory_types = set(MemoryTypeRegistry().list_names(include_disabled=False))
+    policy.validate_memory_types(known_memory_types)
+    memory_policy = policy.resolve(
+        known_memory_types,
+        agent_evolution_enabled=True,
+    )
+    return {
+        "account_id": account_id,
+        "user_id": user_id,
+        "memory_policy": memory_policy.to_dict(),
+    }
 
 
 async def _run_legacy_migration_task(
@@ -465,6 +507,60 @@ async def list_users(
         account_id, limit=limit, name_filter=name, role_filter=role, expose_key=expose_key
     )
     return Response(status="ok", result=users)
+
+
+@router.get("/accounts/{account_id}/users/{user_id}/settings")
+@require_auth_root_or_admin
+async def get_user_settings(
+    request: Request,
+    account_id: str = Path(..., description="Account ID"),
+    user_id: str = Path(..., description="User ID"),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Return the configured and effective memory policy for one User."""
+    _check_account_access(ctx, account_id)
+    _check_account_exists(request, account_id)
+    _check_user_exists(request, account_id, user_id)
+    service = get_service()
+    if service.viking_fs is None:
+        raise FailedPreconditionError("OpenViking service is not initialized.")
+    user_ctx = RequestContext(
+        user=UserIdentifier(account_id, user_id),
+        role=Role.USER,
+    )
+    user_config = await read_user_config(service.viking_fs, user_ctx)
+    return Response(
+        status="ok",
+        result=_user_settings_result(account_id, user_id, user_config),
+    )
+
+
+@router.patch("/accounts/{account_id}/users/{user_id}/settings")
+@require_auth_root_or_admin
+async def patch_user_settings(
+    body: UserSettingsPatch,
+    request: Request,
+    account_id: str = Path(..., description="Account ID"),
+    user_id: str = Path(..., description="User ID"),
+    ctx: RequestContext = Depends(get_request_context),
+):
+    """Update the allowlisted User memory policy without restarting the server."""
+    _check_account_access(ctx, account_id)
+    _check_account_exists(request, account_id)
+    _check_user_exists(request, account_id, user_id)
+    service = get_service()
+    if service.viking_fs is None:
+        raise FailedPreconditionError("OpenViking service is not initialized.")
+    user_ctx = RequestContext(
+        user=UserIdentifier(account_id, user_id),
+        role=Role.USER,
+    )
+    await write_user_memory_policy(service.viking_fs, user_ctx, body.memory_policy)
+    user_config = await read_user_config(service.viking_fs, user_ctx)
+    return Response(
+        status="ok",
+        result=_user_settings_result(account_id, user_id, user_config),
+    )
 
 
 @router.delete("/accounts/{account_id}/users/{user_id}", status_code=202)

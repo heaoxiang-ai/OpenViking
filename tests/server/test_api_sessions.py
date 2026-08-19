@@ -169,6 +169,47 @@ async def test_get_session(client: httpx.AsyncClient):
     assert body["result"]["uri"] == session_uri
 
 
+async def test_get_session_preserves_legacy_memory_policy_shape(client: httpx.AsyncClient):
+    create_resp = await client.post(
+        "/api/v1/sessions",
+        json={"memory_policy": {"memory_types": ["profile"]}},
+    )
+    session_id = create_resp.json()["result"]["session_id"]
+
+    resp = await client.get(f"/api/v1/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["result"]["memory_policy"] == {
+        "self": {"enabled": True},
+        "peer": {"enabled": True},
+        "memory_types": ["profile"],
+    }
+
+
+async def test_get_session_preserves_disabled_legacy_agent_policy_shape(
+    client: httpx.AsyncClient,
+):
+    create_resp = await client.post(
+        "/api/v1/sessions",
+        json={
+            "memory_policy": {
+                "self": {"enabled": False},
+                "memory_types": ["experiences"],
+            }
+        },
+    )
+    session_id = create_resp.json()["result"]["session_id"]
+
+    resp = await client.get(f"/api/v1/sessions/{session_id}")
+
+    assert resp.status_code == 200
+    assert resp.json()["result"]["memory_policy"] == {
+        "self": {"enabled": False},
+        "peer": {"enabled": True},
+        "memory_types": ["cases", "experiences", "trajectories"],
+    }
+
+
 async def test_legacy_session_uri_alias_reads_current_user_session(client: httpx.AsyncClient):
     session_id = "legacy-alias-read"
     await client.post("/api/v1/sessions", json={"session_id": session_id})
