@@ -353,12 +353,7 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
         json={
             "user_id": "bob",
             "role": "user",
-            "user_config": {
-                "memory_policy": {
-                    "self": {"enabled": True, "memory_types": ["profile"]},
-                    "peer": {"enabled": False, "memory_types": []},
-                }
-            },
+            "user_config": {"memory_policy": {"memory_types": ["profile"]}},
         },
         headers=root_headers(),
     )
@@ -369,40 +364,38 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
         headers=root_headers(),
     )
     assert get_settings.status_code == 200, get_settings.text
-    assert get_settings.json()["result"]["memory_policy"]["self"] == {
-        "enabled": True,
+    assert get_settings.json()["result"]["memory_policy"] == {
+        "self": {"enabled": True},
+        "peer": {"enabled": True},
         "memory_types": ["profile"],
     }
 
     patch_settings = await lightweight_admin_client.patch(
         f"/api/v1/admin/accounts/{acct}/users/bob/settings",
-        json={
-            "memory_policy": {
-                "self": {"enabled": True, "memory_types": ["experiences"]},
-                "peer": {"enabled": True, "memory_types": ["events"]},
-            }
-        },
+        json={"memory_policy": {"memory_types": ["experiences"]}},
         headers=root_headers(),
     )
     assert patch_settings.status_code == 200, patch_settings.text
     memory_policy = patch_settings.json()["result"]["memory_policy"]
-    assert memory_policy["self"]["memory_types"] == [
+    assert memory_policy["memory_types"] == [
         "cases",
         "experiences",
         "trajectories",
     ]
-    assert memory_policy["peer"]["memory_types"] == ["events"]
 
     viking_fs = lightweight_admin_app.state.fake_service.viking_fs
     persisted = await read_user_config(
         viking_fs,
         RequestContext(user=UserIdentifier(acct, "bob"), role=Role.USER),
     )
-    assert persisted.memory_policy["self"]["memory_types"] == ["experiences"]
-    assert persisted.memory_policy["peer"]["memory_types"] == ["events"]
+    assert persisted.memory_policy["memory_types"] == [
+        "cases",
+        "experiences",
+        "trajectories",
+    ]
     user_ctx = RequestContext(user=UserIdentifier(acct, "bob"), role=Role.USER)
     backup = json.loads(viking_fs.files[user_config_backup_uri(user_ctx)])
-    assert backup["memory_policy"]["self"]["memory_types"] == ["profile"]
+    assert backup["memory_policy"]["memory_types"] == ["profile"]
 
     writes_before_noop = len(viking_fs.writes)
     noop_patch = await lightweight_admin_client.patch(

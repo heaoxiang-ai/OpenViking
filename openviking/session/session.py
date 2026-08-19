@@ -22,7 +22,6 @@ from openviking.pyagfs.exceptions import AGFSClientError, AGFSHTTPError, AGFSNot
 from openviking.server.config import ToolOutputExternalizationConfig
 from openviking.server.identity import RequestContext, Role
 from openviking.session.auto_commit_policy import AutoCommitPolicy
-from openviking.session.memory.constants import AGENT_EVOLUTION_MEMORY_TYPES
 from openviking.session.memory_policy import MemoryPolicy
 from openviking.session.retention import (
     RETENTION_MODE_TURN_BUDGET,
@@ -117,24 +116,10 @@ def _apply_agent_evolution_setting(
     )
 
 
-def _effective_self_memory_types(policy: MemoryPolicy) -> set[str]:
-    if not policy.self_enabled:
-        return set()
-    if policy.self_memory_types is None:
-        return _enabled_memory_types()
-    return set(policy.self_memory_types)
-
-
-def _effective_peer_memory_types(policy: MemoryPolicy) -> set[str]:
-    if not policy.peer_enabled:
-        return set()
-    if policy.peer_memory_types is None:
-        return _enabled_memory_types() - AGENT_EVOLUTION_MEMORY_TYPES
-    return set(policy.peer_memory_types)
-
-
 def _effective_memory_types(policy: MemoryPolicy) -> set[str]:
-    return _effective_self_memory_types(policy) | _effective_peer_memory_types(policy)
+    if policy.memory_types is None:
+        return _enabled_memory_types()
+    return set(policy.memory_types)
 
 
 def _agent_memory_skip_reason(
@@ -188,8 +173,6 @@ class _MemoryExtractionScope:
     allow_self_memory: bool
     allowed_peer_ids: set[str]
     include_session_skills: bool
-    self_memory_types: set[str]
-    peer_memory_types: set[str]
     memory_types: Optional[set[str]]
 
 
@@ -202,29 +185,12 @@ def _resolve_memory_extraction_scope(
 ) -> _MemoryExtractionScope:
     allow_self_memory = policy.self_enabled
     allowed_peer_ids = _message_peer_ids(messages) if policy.peer_enabled else set()
-    configured_scope_types: list[Optional[set[str]]] = []
-    if allow_self_memory:
-        configured_scope_types.append(policy.self_memory_types)
-    if allowed_peer_ids:
-        configured_scope_types.append(policy.peer_memory_types)
-    if not configured_scope_types:
-        combined_memory_types: Optional[set[str]] = set()
-    elif any(memory_types is None for memory_types in configured_scope_types):
-        combined_memory_types = None
-    else:
-        combined_memory_types = set().union(
-            *(memory_types or set() for memory_types in configured_scope_types)
-        )
 
     return _MemoryExtractionScope(
         allow_self_memory=allow_self_memory,
         allowed_peer_ids=allowed_peer_ids,
         include_session_skills=config_session_skill_extraction_enabled and allow_self_memory,
-        self_memory_types=(_effective_self_memory_types(policy) if allow_self_memory else set()),
-        peer_memory_types=(
-            _effective_peer_memory_types(policy) if allowed_peer_ids else set()
-        ),
-        memory_types=combined_memory_types,
+        memory_types=policy.memory_types,
     )
 
 
@@ -1908,7 +1874,11 @@ class Session:
         effective_memory_policy = effective_policy.to_dict()
         agent_memory_skip_reason = _agent_memory_skip_reason(
             agent_evolution_enabled=agent_evolution_enabled,
-            effective_memory_types=_effective_self_memory_types(effective_policy),
+            effective_memory_types=(
+                _effective_memory_types(effective_policy)
+                if effective_policy.self_enabled
+                else set()
+            ),
         )
         logger.info(
             f"[TRACER] session_commit started, trace_id={trace_id}, "
@@ -1980,7 +1950,11 @@ class Session:
                 effective_memory_policy = effective_policy.to_dict()
                 agent_memory_skip_reason = _agent_memory_skip_reason(
                     agent_evolution_enabled=agent_evolution_enabled,
-                    effective_memory_types=_effective_self_memory_types(effective_policy),
+                    effective_memory_types=(
+                        _effective_memory_types(effective_policy)
+                        if effective_policy.self_enabled
+                        else set()
+                    ),
                 )
 
             self._compression.compression_index = max(
@@ -2575,8 +2549,6 @@ class Session:
                     )
                     self_memory_enabled = extraction_scope.allow_self_memory
                     allowed_peer_ids = extraction_scope.allowed_peer_ids
-                    self_long_term_memory_types = extraction_scope.self_memory_types
-                    peer_long_term_memory_types = extraction_scope.peer_memory_types
                     long_term_memory_types = extraction_scope.memory_types
 
                     long_term_messages = [
@@ -2621,8 +2593,6 @@ class Session:
                                     latest_archive_overview=latest_archive_overview,
                                     archive_uri=archive_uri,
                                     allowed_memory_types=long_term_memory_types,
-                                    allowed_self_memory_types=self_long_term_memory_types,
-                                    allowed_peer_memory_types=peer_long_term_memory_types,
                                     agent_evolution_enabled=agent_evolution_enabled,
                                     allow_self_memory=self_memory_enabled,
                                     allowed_peer_ids=allowed_peer_ids,

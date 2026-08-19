@@ -118,8 +118,9 @@ Content-Type: application/json
 ### user_settings
 
 ROOT 可管理任意 User，ADMIN 仅可管理所属 account 内的 User。User 配置接口当前
-仅允许修改 `memory_policy`。`self` 和 `peer` 分别配置 `enabled` 与
-`memory_types`；Agent 记忆只允许写入 self，peer 配置 Agent 记忆类型会被拒绝。
+仅允许修改 `memory_policy`。顶层统一的 `memory_types` 控制允许抽取的记忆类型。
+用户记忆根据每条 Message 的 `peer_id` 自动写入 Self 或 Peer；Agent 记忆始终只写入
+Self。
 
 ```http
 GET /api/v1/admin/accounts/{account_id}/users/{user_id}/settings
@@ -128,13 +129,13 @@ Content-Type: application/json
 
 {
   "memory_policy": {
-    "self": {"enabled": true, "memory_types": ["profile", "experiences"]},
-    "peer": {"enabled": false, "memory_types": []}
+    "memory_types": ["profile", "preferences", "events", "entities", "experiences"]
   }
 }
 ```
 
-响应直接返回 User 级 `memory_policy`，并展开默认记忆类型和 Agent 记忆依赖；
+响应直接返回 User 级 `memory_policy`，并展开默认记忆类型和 Agent 记忆依赖；配置
+`experiences` 时会展开为 `cases`、`trajectories`、`experiences`；
 该结果不受 account 级 Agent 进化开关影响，Account 开关由独立接口管理。
 更新前会备份到该 User 的 `settings/user_config.backup.json`。未显式配置策略的
 Session 在 commit 时读取该 User 最新策略。

@@ -120,9 +120,10 @@ Before an existing setting is replaced, it is backed up to
 ### user_settings
 
 ROOT can manage any User and ADMIN can manage Users in its own account. The
-User settings endpoint currently allowlists only `memory_policy`. Each target
-has its own `enabled` switch and `memory_types` filter. Agent memory types are
-self-only; configuring them for `peer` is rejected.
+User settings endpoint currently allowlists only `memory_policy`. The shared
+top-level `memory_types` filter controls which memory schemas may be extracted.
+User memories are routed to Self or Peer according to each message's `peer_id`;
+Agent memory types remain Self-only.
 
 ```http
 GET /api/v1/admin/accounts/{account_id}/users/{user_id}/settings
@@ -131,14 +132,14 @@ Content-Type: application/json
 
 {
   "memory_policy": {
-    "self": {"enabled": true, "memory_types": ["profile", "experiences"]},
-    "peer": {"enabled": false, "memory_types": []}
+    "memory_types": ["profile", "preferences", "events", "entities", "experiences"]
   }
 }
 ```
 
 The response contains the User-level `memory_policy`, expanded with its default
-memory types and Agent-memory dependencies. It is independent of the
+memory types and Agent-memory dependencies. `experiences` expands to
+`cases`, `trajectories`, and `experiences`. The policy is independent of the
 account-level Agent Evolution switch, which is managed through the dedicated
 account endpoint. Updates are backed up to the User's
 `settings/user_config.backup.json` before replacement. A Session without an

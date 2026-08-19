@@ -11,7 +11,7 @@ from openviking.session.memory.dataclass import MemoryField, MemoryTypeSchema
 from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
 from openviking.session.memory.merge_op.base import FieldType
 from openviking.session.memory_policy import MemoryPolicy
-from openviking.session.session import _effective_memory_types, _effective_self_memory_types
+from openviking.session.session import _effective_memory_types
 from openviking_cli.exceptions import InvalidArgumentError
 
 
@@ -31,18 +31,6 @@ def test_memory_policy_can_disable_peer_memory():
     assert policy.peer_enabled is False
 
 
-def test_effective_memory_types_respect_disabled_targets():
-    policy = MemoryPolicy.from_dict(
-        {
-            "self": {"enabled": False, "memory_types": ["experiences"]},
-            "peer": {"enabled": False, "memory_types": ["profile"]},
-        }
-    )
-
-    assert _effective_self_memory_types(policy) == set()
-    assert _effective_memory_types(policy) == set()
-
-
 def test_memory_policy_uses_top_level_memory_types():
     policy = MemoryPolicy.from_dict(
         {
@@ -56,17 +44,13 @@ def test_memory_policy_uses_top_level_memory_types():
     assert policy.peer_enabled is True
     assert policy.memory_types == {"profile", "events"}
     assert policy.to_dict() == {
-        "self": {"enabled": False, "memory_types": ["events", "profile"]},
-        "peer": {"enabled": True, "memory_types": ["events", "profile"]},
-    }
-    assert policy.to_legacy_dict() == {
         "self": {"enabled": False},
         "peer": {"enabled": True},
         "memory_types": ["events", "profile"],
     }
 
 
-def test_memory_policy_legacy_serialization_preserves_types_when_self_is_disabled():
+def test_memory_policy_serialization_preserves_types_when_self_is_disabled():
     policy = MemoryPolicy.from_dict(
         {
             "self": {"enabled": False},
@@ -74,7 +58,7 @@ def test_memory_policy_legacy_serialization_preserves_types_when_self_is_disable
         }
     )
 
-    assert policy.to_legacy_dict() == {
+    assert policy.to_dict() == {
         "self": {"enabled": False},
         "peer": {"enabled": True},
         "memory_types": ["cases", "experiences", "trajectories"],
@@ -127,32 +111,8 @@ def test_memory_policy_rejects_invalid_memory_types():
     with pytest.raises(InvalidArgumentError, match="missing"):
         policy.validate_memory_types({"profile"})
 
-    policy = MemoryPolicy.from_dict({"self": {"enabled": True, "memory_types": ["experiences"]}})
-    assert policy.self_memory_types == {"experiences"}
-    assert policy.resolve(
-        {"cases", "events", "experiences", "profile", "trajectories"},
-        agent_evolution_enabled=True,
-    ).self_memory_types == {"cases", "experiences", "trajectories"}
 
-
-def test_memory_policy_supports_independent_self_and_peer_types():
-    policy = MemoryPolicy.from_dict(
-        {
-            "self": {"enabled": True, "memory_types": ["profile", "experiences"]},
-            "peer": {"enabled": True, "memory_types": ["events"]},
-        }
-    )
-
-    assert policy.self_memory_types == {"experiences", "profile"}
-    assert policy.peer_memory_types == {"events"}
-
-
-def test_memory_policy_rejects_agent_types_for_peer_memory():
-    with pytest.raises(InvalidArgumentError, match="does not support agent memory types"):
-        MemoryPolicy.from_dict({"peer": {"enabled": True, "memory_types": ["experiences"]}})
-
-
-def test_memory_policy_legacy_agent_dependencies():
+def test_memory_policy_agent_dependencies():
     evolution_policy = MemoryPolicy.from_dict({"memory_types": ["profile", "experiences"]})
     assert evolution_policy.memory_types == {
         "profile",
@@ -165,6 +125,16 @@ def test_memory_policy_legacy_agent_dependencies():
         {"memory_types": ["profile", "cases", "trajectories"]}
     )
     assert incomplete_policy.memory_types == {"profile"}
+
+
+def test_memory_policy_resolves_default_types_and_account_agent_switch():
+    known_types = {"cases", "events", "experiences", "profile", "trajectories"}
+
+    enabled = MemoryPolicy.default().resolve(known_types, agent_evolution_enabled=True)
+    assert _effective_memory_types(enabled) == known_types
+
+    disabled = MemoryPolicy.default().resolve(known_types, agent_evolution_enabled=False)
+    assert _effective_memory_types(disabled) == {"events", "profile"}
 
 
 async def test_initialize_memory_files_respects_memory_type_filter(monkeypatch):

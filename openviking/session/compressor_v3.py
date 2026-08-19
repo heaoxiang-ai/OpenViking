@@ -359,8 +359,6 @@ class SessionCompressorV3:
         latest_archive_overview: str = "",
         archive_uri: Optional[str] = None,
         allowed_memory_types: Optional[set[str]] = None,
-        allowed_self_memory_types: Optional[set[str]] = None,
-        allowed_peer_memory_types: Optional[set[str]] = None,
         agent_evolution_enabled: bool = True,
         allow_self_memory: bool = True,
         allowed_peer_ids: Optional[set[str]] = None,
@@ -373,22 +371,12 @@ class SessionCompressorV3:
                 else set(allowed_memory_types)
             )
             allowed_memory_types = effective_types - AGENT_EVOLUTION_MEMORY_TYPES
-            if allowed_self_memory_types is not None:
-                allowed_self_memory_types = (
-                    set(allowed_self_memory_types) - AGENT_EVOLUTION_MEMORY_TYPES
-                )
-            if allowed_peer_memory_types is not None:
-                allowed_peer_memory_types = (
-                    set(allowed_peer_memory_types) - AGENT_EVOLUTION_MEMORY_TYPES
-                )
 
         message_list = list(messages)
-        self_types = (
-            allowed_self_memory_types
-            if allowed_self_memory_types is not None
-            else allowed_memory_types
+        fast_path_case = _training_case_from_first_message(
+            message_list,
+            allowed_memory_types,
         )
-        fast_path_case = _training_case_from_first_message(message_list, self_types)
         try:
             if fast_path_case is not None:
                 return await self._commit_training_case_fast_path(
@@ -399,7 +387,7 @@ class SessionCompressorV3:
                     archive_uri=archive_uri or "",
                     strict_extract_errors=strict_extract_errors,
                     agent_evolution_enabled=agent_evolution_enabled,
-                    allowed_memory_types=self_types,
+                    allowed_memory_types=allowed_memory_types,
                 )
 
             result = await self._extract_user_memories(
@@ -411,14 +399,14 @@ class SessionCompressorV3:
                 latest_archive_overview=latest_archive_overview,
                 archive_uri=archive_uri,
                 allowed_memory_types=allowed_memory_types,
-                allowed_self_memory_types=allowed_self_memory_types,
-                allowed_peer_memory_types=allowed_peer_memory_types,
                 allow_self_memory=allow_self_memory,
                 allowed_peer_ids=allowed_peer_ids,
                 event_search_tags=event_search_tags,
             )
-            agent_memory_types = _allowed_agent_memory_types(self_types)
-            cases_allowed = self_types is None or _CASES_MEMORY_TYPE in self_types
+            agent_memory_types = _allowed_agent_memory_types(allowed_memory_types)
+            cases_allowed = (
+                allowed_memory_types is None or _CASES_MEMORY_TYPE in allowed_memory_types
+            )
             session_skills_enabled = self._session_skill_extraction_enabled()
             if (
                 agent_evolution_enabled
@@ -612,8 +600,6 @@ class SessionCompressorV3:
         latest_archive_overview: str = "",
         archive_uri: Optional[str] = None,
         allowed_memory_types: Optional[set[str]] = None,
-        allowed_self_memory_types: Optional[set[str]] = None,
-        allowed_peer_memory_types: Optional[set[str]] = None,
         allow_self_memory: bool = True,
         allowed_peer_ids: Optional[set[str]] = None,
         event_search_tags: Optional[List[str]] = None,
@@ -637,11 +623,7 @@ class SessionCompressorV3:
         if allow_self_memory:
             await registry.initialize_memory_files(
                 ctx,
-                allowed_memory_types=(
-                    allowed_self_memory_types
-                    if allowed_self_memory_types is not None
-                    else allowed_memory_types
-                ),
+                allowed_memory_types=allowed_memory_types,
             )
 
         context_provider = SessionExtractContextProvider(
@@ -660,8 +642,6 @@ class SessionCompressorV3:
             allowed_memory_types=allowed_memory_types,
             allow_self=allow_self_memory,
             allowed_peer_ids=allowed_peer_ids,
-            allowed_self_memory_types=allowed_self_memory_types,
-            allowed_peer_memory_types=allowed_peer_memory_types,
         )
         isolation_handler.prepare_messages()
         context_provider._isolation_handler = isolation_handler
@@ -702,8 +682,6 @@ class SessionCompressorV3:
                     "allowed_memory_types": allowed_memory_types,
                     "allow_self": allow_self_memory,
                     "allowed_peer_ids": allowed_peer_ids,
-                    "allowed_self_memory_types": allowed_self_memory_types,
-                    "allowed_peer_memory_types": allowed_peer_memory_types,
                 },
                 metadata={
                     "source_extraction_id": extraction_id,
