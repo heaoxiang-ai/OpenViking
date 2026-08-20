@@ -65,6 +65,9 @@ if TYPE_CHECKING:
     from openviking.storage.viking_fs import VikingFS
     from openviking.usage_reporter import UsageReporter
 
+MemoryPolicyData = Optional[Dict[str, Any]]
+MemoryPolicyProvider = Callable[[], Awaitable[MemoryPolicyData]]
+
 logger = get_logger(__name__)
 
 _PHASE2_QUEUE_WAIT_TIMEOUT_SECONDS = 1800.0
@@ -595,7 +598,7 @@ class Session:
         agent_evolution_enabled: bool = True,
         usage_reporter: Optional["UsageReporter"] = None,
         agent_evolution_enabled_provider: Optional[Callable[[], bool | Awaitable[bool]]] = None,
-        memory_policy_provider: Optional[Callable[[], Any | Awaitable[Any]]] = None,
+        memory_policy_provider: Optional[MemoryPolicyProvider] = None,
     ):
         self._viking_fs = viking_fs
         self._vikingdb_manager = vikingdb_manager
@@ -636,8 +639,7 @@ class Session:
     ) -> MemoryPolicy:
         policy = override if override is not None else self._meta.memory_policy
         if policy is None and self._memory_policy_provider is not None:
-            provided = self._memory_policy_provider()
-            policy = await provided if inspect.isawaitable(provided) else provided
+            policy = await self._memory_policy_provider()
         return MemoryPolicy.from_dict(policy)
 
     async def load(self):
