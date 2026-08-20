@@ -90,7 +90,12 @@ def validate_resource_add_target(
     ctx: RequestContext,
     viking_fs: VikingFS,
 ) -> str:
-    resolved = validate_content_target_uri(uri, ctx, kind="resource", field_name="resource_uri")
+    resolved = validate_content_target_uri(
+        uri,
+        ctx,
+        kind="resource",
+        field_name="resource_uri",
+    )
     _ensure_mutable(viking_fs, resolved, ctx)
     return resolved
 
@@ -101,16 +106,12 @@ def validate_skill_add_target(
     ctx: RequestContext,
     viking_fs: VikingFS,
 ) -> str:
-    normalized = uri.strip().rstrip("/")
-    if normalized == "viking://user/skills":
-        resolved = f"{canonical_user_root(ctx)}/skills"
-    elif normalized == "viking://agent/skills":
-        resolved = "viking://agent/skills"
-    else:
-        raise InvalidArgumentError(
-            "skill_uri must be viking://user/skills or viking://agent/skills",
-            details={"field": "skill_uri"},
-        )
+    resolved = validate_content_target_uri(
+        uri,
+        ctx,
+        kind="skill",
+        field_name="skill_uri",
+    )
     _ensure_mutable(viking_fs, resolved, ctx)
     return resolved
 
@@ -165,7 +166,9 @@ async def update_user_config(
         current = await read_user_config(viking_fs, ctx)
         before = current.model_dump()
         result = updater(current)
-        validate_add_targets(current.add_targets, ctx=ctx, viking_fs=viking_fs)
+        runtime = validate_add_targets(current.add_targets, ctx=ctx, viking_fs=viking_fs)
+        current.add_targets.resource_uri = runtime.resource_uri
+        current.add_targets.skill_uri = runtime.skill_uri
         validate_user_memory_policy(current.memory_policy)
         if current.model_dump() != before:
             before_content = json.dumps(before, ensure_ascii=False, sort_keys=True)
@@ -202,6 +205,8 @@ async def write_user_config(
     user_config: UserConfig,
 ) -> ResolvedAddTargets:
     runtime = validate_add_targets(user_config.add_targets, ctx=ctx, viking_fs=viking_fs)
+    user_config.add_targets.resource_uri = runtime.resource_uri
+    user_config.add_targets.skill_uri = runtime.skill_uri
     validate_user_memory_policy(user_config.memory_policy)
     uri = user_config_uri(ctx)
     async with _user_config_lock(viking_fs, uri, ctx) as handle:

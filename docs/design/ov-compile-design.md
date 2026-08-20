@@ -141,7 +141,7 @@ Compile 只增加任务编排和领域规则，基础能力使用现有实现：
 | CLI | `CliContext`、`HttpClient`、全局认证、`OutputFormat`、`output_success()` | compile request、状态轮询和 human formatter |
 | Bot proxy | `get_bot_url()`、`_create_bot_proxy_client()`、`_attach_openviking_connection()` | create/status 路由 |
 | Gateway 认证 | `OpenAPIChannel` 的 Gateway Token dependency、`OpenVikingConnection` 和 principal scope | compile request model 和 task owner 绑定 |
-| URI 与权限 | `fs/attrs` 返回的 canonical URI、`validate_viking_uri()`、`canonicalize_uri()`、`context_type_for_uri()`、VikingFS access check | 用户上下文中的目录约束和 target containment |
+| URI 与权限 | `fs/attrs` 返回的 canonical URI、请求边界 URI 校验与简写展开、`context_type_for_uri()`、VikingFS access check | 用户上下文中的目录约束和 target containment |
 | Skill | OpenViking Skills API、`SkillLoader.parse()`、VikingBot `SkillsLoader`、`SandboxManager` | OV bundle 快照和 task-local materialization |
 | Agent | `AgentLoop._run_agent_loop()`、`ToolRegistry`、`register_default_tools()` | structured wrapper、scope guard 和 `submit_wiki_bundle` |
 | 内容读取 | `openviking_list/search/grep/glob/multi_read` | 限定允许的 URI roots；不增加同义读取工具 |
@@ -470,7 +470,7 @@ POST /api/v1/content/batch-write
 
 Batch write 负责：
 
-- 要求 `root_uri` 是已存在的可写目录；canonicalize 所有 URI，拒绝空 operations、重复 URI、跨 context type 以及 root 之外的目标，并按 canonical URI 稳定排序；
+- 要求 `root_uri` 和 operation URI 都是规范 URI，且 `root_uri` 是已存在的可写目录；拒绝空 operations、重复 URI、跨 context type 以及 root 之外的目标，并按 URI 稳定排序；
 - 校验用户对每个目标 URI 的写权限；
 - 保证目标 URI 位于 `root_uri` 下；
 - 在目标 tree lock 内读取当前 raw bytes 并检查所有 precondition；
@@ -486,7 +486,7 @@ hash 定义为最终 raw UTF-8 bytes 的小写 SHA-256，API 表示为 `sha256:<
 
 ```text
 content.batch-write router
-  -> validate_viking_uri / canonicalize_uri / existing target-shape check
+  -> validate_viking_uri / current-user shorthand expansion / existing target-shape check
   -> LockManager target tree lease
   -> read current raw bytes; classify unchanged; validate all remaining preconditions
   -> for each changed operation: VikingFS.write_file(..., lock_handle=lease.handle)

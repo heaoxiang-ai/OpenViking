@@ -12,8 +12,6 @@ from collections import defaultdict
 from typing import Any, Dict, Optional
 
 from openviking.core.namespace import (
-    NamespaceShapeError,
-    canonicalize_uri,
     classify_uri,
     context_type_for_uri,
     relative_uri_path,
@@ -105,13 +103,10 @@ class ContentWriteCoordinator:
         timeout: Optional[float] = None,
         processing_mode: ProcessingMode = DEFAULT_PROCESSING_MODE,
     ) -> Dict[str, Any]:
-        try:
-            normalized_uri = canonicalize_uri(uri, ctx)
-        except NamespaceShapeError as exc:
-            raise InvalidArgumentError(str(exc)) from exc
         self._validate_mode(mode)
         processing_mode = normalize_processing_mode(processing_mode)
-        self._validate_target_uri(normalized_uri)
+        normalized_uri = self._validate_uri_path(uri, field_name="uri")
+        self._ensure_content_write_policy(normalized_uri)
         self._viking_fs._ensure_mutable_access(normalized_uri, ctx)
 
         if mode == "create":
@@ -126,10 +121,14 @@ class ContentWriteCoordinator:
 
         stat = await self._safe_stat(normalized_uri, ctx=ctx)
         if stat.get("isDir"):
-            raise InvalidArgumentError(f"write only supports existing files, got directory: {uri}")
+            raise InvalidArgumentError(
+                f"write only supports existing files, got directory: {normalized_uri}"
+            )
 
         context_type = context_type_for_uri(normalized_uri)
-        root_uri = await self._resolve_root_uri(normalized_uri, ctx=ctx, anchor_to_parent=True)
+        root_uri = await self._resolve_root_uri(
+            normalized_uri, ctx=ctx, anchor_to_parent=True
+        )
         written_bytes = len(content.encode("utf-8"))
         telemetry_id = get_current_telemetry().telemetry_id
 
@@ -176,7 +175,7 @@ class ContentWriteCoordinator:
         tree lock is held and before the first new write.  Refresh runs only after that
         lock is released so semantic processing can safely acquire descendant locks.
         """
-        normalized_root = self._canonicalize(root_uri, ctx=ctx, field_name="root_uri")
+        normalized_root = self._validate_uri_path(root_uri, field_name="root_uri")
         await self._validate_batch_root(normalized_root, ctx=ctx)
         normalized_operations = self._normalize_batch_operations(
             normalized_root, operations, ctx=ctx
@@ -358,10 +357,10 @@ class ContentWriteCoordinator:
             "queue_status": queue_status,
         }
 
-    def _canonicalize(self, uri: str, *, ctx: RequestContext, field_name: str) -> str:
+    def _validate_uri_path(self, uri: str, *, field_name: str) -> str:
         try:
-            return validate_safe_viking_uri_path(canonicalize_uri(uri, ctx))
-        except (NamespaceShapeError, ValueError) as exc:
+            return validate_safe_viking_uri_path(uri)
+        except ValueError as exc:
             raise InvalidArgumentError(f"invalid {field_name}: {exc}") from exc
 
     async def _validate_batch_root(self, root_uri: str, *, ctx: RequestContext) -> None:
@@ -410,7 +409,7 @@ class ContentWriteCoordinator:
         for raw in operations:
             if not isinstance(raw, dict):
                 raise InvalidArgumentError("batch-write operation must be an object")
-            uri = self._canonicalize(raw.get("uri", ""), ctx=ctx, field_name="operation uri")
+            uri = self._validate_uri_path(raw.get("uri", ""), field_name="operation uri")
             if uri in seen:
                 raise InvalidArgumentError(f"duplicate batch-write target: {uri}")
             seen.add(uri)
@@ -420,7 +419,7 @@ class ContentWriteCoordinator:
                 raise InvalidArgumentError(
                     f"batch-write target has a different context type: {uri}"
                 )
-            self._validate_target_uri(uri)
+            self._ensure_content_write_policy(uri)
             self._viking_fs._ensure_mutable_access(uri, ctx)
 
             has_content = "content" in raw
@@ -636,24 +635,19 @@ class ContentWriteCoordinator:
         recursive: bool = False,
         ctx: RequestContext,
     ) -> Dict[str, Any]:
-        try:
-            normalized_uri = canonicalize_uri(uri, ctx)
-        except NamespaceShapeError as exc:
-            raise InvalidArgumentError(str(exc)) from exc
-
         self._validate_tag_mode(mode)
         normalized_tags = normalize_search_tags(tags, discard_invalid=True)
-        stat = await self._safe_stat(normalized_uri, ctx=ctx)
+        stat = await self._safe_stat(uri, ctx=ctx)
         if stat.get("isDir"):
             return await self._set_directory_tags(
-                uri=normalized_uri,
+                uri=uri,
                 tags=normalized_tags,
                 mode=mode,
                 recursive=recursive,
                 ctx=ctx,
             )
         return await self._set_single_uri_tags(
-            uri=normalized_uri,
+            uri=uri,
             tags=normalized_tags,
             mode=mode,
             recursive=recursive,
@@ -951,16 +945,12 @@ class ContentWriteCoordinator:
         if mode not in {"replace", "append"}:
             raise InvalidArgumentError(f"unsupported tag mode: {mode}")
 
-    def _validate_target_uri(self, uri: str) -> None:
+    def _ensure_content_write_policy(self, uri: str) -> None:
         name = uri.rstrip("/").split("/")[-1]
         if name in _DERIVED_FILENAMES:
             raise InvalidArgumentError(f"cannot write derived semantic file directly: {uri}")
         if is_watch_task_control_uri(uri):
             raise InvalidArgumentError(f"cannot write watch task control file directly: {uri}")
-
-        parsed = VikingURI(uri)
-        if parsed.scope not in {"resources", "user", "agent"}:
-            raise InvalidArgumentError(f"write is not supported for scope: {parsed.scope}")
 
     def _is_not_found(self, exc: Exception) -> bool:
         """Check if an exception indicates a not-found error (OpenViking or AGFS)."""
@@ -1189,7 +1179,7 @@ class ContentWriteCoordinator:
             if wait and telemetry_id and self._vikingdb_has_queue():
                 get_request_wait_tracker().register_request(telemetry_id)
                 request_registered = True
-            await MemoryUpdater.refresh_schema_overview(
+            overview_refreshed = await MemoryUpdater.refresh_schema_overview(
                 viking_fs=self._viking_fs,
                 directory_uri=root_uri,
                 ctx=ctx,
@@ -1223,7 +1213,7 @@ class ContentWriteCoordinator:
                 queue_status=queue_status,
                 semantic_status="skipped",
                 vector_status=vector_status,
-                overview_status="complete",
+                overview_status="complete" if overview_refreshed else "skipped",
             )
         except Exception:
             if not released:
@@ -1467,7 +1457,12 @@ class ContentWriteCoordinator:
                     raise InvalidArgumentError(
                         f"memory write target must be inside a memory type directory: {uri}"
                     )
-                root_uri = VikingURI.build(*parts[: memories_idx + 2])
+                if anchor_to_parent:
+                    parent = parsed.parent
+                    if parent is not None:
+                        root_uri = parent.uri
+                else:
+                    root_uri = VikingURI.build(*parts[: memories_idx + 2])
             else:
                 # Plain files directly under the user root are allowed (e.g. a
                 # persona file at viking://user/<user>/persona.md); the managed

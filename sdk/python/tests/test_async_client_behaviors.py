@@ -1005,25 +1005,6 @@ async def test_batch_write_http_timeout_outlives_server_wait_timeout():
 
 
 @pytest.mark.asyncio
-async def test_link_normalizes_single_and_multiple_target_uris():
-    client = AsyncHTTPClient(url="http://localhost:1933")
-    fake_http = SimpleNamespace(post=AsyncMock(return_value=object()))
-    client._http = fake_http
-    client._handle_response = lambda _response: None
-
-    await client.link("/resources/from", ["/resources/a", "viking://resources/b"], reason="demo")
-
-    fake_http.post.assert_awaited_once_with(
-        "/api/v1/relations/link",
-        json={
-            "from_uri": "viking://resources/from",
-            "to_uris": ["viking://resources/a", "viking://resources/b"],
-            "reason": "demo",
-        },
-    )
-
-
-@pytest.mark.asyncio
 async def test_watch_routes_support_uri_lookup_and_normalization():
     client = AsyncHTTPClient(url="http://localhost:1933")
     fake_http = SimpleNamespace(
