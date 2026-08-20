@@ -1863,8 +1863,6 @@ class Session:
         if turn_mode and effective_token_budget <= 0:
             raise ValueError("retained_message_token_budget must be greater than 0")
         in_memory_default_memory_policy = self._meta.memory_policy
-        effective_policy = await self._resolve_memory_policy(memory_policy)
-        _validate_memory_policy_types(effective_policy)
         agent_evolution_enabled = self._agent_evolution_enabled
         if self._agent_evolution_enabled_provider is not None:
             provided_enabled = self._agent_evolution_enabled_provider()
@@ -1873,16 +1871,19 @@ class Session:
                 if inspect.isawaitable(provided_enabled)
                 else provided_enabled
             )
-        effective_policy = _apply_agent_evolution_setting(
-            effective_policy,
-            agent_evolution_enabled=agent_evolution_enabled,
-        )
-        effective_memory_policy = effective_policy.to_dict()
-        effective_memory_types = sorted(_effective_memory_types(effective_policy))
-        agent_memory_skip_reason = _agent_memory_skip_reason(
-            agent_evolution_enabled=agent_evolution_enabled,
-            effective_memory_types=set(effective_memory_types),
-        )
+        if memory_policy is not None:
+            effective_policy = await self._resolve_memory_policy(memory_policy)
+            _validate_memory_policy_types(effective_policy)
+            effective_policy = _apply_agent_evolution_setting(
+                effective_policy,
+                agent_evolution_enabled=agent_evolution_enabled,
+            )
+            effective_memory_policy = effective_policy.to_dict()
+            effective_memory_types = sorted(_effective_memory_types(effective_policy))
+            agent_memory_skip_reason = _agent_memory_skip_reason(
+                agent_evolution_enabled=agent_evolution_enabled,
+                effective_memory_types=set(effective_memory_types),
+            )
         logger.info(
             f"[TRACER] session_commit started, trace_id={trace_id}, "
             f"keep_recent_count={keep_recent_count}, retention_mode={retention_mode}, "

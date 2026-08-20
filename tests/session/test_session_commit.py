@@ -169,9 +169,12 @@ class TestCommit:
     async def test_commit_reads_latest_user_memory_policy_when_session_has_no_override(
         self, session_with_messages: Session
     ):
-        session_with_messages._memory_policy_provider = lambda: {
-            "memory_types": ["profile"],
-        }
+        memory_policy_provider = AsyncMock(
+            return_value={
+                "memory_types": ["profile"],
+            }
+        )
+        session_with_messages._memory_policy_provider = memory_policy_provider
         session_with_messages._session_compressor.extract_long_term_memories = AsyncMock(
             return_value=[]
         )
@@ -186,6 +189,7 @@ class TestCommit:
         )
         assert call_kwargs["allowed_memory_types"] == {"profile"}
         assert call_kwargs["allowed_peer_ids"] == set()
+        memory_policy_provider.assert_awaited_once_with()
 
     async def test_disabled_agent_evolution_keeps_working_memory(
         self, session_with_messages: Session, monkeypatch
