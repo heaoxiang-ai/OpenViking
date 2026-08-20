@@ -15,7 +15,7 @@ from openviking.core.namespace import canonical_session_uri
 from openviking.server.agent_evolution_config import AgentEvolutionConfigProvider
 from openviking.server.config import AgentEvolutionConfig, ToolOutputExternalizationConfig
 from openviking.server.identity import RequestContext
-from openviking.server.user_config import read_user_config
+from openviking.server.user_config import read_user_memory_policy
 from openviking.service.session_auto_commit import (
     compute_next_check_at,
     get_idle_timeout_seconds,
@@ -67,6 +67,7 @@ class SessionService:
         self._agent_evolution_enabled = AgentEvolutionConfig().enabled
         self._agent_evolution_config_provider: Optional[AgentEvolutionConfigProvider] = None
         self._agent_evolution_config_path: Optional[str] = None
+        self._default_user_memory_policy: Optional[Dict[str, Any]] = None
         self._configure_agent_evolution_provider()
         self._usage_reporter: Optional["UsageReporter"] = None
         # Server-wide controls remain disabled until configured during app setup.
@@ -95,6 +96,15 @@ class SessionService:
     ) -> None:
         """Set tool output externalization controls for newly created sessions."""
         self._tool_output_externalization_config = config.model_copy(deep=True)
+
+    def set_default_user_memory_policy(self, memory_policy: Optional[Dict[str, Any]]) -> None:
+        """Set the server fallback used when a User has no persisted policy."""
+        if memory_policy is None:
+            self._default_user_memory_policy = None
+            return
+        policy = MemoryPolicy.from_dict(memory_policy)
+        policy.validate_memory_types(set(MemoryTypeRegistry().list_names(include_disabled=False)))
+        self._default_user_memory_policy = policy.to_dict()
 
     def set_agent_evolution_config(self, config: AgentEvolutionConfig) -> None:
         """Set the default used when an account has no persisted override."""
@@ -206,9 +216,11 @@ class SessionService:
         )
 
     async def _get_user_memory_policy(self, ctx: RequestContext) -> Optional[Dict[str, Any]]:
-        """Read the latest persisted User policy at commit time."""
-        config = await read_user_config(self._viking_fs, ctx)
-        return config.memory_policy
+        """Resolve the latest User policy with the configured server fallback."""
+        memory_policy = await read_user_memory_policy(self._viking_fs, ctx)
+        if memory_policy is not None:
+            return memory_policy
+        return self._default_user_memory_policy
 
     async def create(
         self,

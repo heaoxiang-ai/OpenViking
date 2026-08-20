@@ -3,6 +3,7 @@
 """Admin endpoints for OpenViking multi-tenant HTTP Server."""
 
 import asyncio
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Path, Request
 from pydantic import BaseModel
@@ -233,8 +234,14 @@ def _user_settings_result(
     account_id: str,
     user_id: str,
     user_config: UserConfig,
+    default_memory_policy: Optional[dict] = None,
 ) -> dict:
-    policy = MemoryPolicy.from_dict(user_config.memory_policy)
+    memory_policy_config = (
+        user_config.memory_policy
+        if user_config.memory_policy is not None
+        else default_memory_policy
+    )
+    policy = MemoryPolicy.from_dict(memory_policy_config)
     known_memory_types = set(MemoryTypeRegistry().list_names(include_disabled=False))
     policy.validate_memory_types(known_memory_types)
     memory_policy = policy.to_dict()
@@ -520,7 +527,12 @@ async def get_user_settings(
     user_config = await read_user_config(service.viking_fs, user_ctx)
     return Response(
         status="ok",
-        result=_user_settings_result(account_id, user_id, user_config),
+        result=_user_settings_result(
+            account_id,
+            user_id,
+            user_config,
+            request.app.state.config.user_config_defaults.memory_policy,
+        ),
     )
 
 
@@ -548,7 +560,12 @@ async def patch_user_settings(
     user_config = await read_user_config(service.viking_fs, user_ctx)
     return Response(
         status="ok",
-        result=_user_settings_result(account_id, user_id, user_config),
+        result=_user_settings_result(
+            account_id,
+            user_id,
+            user_config,
+            request.app.state.config.user_config_defaults.memory_policy,
+        ),
     )
 
 

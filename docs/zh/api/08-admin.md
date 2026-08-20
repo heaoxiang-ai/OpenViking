@@ -138,7 +138,8 @@ Content-Type: application/json
 `experiences` 时会展开为 `cases`、`trajectories`、`experiences`；
 该结果不受 account 级 Agent 进化开关影响，Account 开关由独立接口管理。
 更新前会备份到该 User 的 `settings/user_config.backup.json`。未显式配置策略的
-Session 在 commit 时读取该 User 最新策略。
+Session 在 commit 时读取该 User 最新策略；User 未覆盖时，依次回退到
+`server.user_config_defaults.memory_policy` 和内核默认策略。
 
 ---
 
@@ -170,7 +171,7 @@ Session 在 commit 时读取该 User 最新策略。
 | account_id | str | 是 | - | 工作区 ID |
 | admin_user_id | str | 是 | - | 首个管理员用户 ID |
 | seed | str | 否 | `null` | 可选的确定性 API Key seed。传入后，key secret 为 `sha256(user_id + "\0" + seed)` |
-| user_config | object | 否 | `null` | 首个管理员用户的初始配置。当前支持 `add_targets.resource_uri` 和 `add_targets.skill_uri` |
+| user_config | object | 否 | `null` | 首个管理员用户的初始配置。支持 `add_targets.resource_uri`、`add_targets.skill_uri` 和 `memory_policy` |
 
 **说明：**
 - 在 `trusted` 模式下，响应中不会包含 `user_key` 字段
@@ -516,7 +517,7 @@ ov --sudo admin delete-account acme
 | user_id | str | 是 | - | 用户 ID |
 | role | str | 否 | "user" | 要分配的角色。`ROOT` 和同 account 的 `ADMIN` 可直接注册 `"user"` 或 `"admin"`。ROOT 身份只来自 `server.root_api_key`。 |
 | seed | str | 否 | `null` | 可选的确定性 API Key seed。传入后，key secret 为 `sha256(user_id + "\0" + seed)` |
-| user_config | object | 否 | `null` | 新用户的初始配置。当前支持 `add_targets.resource_uri` 和 `add_targets.skill_uri` |
+| user_config | object | 否 | `null` | 新用户的初始配置。支持 `add_targets.resource_uri`、`add_targets.skill_uri` 和 `memory_policy` |
 
 **说明：**
 - 在 `trusted` 模式下，响应中不会包含 `user_key` 字段

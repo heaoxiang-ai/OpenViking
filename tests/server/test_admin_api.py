@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from openviking.pyagfs.exceptions import AGFSNotFoundError
 from openviking.server.api_keys import APIKeyManager
 from openviking.server.app import create_app
-from openviking.server.config import ServerConfig
+from openviking.server.config import ServerConfig, UserConfig
 from openviking.server.dependencies import set_service
 from openviking.server.identity import RequestContext, Role
 from openviking.server.models import ERROR_CODE_TO_HTTP_STATUS, ErrorInfo, Response
@@ -404,6 +404,33 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
     )
     assert noop_patch.status_code == 200, noop_patch.text
     assert len(viking_fs.writes) == writes_before_noop
+
+
+async def test_user_memory_policy_uses_server_default_without_user_override(
+    lightweight_admin_client: httpx.AsyncClient,
+    lightweight_admin_app: FastAPI,
+):
+    acct = _uid()
+    lightweight_admin_app.state.config.user_config_defaults = UserConfig(
+        memory_policy={"memory_types": ["profile"]}
+    )
+    create_account = await lightweight_admin_client.post(
+        "/api/v1/admin/accounts",
+        json={"account_id": acct, "admin_user_id": "alice"},
+        headers=root_headers(),
+    )
+    assert create_account.status_code == 200, create_account.text
+
+    get_settings = await lightweight_admin_client.get(
+        f"/api/v1/admin/accounts/{acct}/users/alice/settings",
+        headers=root_headers(),
+    )
+    assert get_settings.status_code == 200, get_settings.text
+    assert get_settings.json()["result"]["memory_policy"] == {
+        "self": {"enabled": True},
+        "peer": {"enabled": True},
+        "memory_types": ["profile"],
+    }
 
 
 async def test_create_user_paths_ignore_deprecated_agent_evolution_config(
