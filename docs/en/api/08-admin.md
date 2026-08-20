@@ -145,7 +145,9 @@ account endpoint. Updates are backed up to the User's
 `settings/user_config.backup.json` before replacement. A Session without an
 explicit policy reads the latest User policy when it is committed; if the User
 has no override, it falls back to `server.user_config_defaults.memory_policy`
-and then to the kernel default.
+and then to the kernel default. To clear a persisted User override and resume
+inheriting these defaults, PATCH `{"memory_policy": null}`. An empty object
+`{"memory_policy": {}}` is an explicit policy and does not clear the override.
 
 ---
 

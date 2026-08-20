@@ -405,6 +405,30 @@ async def test_user_memory_policy_can_be_initialized_and_hot_updated(
     assert noop_patch.status_code == 200, noop_patch.text
     assert len(viking_fs.writes) == writes_before_noop
 
+    lightweight_admin_app.state.config.user_config_defaults = UserConfig(
+        memory_policy={"memory_types": ["events"]}
+    )
+    reset_settings = await lightweight_admin_client.patch(
+        f"/api/v1/admin/accounts/{acct}/users/bob/settings",
+        json={"memory_policy": None},
+        headers=root_headers(),
+    )
+    assert reset_settings.status_code == 200, reset_settings.text
+    assert reset_settings.json()["result"]["memory_policy"] == {
+        "self": {"enabled": True},
+        "peer": {"enabled": True},
+        "memory_types": ["events"],
+    }
+
+    persisted = await read_user_config(viking_fs, user_ctx)
+    assert persisted.memory_policy is None
+    backup = json.loads(viking_fs.files[user_config_backup_uri(user_ctx)])
+    assert backup["memory_policy"]["memory_types"] == [
+        "cases",
+        "experiences",
+        "trajectories",
+    ]
+
 
 async def test_user_memory_policy_uses_server_default_without_user_override(
     lightweight_admin_client: httpx.AsyncClient,

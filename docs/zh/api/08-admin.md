@@ -139,7 +139,9 @@ Content-Type: application/json
 该结果不受 account 级 Agent 进化开关影响，Account 开关由独立接口管理。
 更新前会备份到该 User 的 `settings/user_config.backup.json`。未显式配置策略的
 Session 在 commit 时读取该 User 最新策略；User 未覆盖时，依次回退到
-`server.user_config_defaults.memory_policy` 和内核默认策略。
+`server.user_config_defaults.memory_policy` 和内核默认策略。若要清除已持久化的
+User override 并重新继承上述默认值，请 PATCH `{"memory_policy": null}`。
+`{"memory_policy": {}}` 表示显式策略，不会清除 override。
 
 ---
 

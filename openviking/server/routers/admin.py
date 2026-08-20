@@ -90,7 +90,7 @@ class SetAgentEvolutionRequest(BaseModel):
 
 
 class UserSettingsPatch(BaseModel):
-    memory_policy: dict
+    memory_policy: Optional[dict]
 
     model_config = {"extra": "forbid"}
 
@@ -545,7 +545,7 @@ async def patch_user_settings(
     user_id: str = Path(..., description="User ID"),
     ctx: RequestContext = Depends(get_request_context),
 ):
-    """Update the allowlisted User memory policy without restarting the server."""
+    """Update or clear the allowlisted User memory policy without restarting."""
     _check_account_access(ctx, account_id)
     _check_account_exists(request, account_id)
     _check_user_exists(request, account_id, user_id)

@@ -268,11 +268,9 @@ async def read_user_memory_policy(
 async def write_user_memory_policy(
     viking_fs: VikingFS,
     ctx: RequestContext,
-    memory_policy: dict[str, Any],
-) -> dict[str, Any]:
+    memory_policy: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
     normalized = UserConfig(memory_policy=memory_policy).memory_policy
-    if normalized is None:
-        raise InvalidArgumentError("memory_policy must be an object")
     validate_user_memory_policy(normalized)
 
     def _set(user_config: UserConfig) -> None:
