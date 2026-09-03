@@ -2422,14 +2422,6 @@ class Session:
         batches = plan_extraction_batches(messages, limits)
         if not batches:
             return []
-        if len(batches) <= 1 and not limits.enabled:
-            batch_messages = list(batches[0].messages)
-            return await record_batch(
-                "long_term_memory_extraction",
-                "long_term",
-                batch_messages,
-                lambda: extract_batch(batch_messages),
-            )
 
         logger.info(
             "Processing Phase 2 long-term memory extraction in %s planned batches "
@@ -2762,10 +2754,14 @@ class Session:
                         if self._session_compressor and long_term_has_work:
 
                             async def _run_long_term_memory_extraction(
-                                batch_messages: List[Message],
+                                batch_messages: Optional[List[Message]] = None,
                             ) -> Any:
                                 return await self._session_compressor.extract_long_term_memories(
-                                    messages=batch_messages,
+                                    messages=(
+                                        long_term_messages
+                                        if batch_messages is None
+                                        else batch_messages
+                                    ),
                                     user=self.user,
                                     session_id=self.session_id,
                                     ctx=self.ctx,
@@ -2780,15 +2776,25 @@ class Session:
                                     event_search_tags=event_search_tags,
                                 )
 
-                            extraction_tasks.append(
-                                self._extract_long_term_memories_with_batching(
-                                    messages=long_term_messages,
-                                    limits=extraction_batch_limits,
-                                    archive_uri=archive_uri,
-                                    extract_batch=_run_long_term_memory_extraction,
-                                    record_batch=_run_recorded_memory_step,
+                            if extraction_batch_limits.enabled:
+                                extraction_tasks.append(
+                                    self._extract_long_term_memories_with_batching(
+                                        messages=long_term_messages,
+                                        limits=extraction_batch_limits,
+                                        archive_uri=archive_uri,
+                                        extract_batch=_run_long_term_memory_extraction,
+                                        record_batch=_run_recorded_memory_step,
+                                    )
                                 )
-                            )
+                            else:
+                                extraction_tasks.append(
+                                    _run_recorded_memory_step(
+                                        "long_term_memory_extraction",
+                                        "long_term",
+                                        long_term_messages,
+                                        _run_long_term_memory_extraction,
+                                    )
+                                )
                             extraction_labels.append("long_term")
 
                         _results = await asyncio.gather(
