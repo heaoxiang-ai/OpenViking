@@ -11,7 +11,7 @@ from openviking.session.extraction_batch import (
     plan_extraction_batches,
     resolve_extraction_batch_limits,
 )
-from openviking.session.session import Session, _ArchiveSummaryResult, _CheckpointRequest
+from openviking.session.session import Session
 
 
 def _message(message_id: str, role: str = "user", text: str = "content") -> Message:
@@ -107,8 +107,7 @@ async def test_working_memory_batches_carry_the_previous_summary_forward():
         limits=limits,
     )
 
-    assert isinstance(result, _ArchiveSummaryResult)
-    assert result.overview == "previous|u1|u2|u3"
+    assert result == "previous|u1|u2|u3"
     assert [(ids, previous) for ids, previous, _ in calls] == [
         (["u1"], "previous"),
         (["u2"], "previous|u1"),
@@ -154,48 +153,6 @@ async def test_working_memory_prompt_fallback_uses_all_messages(monkeypatch):
     )
 
     assert result == "# Session Summary\n\n**Overview**: 3 turns, 3 messages"
-
-
-@pytest.mark.asyncio
-async def test_working_memory_batches_accumulate_split_checkpoint_sources():
-    session = Session(viking_fs=None)
-    messages = [_message("u1"), _message("a1", "assistant"), _message("a2", "assistant")]
-    request = _CheckpointRequest(
-        turn_anchor_message_id="u1",
-        source_message_ids=("a1", "a2"),
-        retained_message_token_budget=100,
-        estimated_active_tokens=10,
-        previous_checkpoint_abstract="older",
-        previous_checkpoint_source_message_ids=("a0",),
-    )
-    calls = []
-
-    async def generate(batch, latest_archive_overview="", checkpoint_requests=None):
-        batch_requests = list(checkpoint_requests or [])
-        calls.append(batch_requests)
-        summaries = tuple(
-            f"{item.previous_checkpoint_abstract}+{','.join(item.source_message_ids)}"
-            for item in batch_requests
-        )
-        return _ArchiveSummaryResult(
-            overview=f"{latest_archive_overview}|{batch[0].id}",
-            checkpoint_summaries=summaries,
-        )
-
-    session._generate_archive_summary_async = AsyncMock(side_effect=generate)
-
-    limits = ExtractionBatchLimits(max_messages=1)
-    result = await session._generate_archive_summary_with_batching(
-        plan_extraction_batches(messages, limits),
-        latest_archive_overview="previous",
-        checkpoint_requests=[request],
-        limits=limits,
-    )
-
-    assert isinstance(result, _ArchiveSummaryResult)
-    assert result.checkpoint_summaries == ("older+a1+a2",)
-    assert calls[1][0].previous_checkpoint_source_message_ids == ("a0",)
-    assert calls[2][0].previous_checkpoint_source_message_ids == ("a0", "a1")
 
 
 @pytest.mark.asyncio

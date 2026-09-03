@@ -2607,7 +2607,7 @@ class Session:
                             extraction_messages,
                             extraction_batch_limits,
                         )
-                        if len(summary_batches) <= 1:
+                        if checkpoint_requests or len(summary_batches) <= 1:
                             generated = await self._generate_archive_summary_async(
                                 extraction_messages,
                                 **summary_kwargs,
@@ -4331,17 +4331,14 @@ class Session:
         batches: List[ExtractionMessageBatch],
         *,
         latest_archive_overview: str,
-        checkpoint_requests: Optional[List[_CheckpointRequest]] = None,
         limits: ExtractionBatchLimits,
-    ) -> str | _ArchiveSummaryResult:
+    ) -> str:
         messages = [message for batch in batches for message in batch.messages]
-        requests = list(checkpoint_requests or [])
         vlm = get_openviking_config().vlm
         if not (vlm and vlm.is_available()):
             return await self._generate_archive_summary_async(
                 messages,
                 latest_archive_overview=latest_archive_overview,
-                checkpoint_requests=requests,
             )
         try:
             _load_render_prompt()
@@ -4349,7 +4346,6 @@ class Session:
             return await self._generate_archive_summary_async(
                 messages,
                 latest_archive_overview=latest_archive_overview,
-                checkpoint_requests=requests,
             )
 
         logger.info(
@@ -4360,72 +4356,19 @@ class Session:
             limits.max_messages,
         )
         current_overview = latest_archive_overview
-        checkpoint_summaries: Dict[int, str] = {}
-        checkpoint_source_ids: Dict[int, List[str]] = {
-            index: list(request.previous_checkpoint_source_message_ids)
-            for index, request in enumerate(requests)
-        }
 
         for batch in batches:
             batch_messages = list(batch.messages)
-            batch_message_ids = {message.id for message in batch_messages}
-            batch_requests: List[_CheckpointRequest] = []
-            batch_request_indexes: List[int] = []
-            for index, request in enumerate(requests):
-                source_ids = tuple(
-                    message_id
-                    for message_id in request.source_message_ids
-                    if message_id in batch_message_ids
-                )
-                if not source_ids:
-                    continue
-                batch_requests.append(
-                    _CheckpointRequest(
-                        turn_anchor_message_id=request.turn_anchor_message_id,
-                        source_message_ids=source_ids,
-                        retained_message_token_budget=request.retained_message_token_budget,
-                        estimated_active_tokens=request.estimated_active_tokens,
-                        previous_checkpoint_abstract=checkpoint_summaries.get(
-                            index,
-                            request.previous_checkpoint_abstract,
-                        ),
-                        previous_checkpoint_source_message_ids=tuple(checkpoint_source_ids[index]),
-                    )
-                )
-                batch_request_indexes.append(index)
-
             generated = await self._generate_archive_summary_async(
                 batch_messages,
                 latest_archive_overview=current_overview,
-                checkpoint_requests=batch_requests,
             )
-            result = (
-                generated
+            current_overview = (
+                generated.overview
                 if isinstance(generated, _ArchiveSummaryResult)
-                else _ArchiveSummaryResult(overview=str(generated or ""))
+                else str(generated or "")
             )
-            current_overview = result.overview
-            if len(result.checkpoint_summaries) != len(batch_requests):
-                raise ValueError(
-                    "Working Memory batch returned an unexpected checkpoint summary count"
-                )
-            for request_index, batch_request, summary in zip(
-                batch_request_indexes,
-                batch_requests,
-                result.checkpoint_summaries,
-                strict=True,
-            ):
-                checkpoint_summaries[request_index] = summary
-                checkpoint_source_ids[request_index].extend(batch_request.source_message_ids)
-
-        if len(checkpoint_summaries) != len(requests):
-            raise ValueError("Working Memory batches did not cover every checkpoint request")
-        return _ArchiveSummaryResult(
-            overview=current_overview,
-            checkpoint_summaries=tuple(
-                checkpoint_summaries[index] for index in range(len(requests))
-            ),
-        )
+        return current_overview
 
     async def _generate_archive_summary_async(
         self,
