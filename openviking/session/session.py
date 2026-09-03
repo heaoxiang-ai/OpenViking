@@ -2415,7 +2415,7 @@ class Session:
         archive_uri: str,
         extract_batch: Callable[[List[Message]], Awaitable[Any]],
         record_batch: Callable[
-            [str, List[Message], Callable[[], Awaitable[Any]]],
+            [str, str, List[Message], Callable[[], Awaitable[Any]]],
             Awaitable[Any],
         ],
     ) -> Any:
@@ -2426,6 +2426,7 @@ class Session:
             batch_messages = list(batches[0].messages)
             return await record_batch(
                 "long_term_memory_extraction",
+                "long_term",
                 batch_messages,
                 lambda: extract_batch(batch_messages),
             )
@@ -2489,6 +2490,7 @@ class Session:
 
             result = await record_batch(
                 f"long_term_memory_extraction_batch_{batch_number}",
+                "long_term",
                 batch_messages,
                 _extract_and_merge,
             )
@@ -2759,7 +2761,7 @@ class Session:
 
                         if self._session_compressor and long_term_has_work:
 
-                            async def _extract_long_term_batch(
+                            async def _run_long_term_memory_extraction(
                                 batch_messages: List[Message],
                             ) -> Any:
                                 return await self._session_compressor.extract_long_term_memories(
@@ -2778,25 +2780,13 @@ class Session:
                                     event_search_tags=event_search_tags,
                                 )
 
-                            async def _record_long_term_batch(
-                                operation_name: str,
-                                batch_messages: List[Message],
-                                fn: Callable[[], Awaitable[Any]],
-                            ) -> Any:
-                                return await _run_recorded_memory_step(
-                                    operation_name,
-                                    "long_term",
-                                    batch_messages,
-                                    fn,
-                                )
-
                             extraction_tasks.append(
                                 self._extract_long_term_memories_with_batching(
                                     messages=long_term_messages,
                                     limits=extraction_batch_limits,
                                     archive_uri=archive_uri,
-                                    extract_batch=_extract_long_term_batch,
-                                    record_batch=_record_long_term_batch,
+                                    extract_batch=_run_long_term_memory_extraction,
+                                    record_batch=_run_recorded_memory_step,
                                 )
                             )
                             extraction_labels.append("long_term")

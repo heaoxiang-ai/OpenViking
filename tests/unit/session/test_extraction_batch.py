@@ -207,9 +207,9 @@ async def test_long_term_memory_batches_follow_the_planned_limit():
     async def extract(batch):
         return [batch[0].id]
 
-    async def record(operation_name, batch, fn):
+    async def record(operation_name, step, batch, fn):
         result = await fn()
-        recorded_batches.append((operation_name, [message.id for message in batch]))
+        recorded_batches.append((operation_name, step, [message.id for message in batch]))
         return result
 
     result = await session._extract_long_term_memories_with_batching(
@@ -221,8 +221,9 @@ async def test_long_term_memory_batches_follow_the_planned_limit():
     )
 
     assert result == ["u1", "u2", "u3"]
-    assert [message_ids for _, message_ids in recorded_batches] == [
+    assert [message_ids for _, _, message_ids in recorded_batches] == [
         ["u1"],
         ["u2"],
         ["u3"],
     ]
+    assert all(step == "long_term" for _, step, _ in recorded_batches)
