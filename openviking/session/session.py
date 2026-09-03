@@ -25,6 +25,7 @@ from openviking.server.identity import RequestContext, Role
 from openviking.session.auto_commit_policy import AutoCommitPolicy
 from openviking.session.extraction_batch import (
     ExtractionBatchLimits,
+    ExtractionMessageBatch,
     estimate_extraction_message_tokens,
     plan_extraction_batches,
     resolve_extraction_batch_limits,
@@ -2600,11 +2601,21 @@ class Session:
                         }
                         if checkpoint_requests:
                             summary_kwargs["checkpoint_requests"] = checkpoint_requests
-                        generated = await self._generate_archive_summary_with_batching(
+                        summary_batches = plan_extraction_batches(
                             extraction_messages,
-                            limits=extraction_batch_limits,
-                            **summary_kwargs,
+                            extraction_batch_limits,
                         )
+                        if len(summary_batches) <= 1:
+                            generated = await self._generate_archive_summary_async(
+                                extraction_messages,
+                                **summary_kwargs,
+                            )
+                        else:
+                            generated = await self._generate_archive_summary_with_batching(
+                                summary_batches,
+                                limits=extraction_batch_limits,
+                                **summary_kwargs,
+                            )
                         summary_result = (
                             generated
                             if isinstance(generated, _ArchiveSummaryResult)
@@ -4327,21 +4338,14 @@ class Session:
 
     async def _generate_archive_summary_with_batching(
         self,
-        messages: List[Message],
+        batches: List[ExtractionMessageBatch],
         *,
         latest_archive_overview: str,
         checkpoint_requests: Optional[List[_CheckpointRequest]] = None,
         limits: ExtractionBatchLimits,
     ) -> str | _ArchiveSummaryResult:
-        batches = plan_extraction_batches(messages, limits)
+        messages = [message for batch in batches for message in batch.messages]
         requests = list(checkpoint_requests or [])
-        if len(batches) <= 1:
-            return await self._generate_archive_summary_async(
-                messages,
-                latest_archive_overview=latest_archive_overview,
-                checkpoint_requests=requests,
-            )
-
         vlm = get_openviking_config().vlm
         if not (vlm and vlm.is_available()):
             return await self._generate_archive_summary_async(

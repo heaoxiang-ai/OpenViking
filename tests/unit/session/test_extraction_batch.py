@@ -100,10 +100,11 @@ async def test_working_memory_batches_carry_the_previous_summary_forward():
 
     session._generate_archive_summary_async = AsyncMock(side_effect=generate)
 
+    limits = ExtractionBatchLimits(max_messages=1)
     result = await session._generate_archive_summary_with_batching(
-        messages,
+        plan_extraction_batches(messages, limits),
         latest_archive_overview="previous",
-        limits=ExtractionBatchLimits(max_messages=1),
+        limits=limits,
     )
 
     assert isinstance(result, _ArchiveSummaryResult)
@@ -122,10 +123,11 @@ async def test_working_memory_no_vlm_fallback_uses_all_messages(monkeypatch):
     config = type("Config", (), {"vlm": None})()
     monkeypatch.setattr("openviking.session.session.get_openviking_config", lambda: config)
 
+    limits = ExtractionBatchLimits(max_messages=1)
     result = await session._generate_archive_summary_with_batching(
-        messages,
+        plan_extraction_batches(messages, limits),
         latest_archive_overview="",
-        limits=ExtractionBatchLimits(max_messages=1),
+        limits=limits,
     )
 
     assert result == "# Session Summary\n\n**Overview**: 3 turns, 3 messages"
@@ -144,10 +146,11 @@ async def test_working_memory_prompt_fallback_uses_all_messages(monkeypatch):
 
     monkeypatch.setattr("openviking.session.session._load_render_prompt", unavailable_prompt)
 
+    limits = ExtractionBatchLimits(max_messages=1)
     result = await session._generate_archive_summary_with_batching(
-        messages,
+        plan_extraction_batches(messages, limits),
         latest_archive_overview="",
-        limits=ExtractionBatchLimits(max_messages=1),
+        limits=limits,
     )
 
     assert result == "# Session Summary\n\n**Overview**: 3 turns, 3 messages"
@@ -181,11 +184,12 @@ async def test_working_memory_batches_accumulate_split_checkpoint_sources():
 
     session._generate_archive_summary_async = AsyncMock(side_effect=generate)
 
+    limits = ExtractionBatchLimits(max_messages=1)
     result = await session._generate_archive_summary_with_batching(
-        messages,
+        plan_extraction_batches(messages, limits),
         latest_archive_overview="previous",
         checkpoint_requests=[request],
-        limits=ExtractionBatchLimits(max_messages=1),
+        limits=limits,
     )
 
     assert isinstance(result, _ArchiveSummaryResult)
