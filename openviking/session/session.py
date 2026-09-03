@@ -23,9 +23,15 @@ from openviking.pyagfs.exceptions import AGFSClientError, AGFSHTTPError, AGFSNot
 from openviking.server.config import ToolOutputExternalizationConfig
 from openviking.server.identity import RequestContext, Role
 from openviking.session.auto_commit_policy import AutoCommitPolicy
+from openviking.session.extraction_batch import (
+    ExtractionBatchLimits,
+    estimate_extraction_message_tokens,
+    plan_extraction_batches,
+    resolve_extraction_batch_limits,
+)
 from openviking.session.memory.constants import AGENT_EVOLUTION_MEMORY_TYPES
-from openviking.session.memory_policy import MemoryPolicy
 from openviking.session.memory.utils.language import resolve_output_language_from_conversation
+from openviking.session.memory_policy import MemoryPolicy
 from openviking.session.retention import (
     RETENTION_MODE_TURN_BUDGET,
     RetentionPlan,
@@ -2104,6 +2110,7 @@ class Session:
                 usage_uris=list(dict.fromkeys(u.uri for u in usage_snapshot if u.uri)),
                 record_auto_commit_success=record_auto_commit_success,
                 event_search_tags=list(effective_event_tags),
+                auto_commit_policy=dict(self._meta.auto_commit_policy or {}),
             )
             phase1_stage = "phase1_persist"
             try:
@@ -2367,6 +2374,7 @@ class Session:
             user_config_error=user_config_error,
             record_auto_commit_success=msg.record_auto_commit_success,
             event_search_tags=list(msg.event_search_tags or []),
+            auto_commit_policy=msg.auto_commit_policy,
         )
         return True
 
@@ -2392,6 +2400,101 @@ class Session:
         )
         return await reporter.extract_and_report(messages=messages, context=context)
 
+    async def _extract_long_term_memories_in_batches(
+        self,
+        *,
+        messages: List[Message],
+        limits: ExtractionBatchLimits,
+        archive_uri: str,
+        extract_batch: Callable[[List[Message]], Awaitable[Any]],
+        record_batch: Callable[
+            [str, List[Message], Callable[[], Awaitable[Any]]],
+            Awaitable[Any],
+        ],
+    ) -> Any:
+        batches = plan_extraction_batches(messages, limits)
+        if not batches:
+            return []
+        if len(batches) <= 1 and not limits.enabled:
+            batch_messages = list(batches[0].messages)
+            return await record_batch(
+                "long_term_memory_extraction",
+                batch_messages,
+                lambda: extract_batch(batch_messages),
+            )
+
+        logger.info(
+            "Processing Phase 2 long-term memory extraction in %s planned batches "
+            "for %s estimated tokens",
+            len(batches),
+            estimate_extraction_message_tokens(messages),
+        )
+        contexts: List[Any] = []
+        skills: List[Dict[str, Any]] = []
+        memory_diffs: List[Dict[str, Any]] = []
+        previous_diff_raw = ""
+        if self._viking_fs:
+            try:
+                previous_diff_raw = await self._viking_fs.read_file(
+                    f"{archive_uri}/memory_diff.json",
+                    ctx=self.ctx,
+                )
+                previous_diff = json.loads(previous_diff_raw or "{}")
+                if isinstance(previous_diff, dict):
+                    memory_diffs.append(previous_diff)
+            except Exception as exc:
+                if not _is_storage_not_found(exc):
+                    raise
+                previous_diff_raw = ""
+
+        for batch_number, batch in enumerate(batches, start=1):
+            batch_messages = list(batch.messages)
+
+            async def _extract_and_merge(
+                batch_messages: List[Message] = batch_messages,
+            ) -> Any:
+                nonlocal previous_diff_raw
+                result = await extract_batch(batch_messages)
+                if not self._viking_fs:
+                    return result
+                try:
+                    current_diff_raw = await self._viking_fs.read_file(
+                        f"{archive_uri}/memory_diff.json",
+                        ctx=self.ctx,
+                    )
+                    if current_diff_raw != previous_diff_raw:
+                        current_diff = json.loads(current_diff_raw or "{}")
+                        if isinstance(current_diff, dict):
+                            memory_diffs.append(current_diff)
+                            await self._session_compressor._write_final_memory_diff(
+                                archive_uri=archive_uri,
+                                ctx=self.ctx,
+                                memory_diffs=memory_diffs,
+                            )
+                            previous_diff_raw = await self._viking_fs.read_file(
+                                f"{archive_uri}/memory_diff.json",
+                                ctx=self.ctx,
+                            )
+                except Exception as exc:
+                    if not _is_storage_not_found(exc):
+                        raise
+                return result
+
+            result = await record_batch(
+                f"long_term_memory_extraction_batch_{batch_number}",
+                batch_messages,
+                _extract_and_merge,
+            )
+            if isinstance(result, dict):
+                contexts.extend(result.get("contexts", []))
+                skills.extend(result.get("session_skills", []))
+            else:
+                contexts.extend(result or [])
+
+        if skills:
+            return {"contexts": contexts, "session_skills": skills}
+        return contexts
+
     @tracer("session.commit.phase2", ignore_result=True, ignore_args=True)
     async def _run_memory_extraction(
         self,
@@ -2407,6 +2510,7 @@ class Session:
         user_config_error: Optional[str] = None,
         record_auto_commit_success: bool = False,
         event_search_tags: Optional[List[str]] = None,
+        auto_commit_policy: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Phase 2: Extract memories and enqueue semantic work in the background."""
         from openviking.service.task_tracker import get_task_tracker
@@ -2450,6 +2554,7 @@ class Session:
                 with bind_telemetry(telemetry):
                     ov_config = get_openviking_config()
                     effective_policy = MemoryPolicy.from_dict(memory_policy)
+                    extraction_batch_limits = resolve_extraction_batch_limits(auto_commit_policy)
                     working_memory_enabled = effective_policy.working_memory_enabled
                     checkpoint_requests = (
                         await self._collect_checkpoint_requests_for_phase2(
@@ -2489,8 +2594,9 @@ class Session:
                         }
                         if checkpoint_requests:
                             summary_kwargs["checkpoint_requests"] = checkpoint_requests
-                        generated = await self._generate_archive_summary_async(
+                        generated = await self._generate_archive_summary_in_batches(
                             extraction_messages,
+                            limits=extraction_batch_limits,
                             **summary_kwargs,
                         )
                         summary_result = (
@@ -2636,13 +2742,11 @@ class Session:
 
                         if self._session_compressor and long_term_has_work:
 
-                            async def _run_long_term_memory_extraction() -> Any:
-                                # strict_extract_errors=True lets transient failures
-                                # surface so _run_retryable_phase2_step can retry them
-                                # (and so a final failure is recorded as a skipped
-                                # archive instead of silently dropping the memory).
+                            async def _extract_long_term_batch(
+                                batch_messages: List[Message],
+                            ) -> Any:
                                 return await self._session_compressor.extract_long_term_memories(
-                                    messages=long_term_messages,
+                                    messages=batch_messages,
                                     user=self.user,
                                     session_id=self.session_id,
                                     ctx=self.ctx,
@@ -2657,12 +2761,25 @@ class Session:
                                     event_search_tags=event_search_tags,
                                 )
 
-                            extraction_tasks.append(
-                                _run_recorded_memory_step(
-                                    "long_term_memory_extraction",
+                            async def _record_long_term_batch(
+                                operation_name: str,
+                                batch_messages: List[Message],
+                                fn: Callable[[], Awaitable[Any]],
+                            ) -> Any:
+                                return await _run_recorded_memory_step(
+                                    operation_name,
                                     "long_term",
-                                    long_term_messages,
-                                    _run_long_term_memory_extraction,
+                                    batch_messages,
+                                    fn,
+                                )
+
+                            extraction_tasks.append(
+                                self._extract_long_term_memories_in_batches(
+                                    messages=long_term_messages,
+                                    limits=extraction_batch_limits,
+                                    archive_uri=archive_uri,
+                                    extract_batch=_extract_long_term_batch,
+                                    record_batch=_record_long_term_batch,
                                 )
                             )
                             extraction_labels.append("long_term")
@@ -4201,6 +4318,98 @@ class Session:
                 f"tool_call checkpoint_summaries must contain exactly {request_count} strings"
             )
         return tuple(raw)
+
+    async def _generate_archive_summary_in_batches(
+        self,
+        messages: List[Message],
+        *,
+        latest_archive_overview: str,
+        checkpoint_requests: Optional[List[_CheckpointRequest]] = None,
+        limits: ExtractionBatchLimits,
+    ) -> str | _ArchiveSummaryResult:
+        batches = plan_extraction_batches(messages, limits)
+        requests = list(checkpoint_requests or [])
+        if len(batches) <= 1 and not limits.enabled:
+            return await self._generate_archive_summary_async(
+                messages,
+                latest_archive_overview=latest_archive_overview,
+                checkpoint_requests=requests,
+            )
+
+        logger.info(
+            "Processing Phase 2 Working Memory extraction in %s planned batches "
+            "using auto-commit limits tokens=%s messages=%s",
+            len(batches),
+            limits.max_message_tokens,
+            limits.max_messages,
+        )
+        current_overview = latest_archive_overview
+        checkpoint_summaries: Dict[int, str] = {}
+        checkpoint_source_ids: Dict[int, List[str]] = {
+            index: list(request.previous_checkpoint_source_message_ids)
+            for index, request in enumerate(requests)
+        }
+
+        for batch in batches:
+            batch_messages = list(batch.messages)
+            batch_message_ids = {message.id for message in batch_messages}
+            batch_requests: List[_CheckpointRequest] = []
+            batch_request_indexes: List[int] = []
+            for index, request in enumerate(requests):
+                source_ids = tuple(
+                    message_id
+                    for message_id in request.source_message_ids
+                    if message_id in batch_message_ids
+                )
+                if not source_ids:
+                    continue
+                batch_requests.append(
+                    _CheckpointRequest(
+                        turn_anchor_message_id=request.turn_anchor_message_id,
+                        source_message_ids=source_ids,
+                        retained_message_token_budget=request.retained_message_token_budget,
+                        estimated_active_tokens=request.estimated_active_tokens,
+                        previous_checkpoint_abstract=checkpoint_summaries.get(
+                            index,
+                            request.previous_checkpoint_abstract,
+                        ),
+                        previous_checkpoint_source_message_ids=tuple(checkpoint_source_ids[index]),
+                    )
+                )
+                batch_request_indexes.append(index)
+
+            generated = await self._generate_archive_summary_async(
+                batch_messages,
+                latest_archive_overview=current_overview,
+                checkpoint_requests=batch_requests,
+            )
+            result = (
+                generated
+                if isinstance(generated, _ArchiveSummaryResult)
+                else _ArchiveSummaryResult(overview=str(generated or ""))
+            )
+            current_overview = result.overview
+            if len(result.checkpoint_summaries) != len(batch_requests):
+                raise ValueError(
+                    "Working Memory batch returned an unexpected checkpoint summary count"
+                )
+            for request_index, batch_request, summary in zip(
+                batch_request_indexes,
+                batch_requests,
+                result.checkpoint_summaries,
+                strict=True,
+            ):
+                checkpoint_summaries[request_index] = summary
+                checkpoint_source_ids[request_index].extend(batch_request.source_message_ids)
+
+        if len(checkpoint_summaries) != len(requests):
+            raise ValueError("Working Memory batches did not cover every checkpoint request")
+        return _ArchiveSummaryResult(
+            overview=current_overview,
+            checkpoint_summaries=tuple(
+                checkpoint_summaries[index] for index in range(len(requests))
+            ),
+        )
 
     async def _generate_archive_summary_async(
         self,
