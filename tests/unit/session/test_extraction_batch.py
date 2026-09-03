@@ -116,6 +116,44 @@ async def test_working_memory_batches_carry_the_previous_summary_forward():
 
 
 @pytest.mark.asyncio
+async def test_working_memory_no_vlm_fallback_uses_all_messages(monkeypatch):
+    session = Session(viking_fs=None)
+    messages = [_message("u1"), _message("u2"), _message("u3")]
+    config = type("Config", (), {"vlm": None})()
+    monkeypatch.setattr("openviking.session.session.get_openviking_config", lambda: config)
+
+    result = await session._generate_archive_summary_in_batches(
+        messages,
+        latest_archive_overview="",
+        limits=ExtractionBatchLimits(max_messages=1),
+    )
+
+    assert result == "# Session Summary\n\n**Overview**: 3 turns, 3 messages"
+
+
+@pytest.mark.asyncio
+async def test_working_memory_prompt_fallback_uses_all_messages(monkeypatch):
+    session = Session(viking_fs=None)
+    messages = [_message("u1"), _message("u2"), _message("u3")]
+    vlm = type("VLM", (), {"is_available": lambda self: True})()
+    config = type("Config", (), {"vlm": vlm})()
+    monkeypatch.setattr("openviking.session.session.get_openviking_config", lambda: config)
+
+    def unavailable_prompt():
+        raise ImportError("prompt module unavailable")
+
+    monkeypatch.setattr("openviking.session.session._load_render_prompt", unavailable_prompt)
+
+    result = await session._generate_archive_summary_in_batches(
+        messages,
+        latest_archive_overview="",
+        limits=ExtractionBatchLimits(max_messages=1),
+    )
+
+    assert result == "# Session Summary\n\n**Overview**: 3 turns, 3 messages"
+
+
+@pytest.mark.asyncio
 async def test_working_memory_batches_accumulate_split_checkpoint_sources():
     session = Session(viking_fs=None)
     messages = [_message("u1"), _message("a1", "assistant"), _message("a2", "assistant")]

@@ -112,6 +112,12 @@ def _redact_inline_images(text: str) -> str:
     return _B64_JSON_RE.sub(replace_b64_json, _INLINE_IMAGE_DATA_URL_RE.sub(replace_data_url, text))
 
 
+def _load_render_prompt() -> Callable[..., str]:
+    from openviking.prompts import render_prompt
+
+    return render_prompt
+
+
 def _redact_inline_images_from_tool_outputs(messages: List[Message]) -> List[Message]:
     for message in messages:
         for part in message.parts:
@@ -4329,7 +4335,23 @@ class Session:
     ) -> str | _ArchiveSummaryResult:
         batches = plan_extraction_batches(messages, limits)
         requests = list(checkpoint_requests or [])
-        if len(batches) <= 1 and not limits.enabled:
+        if len(batches) <= 1:
+            return await self._generate_archive_summary_async(
+                messages,
+                latest_archive_overview=latest_archive_overview,
+                checkpoint_requests=requests,
+            )
+
+        vlm = get_openviking_config().vlm
+        if not (vlm and vlm.is_available()):
+            return await self._generate_archive_summary_async(
+                messages,
+                latest_archive_overview=latest_archive_overview,
+                checkpoint_requests=requests,
+            )
+        try:
+            _load_render_prompt()
+        except Exception:
             return await self._generate_archive_summary_async(
                 messages,
                 latest_archive_overview=latest_archive_overview,
@@ -4463,7 +4485,7 @@ class Session:
             )
 
         try:
-            from openviking.prompts import render_prompt
+            render_prompt = _load_render_prompt()
         except Exception as e:
             if checkpoint_requests:
                 raise RuntimeError("Prompt module is required to generate checkpoints") from e
