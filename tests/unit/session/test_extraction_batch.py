@@ -100,7 +100,7 @@ async def test_working_memory_batches_carry_the_previous_summary_forward():
 
     session._generate_archive_summary_async = AsyncMock(side_effect=generate)
 
-    result = await session._generate_archive_summary_in_batches(
+    result = await session._generate_archive_summary_with_batching(
         messages,
         latest_archive_overview="previous",
         limits=ExtractionBatchLimits(max_messages=1),
@@ -122,7 +122,7 @@ async def test_working_memory_no_vlm_fallback_uses_all_messages(monkeypatch):
     config = type("Config", (), {"vlm": None})()
     monkeypatch.setattr("openviking.session.session.get_openviking_config", lambda: config)
 
-    result = await session._generate_archive_summary_in_batches(
+    result = await session._generate_archive_summary_with_batching(
         messages,
         latest_archive_overview="",
         limits=ExtractionBatchLimits(max_messages=1),
@@ -144,7 +144,7 @@ async def test_working_memory_prompt_fallback_uses_all_messages(monkeypatch):
 
     monkeypatch.setattr("openviking.session.session._load_render_prompt", unavailable_prompt)
 
-    result = await session._generate_archive_summary_in_batches(
+    result = await session._generate_archive_summary_with_batching(
         messages,
         latest_archive_overview="",
         limits=ExtractionBatchLimits(max_messages=1),
@@ -181,7 +181,7 @@ async def test_working_memory_batches_accumulate_split_checkpoint_sources():
 
     session._generate_archive_summary_async = AsyncMock(side_effect=generate)
 
-    result = await session._generate_archive_summary_in_batches(
+    result = await session._generate_archive_summary_with_batching(
         messages,
         latest_archive_overview="previous",
         checkpoint_requests=[request],
@@ -208,7 +208,7 @@ async def test_long_term_memory_batches_follow_the_planned_limit():
         recorded_batches.append((operation_name, [message.id for message in batch]))
         return result
 
-    result = await session._extract_long_term_memories_in_batches(
+    result = await session._extract_long_term_memories_with_batching(
         messages=messages,
         limits=ExtractionBatchLimits(max_messages=1),
         archive_uri="viking://user/default/sessions/s1/history/archive_001",

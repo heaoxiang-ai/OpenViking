@@ -2406,7 +2406,7 @@ class Session:
         )
         return await reporter.extract_and_report(messages=messages, context=context)
 
-    async def _extract_long_term_memories_in_batches(
+    async def _extract_long_term_memories_with_batching(
         self,
         *,
         messages: List[Message],
@@ -2600,7 +2600,7 @@ class Session:
                         }
                         if checkpoint_requests:
                             summary_kwargs["checkpoint_requests"] = checkpoint_requests
-                        generated = await self._generate_archive_summary_in_batches(
+                        generated = await self._generate_archive_summary_with_batching(
                             extraction_messages,
                             limits=extraction_batch_limits,
                             **summary_kwargs,
@@ -2780,7 +2780,7 @@ class Session:
                                 )
 
                             extraction_tasks.append(
-                                self._extract_long_term_memories_in_batches(
+                                self._extract_long_term_memories_with_batching(
                                     messages=long_term_messages,
                                     limits=extraction_batch_limits,
                                     archive_uri=archive_uri,
@@ -4325,7 +4325,7 @@ class Session:
             )
         return tuple(raw)
 
-    async def _generate_archive_summary_in_batches(
+    async def _generate_archive_summary_with_batching(
         self,
         messages: List[Message],
         *,
