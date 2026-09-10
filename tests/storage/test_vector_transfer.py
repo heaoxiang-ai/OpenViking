@@ -15,6 +15,11 @@ from openviking.storage.acl import AclManager
 from openviking.storage.collection_schemas import CollectionSchemas
 from openviking.storage.expr import And, Contains, Eq, In, Or, PathScope, RawDSL
 from openviking.storage.vectordb import engine as vectordb_engine
+from openviking.storage.vectordb.collection.collection import Collection
+from openviking.storage.vectordb.collection.vikingdb_collection import VikingDBCollection
+from openviking.storage.vectordb_adapters.vikingdb_private_adapter import (
+    VikingDBPrivateCollectionAdapter,
+)
 from openviking.storage.viking_vector_index_backend import (
     VectorTransferRollbackError,
     VikingVectorIndexBackend,
@@ -148,7 +153,7 @@ class _TransferAclManager:
         return [
             {
                 **record,
-                "acl_enabled": True,
+                "acl_mode": "inherit",
                 "acl_direct_grants": [],
                 "acl_inherited_grants": ["1:group:target-readers"],
             }
@@ -158,7 +163,7 @@ class _TransferAclManager:
     async def materialize_moved_record(self, record, new_uri, ctx):
         del new_uri, ctx
         return {
-            "acl_enabled": True,
+            "acl_mode": record.get("acl_mode", "inherit"),
             "acl_direct_grants": list(record.get("acl_direct_grants") or []),
             "acl_inherited_grants": ["1:group:target-readers"],
         }
@@ -434,10 +439,11 @@ async def test_copy_uri_mapping_preserves_dense_sparse_and_chunk_payloads():
 
 
 @pytest.mark.asyncio
-async def test_volcengine_transfer_scope_avoids_unsupported_contains_filter():
+@pytest.mark.parametrize("mode", ["local", "volcengine", "vikingdb", "bytedviking", "custom"])
+async def test_remote_transfer_scope_avoids_unsupported_contains_filter(mode):
     source = "viking://resources/src.md"
     backend = _MemoryTransferBackend([_record("source", source)])
-    backend.backend_mode = "volcengine"
+    backend.backend_mode = mode
 
     await backend.copy_uri_mapping(_ctx(), source, "viking://resources/dst.md", recursive=False)
 
@@ -449,6 +455,74 @@ async def test_volcengine_transfer_scope_avoids_unsupported_contains_filter():
         assert any(
             isinstance(scope, PathScope) and scope.path == "viking://resources" for scope in scopes
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selected_entries", [False, True], ids=["source", "target"])
+@pytest.mark.parametrize("recursive", [False, True], ids=["file", "directory"])
+@pytest.mark.parametrize("mode", ["vikingdb", "bytedviking", "custom"])
+async def test_transfer_scan_emits_supported_aggregate_request(
+    monkeypatch, selected_entries, recursive, mode
+):
+    root = "viking://resources/docs"
+    entry = f"{root}/file.md"
+    uri = root if recursive else entry
+    records = [
+        _record("file", entry),
+        _record("chunk", entry + "#chunk_0001"),
+        _record("sibling", "viking://resources/other.md"),
+    ]
+    backend = _RealAclMemoryTransferBackend(records)
+    backend.backend_mode = mode
+    adapter = VikingDBPrivateCollectionAdapter(
+        host="unused.invalid",
+        headers=None,
+        project_name="test",
+        collection_name="context",
+        index_name="default",
+    )
+    collection = VikingDBCollection(
+        host="unused.invalid",
+        meta_data={"ProjectName": "test", "CollectionName": "context"},
+    )
+    adapter._collection = Collection(collection)
+    requests = []
+
+    def validate_dsl(node):
+        # The deployed recall service accepts path-index must queries, not
+        # contains/prefix. Validate the actual adapter output at the I/O boundary.
+        assert node["op"] in {"and", "or", "must"}, node
+        if node["op"] in {"and", "or"}:
+            for child in node["conds"]:
+                validate_dsl(child)
+        elif node["field"] == "uri":
+            assert all(value.startswith("/") for value in node["conds"])
+            assert node["para"] in {"-d=0", "-d=1", "-d=-1"}
+
+    async def count(ctx, filter):
+        def data_post(path, data):
+            assert path == "/api/vikingdb/data/agg"
+            assert data["project"] == "test"
+            assert data["collection_name"] == "context"
+            assert data["index_name"] == "default"
+            assert data["op"] == "count"
+            validate_dsl(data["filter"])
+            requests.append(data)
+            return {"agg": {"_total": sum(_matches_filter(filter, record) for record in records)}}
+
+        monkeypatch.setattr(collection, "_data_post", data_post)
+        return adapter.count(filter)
+
+    monkeypatch.setattr(backend, "_strict_transfer_count", count)
+    found, _ = await backend._scan_uri_transfer_scope(
+        _ctx(),
+        uri,
+        recursive=recursive,
+        include_full_records=True,
+        entry_uris=[entry] if selected_entries else None,
+    )
+    assert requests
+    assert {record["id"] for record in found} == {"file", "chunk"}
 
 
 @pytest.mark.asyncio
@@ -510,7 +584,7 @@ async def test_uri_mapping_preserves_target_records_for_unaffected_entries(trans
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transfer_method", ["copy_uri_mapping", "update_uri_mapping"])
-@pytest.mark.parametrize("backend_mode", ["local", "volcengine"])
+@pytest.mark.parametrize("backend_mode", ["local", "volcengine", "vikingdb"])
 async def test_merge_target_scan_excludes_unrelated_subtrees(
     transfer_method, backend_mode, monkeypatch
 ):
@@ -660,7 +734,7 @@ async def test_copy_over_private_target_preserves_target_acl_for_new_chunks():
             _record(
                 "target-file",
                 target,
-                acl_enabled=True,
+                acl_mode="inherit",
                 acl_direct_grants=["7:user:bob"],
                 acl_inherited_grants=[],
             ),
@@ -690,14 +764,14 @@ async def test_copy_target_without_direct_acl_keeps_parent_inheritance():
             _record(
                 "parent",
                 parent,
-                acl_enabled=True,
+                acl_mode="inherit",
                 acl_direct_grants=inherited,
                 acl_inherited_grants=[],
             ),
             _record(
                 "target-file",
                 target,
-                acl_enabled=True,
+                acl_mode="inherit",
                 acl_direct_grants=[],
                 acl_inherited_grants=inherited,
             ),
@@ -728,7 +802,7 @@ async def test_unindexed_source_preserves_target_records_and_acl(
                 target,
                 level=level,
                 abstract="old abstract",
-                acl_enabled=private,
+                acl_mode="inherit" if private else "none",
                 acl_direct_grants=["7:user:bob"] if private else [],
                 acl_inherited_grants=[],
             ),
@@ -747,7 +821,7 @@ async def test_unindexed_source_preserves_target_records_and_acl(
     assert backend.acl_manager is not None
     effective = await backend.acl_manager.resolve(target, _ctx())
     assert effective.context_fields() == {
-        "acl_enabled": private,
+        "acl_mode": "inherit" if private else "none",
         "acl_direct_grants": ["7:user:bob"] if private else [],
         "acl_inherited_grants": [],
     }
@@ -790,14 +864,14 @@ async def test_copy_directory_preserves_root_acl_and_inherits_it_to_new_entries(
                 "target-root",
                 target,
                 level=0,
-                acl_enabled=True,
+                acl_mode="inherit",
                 acl_direct_grants=root_acl,
                 acl_inherited_grants=[],
             ),
             _record(
                 "unique-target",
                 unique_target,
-                acl_enabled=True,
+                acl_mode="inherit",
                 acl_direct_grants=["3:user:carol"],
                 acl_inherited_grants=root_acl,
             ),
@@ -964,7 +1038,7 @@ async def test_update_uri_mapping_preserves_source_direct_acl_on_target():
             _record(
                 "source",
                 source,
-                acl_enabled=True,
+                acl_mode="restricted",
                 acl_direct_grants=["7:user:alice"],
                 acl_inherited_grants=["1:group:source-readers"],
             )
@@ -975,6 +1049,7 @@ async def test_update_uri_mapping_preserves_source_direct_acl_on_target():
 
     moved = _records_under(backend, target, recursive=False)
     assert len(moved) == 1
+    assert moved[0]["acl_mode"] == "restricted"
     assert moved[0]["acl_direct_grants"] == ["7:user:alice"]
     assert moved[0]["acl_inherited_grants"] == ["1:group:target-readers"]
 
@@ -1008,14 +1083,14 @@ async def test_update_uri_mapping_rollback_restores_source_direct_acl():
             _record(
                 "source-root",
                 source,
-                acl_enabled=True,
+                acl_mode="inherit",
                 acl_direct_grants=["7:user:alice"],
                 acl_inherited_grants=["1:group:source-readers"],
             ),
             _record(
                 "source-child",
                 f"{source}/child.md",
-                acl_enabled=True,
+                acl_mode="inherit",
                 acl_direct_grants=["3:user:bob"],
                 acl_inherited_grants=["7:user:alice"],
             ),
@@ -1053,7 +1128,7 @@ async def test_update_uri_mapping_returns_empty_result_when_source_has_no_vector
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["copy_uri_mapping", "update_uri_mapping"])
-@pytest.mark.parametrize("mode", ["local", "volcengine"])
+@pytest.mark.parametrize("mode", ["local", "volcengine", "vikingdb"])
 @pytest.mark.parametrize("incoming_chunk", [False, True])
 async def test_target_chunk_candidate_respects_filesystem_entry(operation, mode, incoming_chunk):
     source, target = "viking://resources/source.md", "viking://resources/target.md"

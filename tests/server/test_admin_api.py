@@ -713,12 +713,20 @@ async def test_account_memory_templates_permissions_and_isolation(
 
 
 @pytest.mark.parametrize("merge", [False, True], ids=["extraction", "patch-merge"])
+@pytest.mark.parametrize("output_format", ["python", "json"])
+@pytest.mark.parametrize("language", ["en", "zh"])
 async def test_account_memory_templates_reach_live_prompts(
     lightweight_admin_client,
     lightweight_admin_app,
     template_account,
     merge,
+    output_format,
+    language,
+    monkeypatch,
 ):
+    from openviking_cli.utils.config import get_openviking_config
+
+    monkeypatch.setattr(get_openviking_config().memory, "extraction_output_format", output_format)
     account_id, headers = template_account
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/profile"
     fs = lightweight_admin_app.state.fake_service.viking_fs
@@ -736,11 +744,13 @@ async def test_account_memory_templates_reach_live_prompts(
             provider = SessionExtractContextProvider(
                 messages=[], ctx=ctx, viking_fs=fs, memory_registry=snapshot
             )
-        provider._output_language = "en"
+        provider._output_language = language
         provider.prefetch = AsyncMock(return_value=[])
         vlm = Mock(
             model="test-memory-templates",
-            get_completion_async=AsyncMock(return_value='{"delete_ids":[]}'),
+            get_completion_async=AsyncMock(
+                return_value="sdk.commit()" if output_format == "python" else '{"delete_ids":[]}'
+            ),
         )
         isolation = MemoryIsolationHandler(
             ctx,
@@ -770,9 +780,14 @@ async def test_account_memory_templates_reach_live_prompts(
     assert (await lightweight_admin_client.put(url, json=body, headers=headers)).status_code == 200
     for user, peer in (("alice", None), ("bob", None), ("bob", "customer")):
         prompt = await prompt_for(account_id, user, peer)
-        assert "CUSTOM_ACCOUNT_SCOPE en" in prompt
-        assert "EN_BUSINESS_ONLY" in prompt
-        assert "中文业务" not in prompt
+        assert f"CUSTOM_ACCOUNT_SCOPE {language}" in prompt
+        expected, unexpected = (
+            ("EN_BUSINESS_ONLY", "中文业务")
+            if language == "en"
+            else ("中文业务", "EN_BUSINESS_ONLY")
+        )
+        assert expected in prompt
+        assert unexpected not in prompt
     assert "CUSTOM_ACCOUNT_SCOPE" not in await prompt_for("other-account", "alice")
     assert registry.get("profile").description == base_description
     assert (await lightweight_admin_client.delete(url, headers=headers)).status_code == 200
@@ -1271,6 +1286,40 @@ async def test_list_accounts(admin_client: httpx.AsyncClient):
     account_ids = {a["account_id"] for a in accounts}
     assert "default" in account_ids
     assert acct in account_ids
+
+
+async def test_identity_settings_refreshes_a_stale_registry_on_demand(
+    admin_client: httpx.AsyncClient,
+    admin_app: FastAPI,
+    admin_service: OpenVikingService,
+):
+    """Detail settings reads must not depend on a preceding list request."""
+    replica = admin_app.state.api_key_manager
+    writer = APIKeyManager(
+        root_key=ROOT_KEY,
+        viking_fs=admin_service.viking_fs,
+    )
+    await writer.load()
+    acct = _uid()
+
+    await writer.ensure_trusted_identities({acct: {"trusted-user"}})
+    assert replica.has_user(acct, "trusted-user") is False
+
+    account_settings = await admin_client.get(
+        f"/api/v1/admin/accounts/{acct}/settings",
+        headers=root_headers(),
+    )
+    assert account_settings.status_code == 200, account_settings.text
+    assert replica.has_user(acct, "trusted-user") is True
+
+    await writer.ensure_trusted_identities({acct: {"trusted-user-2"}})
+    assert replica.has_user(acct, "trusted-user-2") is False
+
+    user_settings = await admin_client.get(
+        f"/api/v1/admin/accounts/{acct}/users/trusted-user-2/settings",
+        headers=root_headers(),
+    )
+    assert user_settings.status_code == 200, user_settings.text
 
 
 async def test_delete_account(admin_client: httpx.AsyncClient):
