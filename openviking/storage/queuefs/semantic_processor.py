@@ -772,6 +772,8 @@ class SemanticProcessor(DequeueHandlerBase):
                 total_entries=len(file_paths),
                 sampled_entries=len(sampled_summaries),
             )
+        except LockAcquisitionError:
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to write abstract/overview for {dir_uri}: {e}") from e
         if not wrote_semantics.wrote:
@@ -931,7 +933,7 @@ class SemanticProcessor(DequeueHandlerBase):
                     else f"{target_prefix}/{mapping_name}"
                 )
                 try:
-                    await viking_fs.stat(target_mapping, ctx=ctx)
+                    await viking_fs.stat(target_mapping, ctx=ctx, skip_count=True)
                     continue  # already carried over
                 except Exception:
                     pass

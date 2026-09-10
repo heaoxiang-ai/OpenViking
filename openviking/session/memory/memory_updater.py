@@ -1196,6 +1196,9 @@ class MemoryUpdater:
             new_full_content = MemoryFileUtils.write(
                 mf,
                 content_template=schema.content_template,
+                account_content_template_type=(
+                    schema.memory_type if schema._account_content_template else None
+                ),
                 extract_context=extract_context,
             )
             await viking_fs.write_file(
@@ -1286,8 +1289,10 @@ class MemoryUpdater:
             try:
                 content = await viking_fs.read_file(deleted_uri, ctx=ctx)
             except Exception as e:
-                tracer.error(
-                    f"Failed to read deleted memory links for replacement {deleted_uri}: {e}"
+                # Benign: the replacement/deleted file may already be gone in the
+                # same batch. Link inheritance is best-effort, so warn and skip.
+                logger.warning(
+                    f"Skipping link inheritance; could not read deleted memory {deleted_uri}: {e}"
                 )
                 continue
             if not content:
@@ -1363,6 +1368,10 @@ class MemoryUpdater:
                     lease_ref=lease_ref,
                 )
                 result.add_edited(uri)
+            except (NotFoundError, FileNotFoundError) as e:
+                # Benign: a linked neighbor may have been deleted in the same
+                # batch. Link inheritance is best-effort, so warn and skip.
+                logger.warning(f"Skipping link inheritance; could not read memory {uri}: {e}")
             except Exception as e:
                 tracer.error(f"Failed to inherit deleted memory links for {uri}: {e}")
 
