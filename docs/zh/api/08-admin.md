@@ -199,7 +199,7 @@ Profile、Preferences、Entities 不开放 `content_template`。
 curl -X PUT "$OV_ENDPOINT/api/v1/admin/accounts/acme/memory-templates/profile" \
   -H "X-API-Key: $OV_ADMIN_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"description":"只记住业务相关事实，使用 {{ language }}。"}'
+  -d '{"description":"只记住业务相关事实，用简洁的中文描述。"}'
 ```
 
 PUT 从**部署默认模板**补齐未传入的配置，不从上一次 Account 自定义值补齐，最终保存
@@ -244,8 +244,13 @@ Registry；无关类型变更不会触发拆批。不同 Schema 分开合并、�
 不同 Account 不串用，也不修改共享的部署 Registry。发布或恢复默认不会主动重写历史
 记忆，后续 Commit 可按生效规则更新已有记忆。
 
-白名单内提交的说明和正文模板必须是非空字符串，并通过 Jinja 语法校验；单文件序列化后不超过 1 MiB。
-每个可编辑 `description`（类型说明及 `fields[].description`）最多 50,000 个 Unicode 码点，按提交的原文计数，包含空格、换行和 Jinja 源码，不按 UTF-8 字节或渲染后的长度计数。各说明独立计数，不合并计算；整个配置仍受 1 MiB 上限约束。超过上限返回 400，不修改当前配置。
+白名单内提交的说明和正文模板必须是非空字符串；单文件序列化后不超过 1 MiB。
+账户自定义 `description`（类型说明及 `fields[].description`）是纯文本，不执行 Jinja，也不检查 Jinja 语法。
+例如 `{{ language }}`、方法调用和 `{% if ... %}` 均作为文字交给模型，不会在服务器展开或执行；需要中文时可直接写“用中文描述”。
+每条说明独立与当前部署默认值作精确字符串比较：完全相同的说明保留部署原有渲染行为，修改某一条不会影响其他未修改说明。
+信任来源由加载器重新计算，不接受客户端或持久化文件中的标记；部署默认值变化后，旧副本若不再匹配，下次加载将按纯文本处理。
+此规则也保护已保存的账户自定义说明。正文 `content_template` 仍按下节的模板契约校验、执行。
+每个可编辑 `description` 最多 50,000 个 Unicode 码点，按提交的原文计数，包含空格、换行和模板样式的文字，不按 UTF-8 字节或渲染后的长度计数。各说明独立计数，不合并计算；整个配置仍受 1 MiB 上限约束。超过上限返回 400，不修改当前配置。
 发布不调用 LLM。存储错误或文件损坏明确报错，不伪装成系统默认。本次不增加公共文件浏览目录、SDK/CLI 命令、草稿或历史版本 UI。
 
 #### content_template 的编辑与执行边界
@@ -272,7 +277,8 @@ Events 的默认 embedding 模板引用正文，因此正文变化也可能影�
 | soul | core_truths、boundaries、vibe、continuity |
 | identity | name、creature、vibe、emoji、avatar、introduction |
 
-`language` 仍是说明字段的变量，不属于上述正文变量；正文不要引用其他 Account/User、请求上下文或任意 Python 对象。
+`language` 不属于上述正文变量；账户自定义说明也不会展开它。部署说明原有的语言渲染路径保持不变。
+正文不要引用其他 Account/User、请求上下文或任意 Python 对象。
 仅 Events 可调用以下 `extract_context` 只读方法（位置参数）：
 
 - `get_resource_event_content(ranges, summary)`：资源添加事件正文；非资源事件为空。
@@ -301,7 +307,7 @@ Events 的默认 embedding 模板引用正文，因此正文变化也可能影�
 原样继承的正文继续使用部署渲染器，包括原有错误/fallback 语义，不受上述受限渲染器的源码、AST、正文输出上限约束；
 完整账户 YAML 仍受 1 MiB 上限约束。
 这些保护不代替 Worker 的 CPU/内存配额，也不评估记忆效果或做前端 Markdown/HTML 安全过滤。
-说明字段的既有渲染规则不在本次正文模板限制的改动范围内。
+账户说明的纯文本规则与正文模板的受限执行规则相互独立。
 
 校验失败返回 `INVALID_ARGUMENT`，`error.details` 含 `field=content_template`、受控 `reason` 和可用时的 `line`。
 失败不修改当前发布配置。此前保存的、结构有效但使用不支持 Jinja 的模板仍可读取、重新发布或恢复默认；

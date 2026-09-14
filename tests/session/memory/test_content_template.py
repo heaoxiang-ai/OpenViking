@@ -33,7 +33,7 @@ def test_inherited_builtin_content_templates_keep_deployment_renderer(memory_typ
         memory_template_data(schema), {"description": "Account instructions"}, memory_type
     )
     inherited = _validate_template(
-        complete, memory_type, deployment_content_template=schema.content_template
+        complete, memory_type, deployment_defaults=memory_template_data(schema)
     )
     assert inherited._account_content_template is False
     values = {f.name: f.init_value or "" for f in schema.fields}

@@ -433,7 +433,8 @@ async def test_account_memory_templates_publish_and_reset(
     "body",
     [
         {"description": 123},
-        {"description": "{% if language %}"},
+        {"_account_description": False},
+        {"fields": [{"name": "summary", "_account_description": False}]},
         {"memory_type": "other"},
         {"fields": None},
         {"fields": [{}]},
@@ -904,12 +905,18 @@ async def test_account_memory_templates_permissions_and_isolation(
 
 @pytest.mark.parametrize("merge", [False, True], ids=["extraction", "patch-merge"])
 @pytest.mark.parametrize("output_format", ["python", "json"])
+@pytest.mark.parametrize(
+    "marker",
+    ["{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}", "literal {{ unclosed"],
+    ids=["builtins", "incomplete-jinja"],
+)
 async def test_account_memory_templates_reach_live_prompts(
     lightweight_admin_client,
     lightweight_admin_app,
     template_account,
     merge,
     output_format,
+    marker,
     monkeypatch,
 ):
     monkeypatch.setattr(get_openviking_config().memory, "extraction_output_format", output_format)
@@ -954,21 +961,23 @@ async def test_account_memory_templates_reach_live_prompts(
         return vlm.get_completion_async.await_args.kwargs["messages"][0]["content"]
 
     initial = await prompt_for(account_id, "alice")
+    # Harmless B1 regression: an account ADMIN must not execute Jinja/builtins.
     body = {
-        "description": "CUSTOM_ACCOUNT_SCOPE {{ language }}",
+        "description": "CUSTOM_ACCOUNT_SCOPE " + marker,
         "fields": [
             {
                 "name": "content",
-                "description": "{% if language == 'en' %}EN_BUSINESS_ONLY{% else %}中文业务{% endif %}",
+                "description": "ACCOUNT_FIELD " + marker + " {{ language }}",
             }
         ],
     }
     assert (await lightweight_admin_client.put(url, json=body, headers=headers)).status_code == 200
     for user, peer in (("alice", None), ("bob", None), ("bob", "customer")):
         prompt = await prompt_for(account_id, user, peer)
-        assert "CUSTOM_ACCOUNT_SCOPE en" in prompt
-        assert "EN_BUSINESS_ONLY" in prompt
-        assert "中文业务" not in prompt
+        assert body["description"] in prompt
+        assert body["fields"][0]["description"] in prompt
+        assert "CUSTOM_ACCOUNT_SCOPE 8" not in prompt
+        assert "ACCOUNT_FIELD 8" not in prompt
     assert "CUSTOM_ACCOUNT_SCOPE" not in await prompt_for("other-account", "alice")
     assert registry.get("profile").description == base_description
     assert (await lightweight_admin_client.delete(url, headers=headers)).status_code == 200

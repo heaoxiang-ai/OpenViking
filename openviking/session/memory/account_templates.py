@@ -81,7 +81,7 @@ def _validate_template(
     memory_type: str,
     *,
     validate_content: bool = True,
-    deployment_content_template: str | None = None,
+    deployment_defaults: dict | None = None,
 ) -> MemoryTypeSchema:
     if data.get("memory_type") != memory_type:
         raise ValueError("memory_type must match the template in the request path")
@@ -89,22 +89,35 @@ def _validate_template(
     names = [field.name for field in schema.fields]
     if any(not name for name in names) or len(names) != len(set(names)):
         raise ValueError("Template field names must be nonempty and unique")
+    defaults = deployment_defaults or {}
+    # Only exact server-owned descriptions inherit the deployment renderer.
+    # Compare each value independently so editing one description does not
+    # disable existing language rendering for all the unchanged descriptions.
+    schema._account_description = schema.description != defaults.get("description")
+    default_fields = {field["name"]: field for field in defaults.get("fields", [])}
+    for field in schema.fields:
+        field._account_description = field.description != default_fields.get(field.name, {}).get(
+            "description"
+        )
     if memory_type in _EDITABLE_CONTENT_TEMPLATES and schema.content_template is not None:
         # Only an exact match to server-owned deployment defaults inherits the
         # legacy renderer. Never infer trust from persisted/client-supplied flags.
-        schema._account_content_template = schema.content_template != deployment_content_template
+        schema._account_content_template = schema.content_template != defaults.get(
+            "content_template"
+        )
         if validate_content and schema._account_content_template:
             validate_content_template(schema.content_template, memory_type)
-    # Description and locked deployment templates retain their existing contract.
+    # Account descriptions are plain text, even if they contain incomplete Jinja.
+    # Only trusted descriptions and other template fields need syntax validation.
     env = Environment()
     for template in (
-        schema.description,
+        None if schema._account_description else schema.description,
         schema.directory,
         schema.filename_template,
         schema.content_template,
         schema.embedding_template,
         schema.overview_template,
-        *(field.description for field in schema.fields),
+        *(field.description for field in schema.fields if not field._account_description),
     ):
         if template is not None:
             env.parse(template)
@@ -155,9 +168,7 @@ def _complete_template(defaults: dict, supplied: dict, memory_type: str) -> dict
             )
             _apply_editable_values(fields[name], field, editable, f"fields.{name}")
     # Never remove, reorder, or replace fields omitted from a partial request.
-    _validate_template(
-        data, memory_type, deployment_content_template=defaults.get("content_template")
-    )
+    _validate_template(data, memory_type, deployment_defaults=defaults)
     return data
 
 
@@ -315,7 +326,7 @@ async def resolve_account_memory_registry(
                 _validate_template(
                     template,
                     schema.memory_type,
-                    deployment_content_template=schema.content_template,
+                    deployment_defaults=memory_template_data(schema),
                 )
                 if template is not None
                 else schema.model_copy(deep=True)

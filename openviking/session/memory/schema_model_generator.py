@@ -16,6 +16,7 @@ from pydantic.config import ConfigDict
 from openviking.session.memory.dataclass import (
     DeleteId,
     FaultTolerantBaseModel,
+    MemoryField,
     MemoryTypeSchema,
     WikiLink,
 )
@@ -90,8 +91,9 @@ class SchemaModelGenerator:
         self._flat_data_models: Dict[str, Type[BaseModel]] = {}
         self._operations_model: Optional[Type[BaseModel]] = None
 
-    def _render_description(self, description: str) -> str:
-        if not description:
+    def _render_description(self, source: MemoryTypeSchema | MemoryField) -> str:
+        description = source.description
+        if source._account_description or not description:
             return description
         if "{{" not in description and "{%" not in description and "{#" not in description:
             return description
@@ -177,7 +179,7 @@ class SchemaModelGenerator:
                 immutable_field_names.append(field.name)
                 field_definitions[field.name] = (
                     base_type,
-                    Field(..., description=self._render_description(field.description)),
+                    Field(..., description=self._render_description(field)),
                 )
             else:
                 # Mutable fields: Union[base_type, patch_type], optional
@@ -185,7 +187,7 @@ class SchemaModelGenerator:
                 patch_type = merge_op.get_output_schema_type(field.field_type)
                 union_type = Union[base_type, patch_type]
                 desc = merge_op.get_output_schema_description(
-                    self._render_description(field.description)
+                    self._render_description(field)
                 )
                 field_definitions[field.name] = (
                     Optional[union_type],
@@ -262,7 +264,7 @@ class SchemaModelGenerator:
                 Field(
                     default_factory=list,
                     description=(
-                        f"{mt.memory_type} memories: {self._render_description(mt.description)} "
+                        f"{mt.memory_type} memories: {self._render_description(mt)} "
                         "(top-level field, do not nest inside other arrays)"
                     ),
                 ),
@@ -379,8 +381,9 @@ class SchemaPromptGenerator:
         self.schemas = schemas
         self._template_context = dict(template_context or {})
 
-    def _render_description(self, description: str) -> str:
-        if not description:
+    def _render_description(self, source: MemoryTypeSchema | MemoryField) -> str:
+        description = source.description
+        if source._account_description or not description:
             return description
         return TemplateUtils.render(description, self._template_context)
 
@@ -395,7 +398,7 @@ class SchemaPromptGenerator:
 
         for mt in self.schemas:
             lines.append(f"\n### {mt.memory_type}")
-            lines.append(f"{self._render_description(mt.description)}")
+            lines.append(f"{self._render_description(mt)}")
 
             # Add URI format information
             if mt.directory or mt.filename_template:
@@ -418,7 +421,7 @@ class SchemaPromptGenerator:
                 lines.append("\n**Fields:**")
                 for field in mt.fields:
                     lines.append(
-                        f"- `{field.name}` ({field.field_type.value}): {self._render_description(field.description)}"
+                        f"- `{field.name}` ({field.field_type.value}): {self._render_description(field)}"
                     )
 
         return "\n".join(lines)
@@ -439,7 +442,7 @@ class SchemaPromptGenerator:
 
         lines = [f"### {mt.memory_type} Fields"]
         for field in mt.fields:
-            lines.append(f"- `{field.name}`: {self._render_description(field.description)}")
+            lines.append(f"- `{field.name}`: {self._render_description(field)}")
 
         return "\n".join(lines)
 

@@ -402,29 +402,6 @@ def test_python_protocol_converts_prefetch_tool_messages_without_duplicating_rea
     assert '"result"' not in combined
 
 
-@pytest.mark.parametrize("language", ["en", "zh"])
-def test_python_contract_renders_field_descriptions_without_json_patch_rules(language):
-    schema = _profile_schema()
-    description = (
-        "{% if language == 'en' %}English facts{% else %}中文事实{% endif %} {{ language }}"
-    )
-    schema.fields[0].description = description
-    context = _context([schema])
-    context.template_context = {"language": language}
-
-    contract = create_extraction_output_protocol("python").render_contract(context)
-
-    expected, absent = (
-        ("English facts", "中文事实") if language == "en" else ("中文事实", "English facts")
-    )
-    assert f"{expected} {language}" in contract
-    assert absent not in contract
-    assert "{%" not in contract
-    assert "{{ language }}" not in contract
-    assert "SEARCH/REPLACE" not in contract
-    assert schema.fields[0].description == description
-
-
 def test_python_contract_uses_set_for_single_file_schema_and_create_for_collection():
     context = _context(
         [_profile_schema(), _preference_schema()],

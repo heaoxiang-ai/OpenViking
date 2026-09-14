@@ -206,7 +206,7 @@ Example: change only the type description:
 curl -X PUT "$OV_ENDPOINT/api/v1/admin/accounts/acme/memory-templates/profile" \
   -H "X-API-Key: $OV_ADMIN_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"description":"Remember business facts in {{ language }}."}'
+  -d '{"description":"Remember business facts in concise English."}'
 ```
 
 PUT completes omitted values from **deployment defaults**, not the previous
@@ -263,10 +263,21 @@ All eligible Users/Peers in that Account share the templates; no shared deployme
 registry is mutated. Publishing/resetting does not proactively rewrite existing
 memories; subsequent commits can update them according to the effective rules.
 
-Editable descriptions and content templates must be nonempty strings with valid
-Jinja syntax; each serialized file is limited to 1 MiB. Each editable `description`
+Editable descriptions and content templates must be nonempty strings;
+each serialized file is limited to 1 MiB. Account-customized descriptions (both
+type-level and `fields[].description`) are plain text, with no Jinja execution or
+syntax validation. `{{ language }}`, method calls and `{% if ... %}` remain literal
+text for the model, not server-side expressions. Write instructions such as
+"Use concise English" directly. Each description is independently compared with
+the current server-owned deployment default: an exact match retains its existing
+deployment rendering behavior, while editing one description leaves the others
+unchanged. The loader recomputes provenance, ignoring client/persisted trust flags.
+If deployment defaults change, an old nonmatching copy becomes plain text on the
+next load. Previously saved custom descriptions receive the same protection.
+`content_template` continues to follow the separate contract below.
+Each editable `description`
 (type-level or `fields[].description`) is limited to 50,000 Unicode code points,
-including whitespace and Jinja source. This is a per-field source-character limit,
+including whitespace and template-like text. This is a per-field source-character limit,
 not a UTF-8 byte, rendered-output or combined-description limit. Oversized updates
 return 400 without modifying the active configuration. Publication does not invoke
 an LLM. Storage failures/corrupt files
@@ -304,7 +315,8 @@ retrieval input. Paths, field definitions and merge rules remain locked.
 | soul | core_truths, boundaries, vibe, continuity |
 | identity | name, creature, vibe, emoji, avatar, introduction |
 
-`language` belongs to description templates, not this content context. Only Events
+`language` is not a content variable and is not expanded in Account-customized
+descriptions. Existing deployment-description language rendering is unchanged. Only Events
 may call these read-only `extract_context` helpers with positional arguments:
 `get_resource_event_content(ranges, summary)`,
 `get_first_message_time_from_ranges(ranges)`,
@@ -344,7 +356,8 @@ existing behavior, including its error/fallback semantics; they are not subject 
 the restricted renderer's source/AST/output limits. The complete Account YAML file
 is still limited to 1 MiB.
 These guards do not replace Worker resource quotas, evaluate extraction quality or sanitize
-Markdown/HTML for UI display. Description rendering is outside this content-only change.
+Markdown/HTML for UI display. Plain-text Account descriptions and restricted content
+templates have separate execution contracts.
 
 Publication validation failures return `INVALID_ARGUMENT` with `error.details`:
 `field=content_template`, a controlled `reason`, and `line` when available. The
