@@ -267,6 +267,22 @@ file-browser directory, SDK/CLI commands, drafts or version-history UI.
 
 #### Managed content-template contract
 
+The restricted contract below applies only when the Account body differs from the
+current deployment default. At publication and extraction load, the server compares
+the complete `content_template` string against its own deployment registry. An exact
+match uses the existing deployment renderer, including its filters and helpers;
+there is no client-supplied trust flag. This includes description-only PUT, empty
+PUT, and GET `effective` → PUT when the body is unchanged. The override can still
+have `status=custom` even though its body is inherited. The bundled Events YAML and
+its existing date expression are unchanged.
+
+Equality is exact, including whitespace. A modified body must pass the restricted
+contract even if it was based on a deployment template. If deployment defaults
+later change, the stored body is compared again on the next extraction load; a
+previous match does not grant permanent trust. A nonmatching body outside the
+allowlist must be replaced/reset before extraction can use it. Already-started
+extractions retain their resolved snapshot.
+
 `content_template` formats extracted/merged fields into Markdown. Administrators
 may change headings, order, fixed text and conditional visibility, including
 omitting fields or the Events ChatLog/resource-event branch. Omission does not
@@ -302,7 +318,7 @@ string subclasses) are not allowed. Methods can be chained or used on string fie
 locals, literals, and string results of approved Events helpers. Method references
 cannot be stored or accessed without calling them.
 
-No filters are supported in Account content templates, including `| upper`,
+No filters are supported in custom Account bodies, including `| upper`,
 `| lower`, `| trim`, `| default(...)`, or `| length`; this unreleased interface does
 not retain a filter compatibility mode. Use `summary or 'pending'` or an explicit
 conditional for fallbacks, and `summary.strip().upper()` for string formatting.
@@ -312,11 +328,13 @@ inheritance, macros, arbitrary calls/attributes, subscripts, arithmetic/string
 multiplication/concatenation and reserved `MEMORY_FIELDS` comments are not allowed.
 
 Limits: 64 KiB UTF-8 source, 2048 AST nodes, 1 MiB rendered body excluding system
-metadata. Account overrides are checked at publication and extraction load, then
-rendered with a restricted Jinja environment and only approved fields/helpers.
-Runtime failures stop that file write instead of falling back to an empty body.
-The deployment renderer itself is unchanged; the bundled Events content template
-uses a filter-free date expression and displays `N/A` when no date is available.
+metadata. Nonmatching Account bodies are checked at publication and extraction load,
+then rendered with a restricted Jinja environment and only approved fields/helpers.
+Runtime failures on this restricted path stop that file write instead of falling
+back to an empty body. Exact inherited bodies keep the deployment renderer's
+existing behavior, including its error/fallback semantics; they are not subject to
+the restricted renderer's source/AST/output limits. The complete Account YAML file
+is still limited to 1 MiB.
 These guards do not replace Worker resource quotas, evaluate extraction quality or sanitize
 Markdown/HTML for UI display. Description rendering is outside this content-only change.
 

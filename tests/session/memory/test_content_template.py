@@ -7,6 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openviking.message import Message, TextPart
+from openviking.session.memory.account_templates import (
+    _complete_template,
+    _validate_template,
+    memory_template_data,
+)
 from openviking.session.memory.dataclass import MemoryFile
 from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
 from openviking.session.memory.memory_updater import ExtractContext
@@ -22,13 +27,28 @@ from openviking.session.memory.utils.template_utils import TemplateUtils
 
 
 @pytest.mark.parametrize("memory_type", ["events", "soul", "identity"])
-def test_builtin_content_templates_remain_compatible(memory_type):
+def test_inherited_builtin_content_templates_keep_deployment_renderer(memory_type):
     schema = MemoryTypeRegistry().get(memory_type)
+    complete = _complete_template(
+        memory_template_data(schema), {"description": "Account instructions"}, memory_type
+    )
+    inherited = _validate_template(
+        complete, memory_type, deployment_content_template=schema.content_template
+    )
+    assert inherited._account_content_template is False
     values = {f.name: f.init_value or "" for f in schema.fields}
     context = ExtractContext([])
-    assert render_content_template(
-        schema.content_template, memory_type, values, context
-    ) == TemplateUtils.render(schema.content_template, values, context)
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type=memory_type, extra_fields=values),
+        content_template=inherited.content_template,
+        extract_context=context,
+        account_content_template_type=(
+            inherited.memory_type if inherited._account_content_template else None
+        ),
+    )
+    assert MemoryFileUtils.read(rendered).content == TemplateUtils.render(
+        schema.content_template, values, context
+    )
 
 
 @pytest.mark.parametrize("resource_event", [False, True])
@@ -51,7 +71,12 @@ def test_events_default_and_custom_render_real_context(resource_event):
     }
     template = MemoryTypeRegistry().get("events").content_template
     old = TemplateUtils.render(template, values, context)
-    assert render_content_template(template, "events", values, context) == old
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type="events", extra_fields=values),
+        content_template=template,
+        extract_context=context,
+    )
+    assert MemoryFileUtils.read(rendered).content == old
     if resource_event:
         assert "viking://resources/guide" in old
     else:
@@ -166,16 +191,13 @@ def test_content_template_rejects_all_filter_syntax(expression):
         render_content_template(template, "events", {"summary": "text"})
 
 
-def test_events_builtin_template_uses_na_for_missing_date_without_filters():
+def test_events_builtin_template_keeps_original_date_fallback():
     template = MemoryTypeRegistry().get("events").content_template
+    assert "ranges|default('')" in template
     context = ExtractContext([])
-    for render in (
-        lambda: render_content_template(template, "events", {"summary": "Summary"}, context),
-        lambda: TemplateUtils.render(template, {"summary": "Summary", "ranges": ""}, context),
-    ):
-        output = render()
-        assert "# N/A ChatLog:" in output
-        assert "None ChatLog:" not in output
+    output = TemplateUtils.render(template, {"summary": "Summary", "ranges": ""}, context)
+    # Preserve existing deployment behavior: default() handles undefined, not None.
+    assert "# None ChatLog:" in output
 
 
 @pytest.mark.parametrize(

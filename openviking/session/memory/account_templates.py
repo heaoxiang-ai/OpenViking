@@ -77,7 +77,11 @@ def default_memory_template(registry: MemoryTypeRegistry, memory_type: str) -> d
 
 
 def _validate_template(
-    data: dict, memory_type: str, *, validate_content: bool = True
+    data: dict,
+    memory_type: str,
+    *,
+    validate_content: bool = True,
+    deployment_content_template: str | None = None,
 ) -> MemoryTypeSchema:
     if data.get("memory_type") != memory_type:
         raise ValueError("memory_type must match the template in the request path")
@@ -86,9 +90,11 @@ def _validate_template(
     if any(not name for name in names) or len(names) != len(set(names)):
         raise ValueError("Template field names must be nonempty and unique")
     if memory_type in _EDITABLE_CONTENT_TEMPLATES and schema.content_template is not None:
-        if validate_content:
+        # Only an exact match to server-owned deployment defaults inherits the
+        # legacy renderer. Never infer trust from persisted/client-supplied flags.
+        schema._account_content_template = schema.content_template != deployment_content_template
+        if validate_content and schema._account_content_template:
             validate_content_template(schema.content_template, memory_type)
-        schema._account_content_template = True
     # Description and locked deployment templates retain their existing contract.
     env = Environment()
     for template in (
@@ -149,7 +155,9 @@ def _complete_template(defaults: dict, supplied: dict, memory_type: str) -> dict
             )
             _apply_editable_values(fields[name], field, editable, f"fields.{name}")
     # Never remove, reorder, or replace fields omitted from a partial request.
-    _validate_template(data, memory_type)
+    _validate_template(
+        data, memory_type, deployment_content_template=defaults.get("content_template")
+    )
     return data
 
 
@@ -295,7 +303,7 @@ async def update_account_memory_template(
 async def resolve_account_memory_registry(
     viking_fs: VikingFS, account_id: str, registry: MemoryTypeRegistry
 ) -> MemoryTypeRegistry:
-    """Snapshot registered types before filtering, without mutating shared defaults."""
+    """Snapshot account types over server-owned deployment defaults, without mutating them."""
     schemas = registry.list_all(include_disabled=True)
     templates = await asyncio.gather(
         *(read_account_memory_template(viking_fs, account_id, s.memory_type) for s in schemas)
@@ -304,7 +312,11 @@ async def resolve_account_memory_registry(
     for schema, template in zip(schemas, templates, strict=True):
         try:
             resolved.register(
-                _validate_template(template, schema.memory_type)
+                _validate_template(
+                    template,
+                    schema.memory_type,
+                    deployment_content_template=schema.content_template,
+                )
                 if template is not None
                 else schema.model_copy(deep=True)
             )

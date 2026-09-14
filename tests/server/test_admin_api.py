@@ -581,8 +581,135 @@ async def test_account_memory_templates_description_only_keeps_safe_deployment_m
     snapshot = await resolve_account_memory_registry(
         lightweight_admin_app.state.fake_service.viking_fs, account_id, defaults
     )
-    assert snapshot.get("events")._account_content_template is True
+    assert snapshot.get("events")._account_content_template is False
     assert snapshot.get("events").content_template == "# {{ summary.strip().upper() }}"
+
+
+@pytest.mark.parametrize(
+    "memory_type, field_name",
+    [("events", "summary"), ("soul", "core_truths"), ("identity", "introduction")],
+)
+@pytest.mark.parametrize("request_kind", ["description_only", "empty", "roundtrip"])
+async def test_account_memory_templates_inherit_exact_deployment_body(
+    lightweight_admin_client,
+    lightweight_admin_app,
+    template_account,
+    monkeypatch,
+    memory_type,
+    field_name,
+    request_kind,
+):
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+
+    account_id, headers = template_account
+    defaults = MemoryTypeRegistry()
+    # Deployment code may use methods/filters that custom Account bodies cannot.
+    deployment_body = "# {{ " + field_name + ".replace('old', 'new') | upper }}"
+    defaults.get(memory_type).content_template = deployment_body
+    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
+    body = {"description": "Account instructions"} if request_kind == "description_only" else {}
+    if request_kind == "roundtrip":
+        response = await lightweight_admin_client.get(url, headers=headers)
+        assert response.status_code == 200, response.text
+        body = response.json()["result"]["effective"]
+        body["description"] = "Account instructions"
+    response = await lightweight_admin_client.put(url, json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["result"]["status"] == "custom"
+    assert response.json()["result"]["effective"]["content_template"] == deployment_body
+    # Roundtrip a persisted override too, not only defaults returned before a PUT.
+    response = await lightweight_admin_client.put(
+        url, json=response.json()["result"]["effective"], headers=headers
+    )
+    assert response.status_code == 200, response.text
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    stored = yaml.safe_load(fs.agfs._files[account_memory_template_path(account_id, memory_type)])
+    assert "_account_content_template" not in stored
+    snapshot = await resolve_account_memory_registry(fs, account_id, defaults)
+    schema = snapshot.get(memory_type)
+    assert schema._account_content_template is False
+    assert schema.content_template == deployment_body
+    assert defaults.get(memory_type)._account_content_template is False
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type=memory_type, extra_fields={field_name: "old fact"}),
+        content_template=schema.content_template,
+        account_content_template_type=(
+            schema.memory_type if schema._account_content_template else None
+        ),
+    )
+    assert MemoryFileUtils.read(rendered).content == "# NEW FACT"
+
+
+@pytest.mark.parametrize("alteration", ["whitespace", "different_body"])
+async def test_account_memory_templates_recheck_persisted_body_without_trusting_flags(
+    lightweight_admin_client,
+    lightweight_admin_app,
+    template_account,
+    monkeypatch,
+    alteration,
+):
+    from openviking_cli.exceptions import FailedPreconditionError
+
+    account_id, headers = template_account
+    defaults = MemoryTypeRegistry()
+    deployment_body = "{{ summary | upper }}"
+    defaults.get("events").content_template = deployment_body
+    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
+    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    path = account_memory_template_path(account_id, "events")
+    original = fs.agfs._files[path]
+    altered_body = deployment_body + (" " if alteration == "whitespace" else "changed")
+    # Even a whitespace change is custom; equality is exact, not normalized.
+    response = await lightweight_admin_client.put(
+        url, json={"content_template": altered_body}, headers=headers
+    )
+    assert response.status_code == 400, response.text
+    assert fs.agfs._files[path] == original
+    corrupted = yaml.safe_load(original)
+    corrupted["content_template"] = altered_body
+    corrupted["_account_content_template"] = False
+    corrupted["deployment_content_template"] = altered_body
+    fs.agfs._files[path] = yaml.safe_dump(corrupted).encode()
+    with pytest.raises(FailedPreconditionError):
+        await resolve_account_memory_registry(fs, account_id, defaults)
+    # Management reads remain available for recovery; no unsafe body is rendered.
+    assert (await lightweight_admin_client.get(url, headers=headers)).status_code == 200
+
+
+async def test_account_memory_templates_recheck_trust_after_deployment_change(
+    lightweight_admin_client,
+    lightweight_admin_app,
+    template_account,
+    monkeypatch,
+):
+    from openviking_cli.exceptions import FailedPreconditionError
+
+    account_id, headers = template_account
+    defaults = MemoryTypeRegistry()
+    old_body = "{{ summary | upper }}"
+    defaults.get("events").content_template = old_body
+    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
+    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    old_snapshot = await resolve_account_memory_registry(fs, account_id, defaults)
+    defaults.get("events").content_template = "# {{ summary }}"
+    with pytest.raises(FailedPreconditionError):
+        await resolve_account_memory_registry(fs, account_id, defaults)
+    # Already-started extractions keep their snapshot, not a mutable defaults view.
+    assert old_snapshot.get("events").content_template == old_body
+    assert old_snapshot.get("events")._account_content_template is False
+    response = await lightweight_admin_client.put(
+        url, json={"description": "Use current defaults"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
+    new_snapshot = await resolve_account_memory_registry(fs, account_id, defaults)
+    assert new_snapshot.get("events").content_template == "# {{ summary }}"
+    assert new_snapshot.get("events")._account_content_template is False
 
 
 async def test_account_memory_templates_old_content_can_be_read_replaced_and_reset(
@@ -653,6 +780,8 @@ async def test_account_memory_templates_locked_fields_cannot_be_modified(
             {"unknown": "ignored?"},
             {"Description": "wrong key"},
             {"_updated_at": "forged"},
+            {"_account_content_template": False},
+            {"deployment_content_template": "forged"},
             {"enabled": 1},
             {"fields": [{"name": "renamed_field", "description": "changed"}]},
             {"description": None},

@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0
 """Restricted Markdown templates published through the account management API.
 
-Deployment-owned templates keep their existing renderer. Only account overrides
-use this contract, both at publication and when rendering the extraction snapshot.
+Deployment-owned templates and exact inherited copies keep their existing renderer.
+Only account bodies differing from the current deployment defaults use this contract,
+both at publication and when rendering the extraction snapshot.
 """
 
 from __future__ import annotations
