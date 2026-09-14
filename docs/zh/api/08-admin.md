@@ -266,19 +266,24 @@ Events 的默认 embedding 模板引用正文，因此正文变化也可能影�
 - `get_event_content(ranges, summary[, ratio_threshold])`：按已有逻辑选择 ChatLog/摘要；省略阈值为 0.2，显式 0 表示存在原文时优先原文。
 - `get_year(ranges)`、`get_month(ranges)`、`get_day(ranges)`：来源日期分量。
 
-首个参数使用 `ranges`（或 `ranges|default('')`），不能自行构造消息范围；阈值只能为 0～1 的数字字面量。
+首个参数直接使用 `ranges`，不能自行构造消息范围；缺失字段会传入空字符串，无需过滤器兜底。
+阈值只能为 0～1 的数字字面量。
 允许去掉 ChatLog 或资源事件分支，但去掉后不再自动展示这些正文/资源链接；原始 Session 仍保留。
 
 支持的 Jinja 子集：
 
 - `if/elif/else`、比较/布尔条件、`set` 局部变量（不能覆盖内置字段、extract_context、loop）。
 - `for` 遍历模板中显式写出的列表/元组，最多 32 项；支持标题/字段二元组和 `loop.index/index0/first/last/length`。不支持嵌套/递归循环、range() 或遍历消息/长字符串。
-- 过滤器：`default`、`trim`、`lower`、`upper`、`length`；测试：`defined`、`undefined`、`none`、`string`。
+- 字符串方法：`.upper()`、`.lower()`、`.strip()`，均不接受位置参数或关键字参数。可用于字符串字段、局部变量、字面量、Events 白名单方法返回的字符串，并支持链式调用，例如 `summary.strip().upper()`。
+- 方法语法与部署模板一致，但账户正文只开放上述少数方法；读取属性前先检查接收者必须是普通字符串，其他对象（包括字符串子类）的同名方法/属性不能借此被调用。也不允许只取出方法引用、保存后再调用。
+- 不支持任何过滤器，包括 `| upper`、`| lower`、`| trim`、`| default(...)`、`| length`；该接口尚未上线，不保留过滤器兼容模式。空值回退使用 `summary or '待补充'` 或条件表达式。
+- 测试：`defined`、`undefined`、`none`、`string`。
 - 不支持模板导入/继承、宏、任意函数/对象属性访问、下标访问、算术或字符串倍增/拼接。不能注入系统保留的 `<!-- MEMORY_FIELDS ... -->` 元数据。
 
 模板 UTF-8 大小 ≤ 64 KiB，AST 节点 ≤ 2048，渲染正文 ≤ 1 MiB（不含系统追加元数据）。
 Account 覆盖在发布时和抽取加载时验证，运行时使用受限 Jinja 环境，只提供白名单字段/方法。
-渲染失败会报告错误并停止该次文件写入，不走旧的空正文 fallback；部署内置模板的渲染路径不变。
+渲染失败会报告错误并停止该次文件写入，不走旧的空正文 fallback；部署模板的旧渲染器不变。
+内置 Events 正文已使用不含过滤器的日期表达式，缺失日期时显示 `N/A`。
 这些保护不代替 Worker 的 CPU/内存配额，也不评估记忆效果或做前端 Markdown/HTML 安全过滤。
 说明字段的既有渲染规则不在本次正文模板限制的改动范围内。
 
@@ -289,16 +294,16 @@ Account 覆盖在发布时和抽取加载时验证，运行时使用受限 Jinja
 示例：只展示事件名称和摘要，不输出 ChatLog：
 
 ```json
-{"content_template": "# {{ event_name }}\n\n## 事件摘要\n{{ summary }}"}
+{"content_template": "# {{ event_name.strip() }}\n\n## 事件摘要\n{{ summary.strip() or '待补充' }}"}
 ```
 
 示例：Soul 的分节展示：
 
 ```jinja
 {% for title, text in [('核心价值', core_truths), ('边界', boundaries), ('气质', vibe), ('连续性', continuity)] %}
-{% if text %}
+{% if text.strip() %}
 ## {{ title }}
-{{ text }}
+{{ text.strip() }}
 {% endif %}
 {% endfor %}
 ```

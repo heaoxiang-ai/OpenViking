@@ -287,14 +287,27 @@ may call these read-only `extract_context` helpers with positional arguments:
 `get_first_message_time_with_weekday_from_ranges(ranges)`,
 `get_event_content(ranges, summary[, ratio_threshold])`,
 `get_year(ranges)`, `get_month(ranges)`, `get_day(ranges)`.
-The first argument must be `ranges` or `ranges|default('')`; an explicit ratio must
-be a numeric literal from 0 to 1 (omitted: 0.2; built-in: 0).
+The first argument must be `ranges` directly; missing field values are supplied as
+empty strings, so no fallback filter is needed. An explicit ratio must be a numeric
+literal from 0 to 1 (omitted: 0.2; built-in: 0).
 
 Supported Jinja: `if/elif/else`, comparisons/boolean expressions, local `set`, and
 non-nested/non-recursive `for` over an explicit list/tuple of at most 32 items
 (including title/value pairs). `loop.index/index0/first/last/length` are available.
-Filters: `default`, `trim`, `lower`, `upper`, `length`. Tests: `defined`, `undefined`,
-`none`, `string`. Built-in field/context names cannot be overwritten. Imports,
+String methods: `.upper()`, `.lower()`, `.strip()`, with no positional or keyword
+arguments. These use the same method-call syntax as deployment templates; Account
+templates allow only these methods on plain strings. The receiver type is checked
+before attribute lookup, so same-named methods/properties on other objects (including
+string subclasses) are not allowed. Methods can be chained or used on string fields,
+locals, literals, and string results of approved Events helpers. Method references
+cannot be stored or accessed without calling them.
+
+No filters are supported in Account content templates, including `| upper`,
+`| lower`, `| trim`, `| default(...)`, or `| length`; this unreleased interface does
+not retain a filter compatibility mode. Use `summary or 'pending'` or an explicit
+conditional for fallbacks, and `summary.strip().upper()` for string formatting.
+Tests: `defined`, `undefined`, `none`, `string` remain supported.
+Built-in field/context names cannot be overwritten. Imports,
 inheritance, macros, arbitrary calls/attributes, subscripts, arithmetic/string
 multiplication/concatenation and reserved `MEMORY_FIELDS` comments are not allowed.
 
@@ -302,8 +315,9 @@ Limits: 64 KiB UTF-8 source, 2048 AST nodes, 1 MiB rendered body excluding syste
 metadata. Account overrides are checked at publication and extraction load, then
 rendered with a restricted Jinja environment and only approved fields/helpers.
 Runtime failures stop that file write instead of falling back to an empty body.
-Deployment-owned templates retain their existing rendering behavior. These guards
-do not replace Worker resource quotas, evaluate extraction quality or sanitize
+The deployment renderer itself is unchanged; the bundled Events content template
+uses a filter-free date expression and displays `N/A` when no date is available.
+These guards do not replace Worker resource quotas, evaluate extraction quality or sanitize
 Markdown/HTML for UI display. Description rendering is outside this content-only change.
 
 Publication validation failures return `INVALID_ARGUMENT` with `error.details`:

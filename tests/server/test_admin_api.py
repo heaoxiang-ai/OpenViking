@@ -447,6 +447,9 @@ async def test_account_memory_templates_publish_and_reset(
         {"content_template": "{{ extract_context.get_year('0-999999999') }}"},
         {"content_template": "{% include 'private.yaml' %}"},
         {"content_template": "{{ summary | attr('__class__') }}"},
+        {"content_template": "{{ summary | upper }}"},
+        {"content_template": "{{ summary | default('pending') }}"},
+        {"content_template": "{{ summary.strip('x') }}"},
         {"content_template": "x" * (64 * 1024 + 1)},
     ],
 )
@@ -525,6 +528,63 @@ async def test_account_memory_templates_content_validation_error_details(
     }
 
 
+@pytest.mark.parametrize(
+    "memory_type, field_name",
+    [("events", "summary"), ("soul", "core_truths"), ("identity", "introduction")],
+)
+async def test_account_memory_templates_string_methods_reach_file_body(
+    lightweight_admin_client,
+    lightweight_admin_app,
+    template_account,
+    memory_type,
+    field_name,
+):
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+
+    account_id, headers = template_account
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
+    body = {"content_template": "# {{ " + field_name + ".strip().upper() }}"}
+    response = await lightweight_admin_client.put(url, json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    snapshot = await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
+    schema = snapshot.get(memory_type)
+    assert schema._account_content_template is True
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type=memory_type, extra_fields={field_name: " business fact "}),
+        content_template=schema.content_template,
+        account_content_template_type=schema.memory_type,
+    )
+    assert MemoryFileUtils.read(rendered).content == "# BUSINESS FACT"
+
+
+async def test_account_memory_templates_description_only_keeps_safe_deployment_methods(
+    lightweight_admin_client,
+    lightweight_admin_app,
+    template_account,
+    monkeypatch,
+):
+    account_id, headers = template_account
+    defaults = MemoryTypeRegistry()
+    defaults.get("events").content_template = "# {{ summary.strip().upper() }}"
+    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    response = await lightweight_admin_client.put(
+        f"/api/v1/admin/accounts/{account_id}/memory-templates/events",
+        json={"description": "Capture release decisions"},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["result"]["effective"]["content_template"] == (
+        "# {{ summary.strip().upper() }}"
+    )
+    snapshot = await resolve_account_memory_registry(
+        lightweight_admin_app.state.fake_service.viking_fs, account_id, defaults
+    )
+    assert snapshot.get("events")._account_content_template is True
+    assert snapshot.get("events").content_template == "# {{ summary.strip().upper() }}"
+
+
 async def test_account_memory_templates_old_content_can_be_read_replaced_and_reset(
     lightweight_admin_client,
     lightweight_admin_app,
@@ -538,7 +598,7 @@ async def test_account_memory_templates_old_content_can_be_read_replaced_and_res
     path = account_memory_template_path(account_id, "events")
     assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
     legacy = yaml.safe_load(fs.agfs._files[path])
-    legacy["content_template"] = "{{ summary.upper() }}"
+    legacy["content_template"] = "{{ summary | upper }}"
     raw = yaml.safe_dump(legacy).encode()
     for operation in ("PUT", "DELETE"):
         fs.agfs._files[path] = raw
@@ -554,7 +614,7 @@ async def test_account_memory_templates_old_content_can_be_read_replaced_and_res
             url,
             headers=headers,
             **(
-                {"json": {"content_template": "{{ summary | upper }}"}}
+                {"json": {"content_template": "{{ summary.upper() }}"}}
                 if operation == "PUT"
                 else {}
             ),

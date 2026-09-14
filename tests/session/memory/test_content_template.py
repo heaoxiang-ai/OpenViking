@@ -62,19 +62,120 @@ def test_events_default_and_custom_render_real_context(resource_event):
     assert ("viking://resources/guide" in result) == resource_event
 
 
-def test_content_template_if_set_for_and_filters():
+def test_content_template_if_set_for_and_string_methods():
     template = """{% set heading = 'Business rules' %}
 # {{ heading }}
 {% for title, text in [('Values', core_truths), ('Limits', boundaries)] %}
-{% if text | trim %}## {{ loop.index }}. {{ title }}
-{{ text | trim }}{% endif %}
+{% if text.strip() %}## {{ loop.index }}. {{ title }}
+{{ text.strip() }}{% endif %}
 {% endfor %}
-{% if vibe is defined and vibe %}{{ vibe | upper }}{% else %}{{ continuity | default('pending', true) }}{% endif %}"""
+{% if vibe is defined and vibe %}{{ vibe.upper() }}{% else %}{{ continuity or 'pending' }}{% endif %}"""
     output = render_content_template(
         template, "soul", {"core_truths": " truth ", "boundaries": "limits"}
     )
     assert "## 1. Values\ntruth" in output and "## 2. Limits\nlimits" in output
     assert "pending" in output
+
+
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        ("{{ summary.upper() }}", "ABC"),
+        ("{{ summary.lower() }}", "abc"),
+        ("{{ summary.strip() }}", "AbC"),
+        ("{{ summary.strip().upper() }}", "ABC"),
+        ("{{ ' HeLLo '.strip().lower() }}", "hello"),
+        ("{% set text = summary %}{{ text.upper() }}", "ABC"),
+        ("{% if summary.strip().lower() == 'abc' %}match{% endif %}", "match"),
+        (
+            "{% for title, text in [('Title', summary)] %}{{ title.upper() }}: {{ text.strip() }}{% endfor %}",
+            "TITLE: AbC",
+        ),
+        ("{{ (summary or 'pending').upper() }}", "ABC"),
+    ],
+)
+def test_content_template_string_methods_match_deployment_syntax(template, expected):
+    fields = {"summary": " AbC "}
+    assert render_content_template(template, "events", fields) == expected
+    assert TemplateUtils.render(template, fields) == expected
+
+
+def test_content_template_string_methods_on_helper_results_and_empty_fields():
+    context = SimpleNamespace(get_event_content=lambda *args: " details ")
+    assert (
+        render_content_template(
+            "{{ extract_context.get_event_content(ranges, summary).strip().upper() }}",
+            "events",
+            {"ranges": "0"},
+            context,
+        )
+        == "DETAILS"
+    )
+    assert render_content_template("{{ summary.strip() or 'pending' }}", "events", {}) == "pending"
+
+
+@pytest.mark.parametrize("receiver_kind", ["object", "mapping", "str_subclass", "none", "int"])
+def test_content_template_rejects_same_named_methods_before_attribute_lookup(receiver_kind):
+    touched = []
+
+    class Impostor:
+        @property
+        def upper(self):
+            touched.append("property")
+            return lambda: "unsafe"
+
+    class StringSubclass(str):
+        def upper(self):
+            touched.append("override")
+            return "unsafe"
+
+    receivers = {
+        "object": Impostor(),
+        "mapping": {"upper": lambda: touched.append("mapping")},
+        "str_subclass": StringSubclass("text"),
+        "none": None,
+        "int": 1,
+    }
+    context = SimpleNamespace(get_event_content=lambda *args: receivers[receiver_kind])
+    with pytest.raises(ContentTemplateError, match="render_failed"):
+        render_content_template(
+            "{{ extract_context.get_event_content(ranges, summary).upper() }}",
+            "events",
+            {"ranges": "0"},
+            context,
+        )
+    assert not touched
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "summary | upper",
+        "summary | lower",
+        "summary | trim",
+        "summary | length",
+        "summary | default('pending', true)",
+        "summary.upper() | upper",
+    ],
+)
+def test_content_template_rejects_all_filter_syntax(expression):
+    template = "{{ " + expression + " }}"
+    with pytest.raises(ContentTemplateError, match="unsupported_filter"):
+        validate_content_template(template, "events")
+    with pytest.raises(ContentTemplateError, match="unsupported_filter"):
+        render_content_template(template, "events", {"summary": "text"})
+
+
+def test_events_builtin_template_uses_na_for_missing_date_without_filters():
+    template = MemoryTypeRegistry().get("events").content_template
+    context = ExtractContext([])
+    for render in (
+        lambda: render_content_template(template, "events", {"summary": "Summary"}, context),
+        lambda: TemplateUtils.render(template, {"summary": "Summary", "ranges": ""}, context),
+    ):
+        output = render()
+        assert "# N/A ChatLog:" in output
+        assert "None ChatLog:" not in output
 
 
 @pytest.mark.parametrize(
@@ -91,7 +192,19 @@ def test_content_template_if_set_for_and_filters():
         "{{ extract_context.read_message_ranges(ranges) }}",
         "{{ extract_context.get_year }}",
         "{{ extract_context['get_year'](ranges) }}",
-        "{{ summary.upper() }}",
+        "{{ summary.upper }}",
+        "{% set method = summary.upper %}{{ method() }}",
+        "{{ summary.upper('x') }}",
+        "{{ summary.strip('x') }}",
+        "{{ summary.strip(chars='x') }}",
+        "{{ summary.upper(*summary) }}",
+        "{{ summary.upper(**summary) }}",
+        "{{ summary.replace('a', 'b') }}",
+        "{{ summary.format() }}",
+        "{{ summary.strip().__class__ }}",
+        "{{ summary.upper.__self__ }}",
+        "{{ extract_context.upper() }}",
+        "{% for x in [1] %}{{ loop.upper() }}{% endfor %}",
         "{{ cycler.__init__.__globals__ }}",
         "{{ range(100) }}",
         "{% include 'private.txt' %}",
@@ -231,7 +344,7 @@ async def test_account_content_template_initialization(monkeypatch):
     [
         ("get_resource_event_content", "ranges, summary"),
         ("get_first_message_time_from_ranges", "ranges"),
-        ("get_first_message_time_with_weekday_from_ranges", "ranges|default('')"),
+        ("get_first_message_time_with_weekday_from_ranges", "ranges"),
         ("get_event_content", "ranges, summary"),
         ("get_event_content", "ranges, summary, 0"),
         ("get_year", "ranges"),
