@@ -77,6 +77,9 @@ class _FakeAGFS:
         self.ensure_parent_dirs(path)
         self._files[path] = content
 
+    def mv(self, old_path, new_path, **_kwargs):
+        self._files[new_path] = self._files.pop(old_path)
+
     def rm(self, path, **_kwargs):
         self._files.pop(path, None)
 
@@ -94,6 +97,9 @@ class _FakeAGFS:
 
     def pathlock_acquire_exact(self, ctx, path, timeout_secs=0.0, owner_lease_ref=None):
         return {"lease_ref": f"test:{path}"}
+
+    def pathlock_acquire_exact_batch(self, ctx, paths, timeout_secs=0.0, owner_lease_ref=None):
+        return self.pathlock_acquire_exact(ctx, paths[0], timeout_secs, owner_lease_ref)
 
     def pathlock_release(self, ctx, lease):
         return None
@@ -1095,7 +1101,7 @@ async def test_account_memory_templates_write_failure_preserves_active_configura
 
     def fail_once(target, content, **kwargs):
         nonlocal failed
-        if target == path and not failed:
+        if target.startswith(path + ".") and target.endswith(".tmp") and not failed:
             failed = True
             fs.agfs._files[target] = b"partial"
             raise OSError("simulated write failure")
@@ -1122,9 +1128,12 @@ def template_path_lock(
     lock = threading.Lock()
 
     def acquire(ctx, target, timeout_secs=0, owner_lease_ref=None):
+        from openviking.storage.errors import LockAcquisitionError
+
         assert target == path
         assert ctx["account_id"] == account_id
-        assert lock.acquire(timeout=timeout_secs)
+        if not lock.acquire(timeout=timeout_secs):
+            raise LockAcquisitionError("publication in progress")
         return {"lease_ref": "publication-test"}
 
     def release(ctx, lease):
@@ -1156,7 +1165,7 @@ async def test_account_memory_templates_concurrent_publications_keep_both_types(
     assert effective["events"]["description"] == "Events override"
 
 
-async def test_account_memory_templates_read_waits_for_publication(
+async def test_account_memory_templates_read_does_not_wait_for_publication(
     lightweight_admin_client,
     lightweight_admin_app,
     template_account,
@@ -1171,7 +1180,6 @@ async def test_account_memory_templates_read_waits_for_publication(
     ).status_code == 200
     fs = lightweight_admin_app.state.fake_service.viking_fs
     path = account_memory_template_path(account_id, "profile")
-    original = fs.agfs._files[path]
     acquiring = threading.Event()
     acquire = fs.agfs.pathlock_acquire_exact
 
@@ -1181,15 +1189,11 @@ async def test_account_memory_templates_read_waits_for_publication(
 
     monkeypatch.setattr(fs.agfs, "pathlock_acquire_exact", observe_acquire)
     with template_path_lock:
-        # Model a backend that truncates before writing the complete YAML.
-        fs.agfs._files[path] = b"partial"
-        response_task = asyncio.create_task(client.get(url, headers=headers))
-        try:
-            assert await asyncio.to_thread(acquiring.wait, 5)
-            assert not response_task.done()
-        finally:
-            fs.agfs._files[path] = original
-    response = await response_task
+        # A writer may be preparing a partial staging file, but the active path
+        # remains a complete version and readers never request its lock.
+        fs.agfs._files[path + ".test.tmp"] = b"partial"
+        response = await asyncio.wait_for(client.get(url, headers=headers), timeout=1)
+        assert not acquiring.is_set()
     assert response.status_code == 200, response.text
     assert response.json()["result"]["effective"]["description"] == "Active"
 

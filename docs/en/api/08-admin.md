@@ -245,6 +245,25 @@ encrypted backing files directly. `setting.json` and User `user_config.json`
 are unchanged. Personal deployments use the default Account; enterprise
 deployments use the target Account, with no separate kernel storage layout.
 
+Template reads do not acquire locks. Publication writes a unique staging file in
+the same directory, then switches the active path through AGFS: LocalFS uses a
+file rename; S3 copies the complete object over the destination before deleting
+the staging object, without deleting the destination first. Readers may see the
+complete old or new version, or deployment defaults before the first publication
+and after DELETE. This is per-file publication, not a transaction across an
+entire template listing or registry snapshot.
+Writers/DELETE still use cross-process locks; publication locks cover both the
+active and staging paths. Contention uses zero-wait attempts with asynchronous
+backoff for up to 10 seconds, leaving executor threads available for I/O/release.
+A failed staging write leaves the active file unchanged. Post-publication cleanup
+errors only produce warnings, never an in-place rollback. If the move reports an
+error, the destination is checked: a verified publication is retained; an
+unverifiable outcome returns an error without blindly restoring the old version.
+Use GET to confirm its state. Cancellation stops lock retries, but already
+submitted native I/O is drained and locks released before cancellation propagates;
+cancelling an in-progress publication does not guarantee that it is undone.
+Process crashes or cleanup failures can leave `.tmp` files, which readers ignore.
+
 The ordinary Session memory extraction pipeline loads Account templates before
 schema filtering and initial-file generation. The resulting registry snapshot is
 used for extraction, patch merging, and memory-file updates. A later publication

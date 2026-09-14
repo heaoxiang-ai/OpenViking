@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+from collections.abc import Awaitable, Callable, Coroutine
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -32,6 +34,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _MAX_CONFIG_BYTES = 1024 * 1024
 _MAX_DESCRIPTION_CHARS = 50_000
+_TEMPLATE_LOCK_TIMEOUT_SECONDS = 10.0
+_TEMPLATE_LOCK_RETRY_SECONDS = 0.05
 
 # Field names select existing fields; only their descriptions are editable.
 EDITABLE_MEMORY_TEMPLATE_FIELDS = {
@@ -200,16 +204,72 @@ def _parse_template(raw: bytes | None, memory_type: str) -> dict | None:
         raise FailedPreconditionError(f"Invalid persisted memory template: {memory_type}") from exc
 
 
-async def _acquire_template_lock(client: AsyncAGFSClient, path: str):
-    # Read and write share a lock: not every backend replaces file content atomically.
+async def _finish_storage_call(
+    operation: Coroutine[Any, Any, Any],
+    *,
+    on_cancel: Callable[[Any], Awaitable[None]] | None = None,
+):
+    """Drain submitted native I/O before propagating cancellation.
+
+    Cancelling an asyncio waiter cannot stop its worker thread. Keep the worker's
+    result reachable, and (for acquisition) release a lease won during cancellation.
+    Locked writes include their own release in a finally block.
+    """
+    task = asyncio.create_task(operation)
     try:
-        return await client.pathlock_acquire_exact(path, timeout_secs=10.0)
-    except LockAcquisitionError as exc:
-        raise ResourceBusyError(
-            "Another memory template operation is in progress. Please retry.",
-            uri=path,
-            conflict_type="memory_templates_busy",
-        ) from exc
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+
+        async def finish():
+            try:
+                result = await task
+            except Exception:
+                logger.debug("Template storage call failed while cancelling", exc_info=True)
+            else:
+                if on_cancel is not None:
+                    await on_cancel(result)
+
+        cleanup = asyncio.create_task(finish())
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not interrupt lease cleanup either.
+                continue
+        cleanup.result()
+        raise
+
+
+async def _acquire_template_lock(
+    client: AsyncAGFSClient, path: str, staging_path: str | None = None
+):
+    # Keep the cross-process lock, but never wait for contention in a worker:
+    # the holder needs that same executor to finish its I/O and release the lease.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TEMPLATE_LOCK_TIMEOUT_SECONDS
+
+    async def release_cancelled_acquire(lease):
+        await client.pathlock_release(lease, fs_ctx=fs_ctx_from_agfs_path(path))
+
+    while True:
+        try:
+            return await _finish_storage_call(
+                client.pathlock_acquire_exact_batch([path, staging_path], timeout_secs=0.0)
+                if staging_path is not None
+                else client.pathlock_acquire_exact(path, timeout_secs=0.0),
+                on_cancel=release_cancelled_acquire,
+            )
+        except LockAcquisitionError as exc:
+            remaining = deadline - loop.time()
+            if remaining > 0:
+                await asyncio.sleep(min(_TEMPLATE_LOCK_RETRY_SECONDS, remaining))
+                if loop.time() < deadline:
+                    continue
+            raise ResourceBusyError(
+                "Another memory template operation is in progress. Please retry.",
+                uri=path,
+                conflict_type="memory_templates_busy",
+            ) from exc
 
 
 async def read_account_memory_template(
@@ -217,11 +277,9 @@ async def read_account_memory_template(
 ) -> dict | None:
     path = account_memory_template_path(account_id, memory_type)
     client = AsyncAGFSClient(viking_fs.agfs)
-    lease = await _acquire_template_lock(client, path)
-    try:
-        return _parse_template(await _read_raw(client, path), memory_type)
-    finally:
-        await client.pathlock_release(lease)
+    # Publication switches a fully-written staging file into place. Readers may
+    # see either complete version (or no override after DELETE), without a lock.
+    return _parse_template(await _read_raw(client, path), memory_type)
 
 
 def memory_template_result(
@@ -249,6 +307,7 @@ async def update_account_memory_template(
     """Publish a full template, or delete its override to restore deployment defaults."""
     defaults = default_memory_template(registry, memory_type)
     complete = None
+    encoded = None
     if template is not None:
         try:
             complete = _complete_template(defaults, template, memory_type)
@@ -265,8 +324,59 @@ async def update_account_memory_template(
             raise InvalidArgumentError("A memory template must not exceed 1 MiB")
 
     path = account_memory_template_path(account_id, memory_type)
+    staging_path = f"{path}.{uuid.uuid4().hex}.tmp" if complete is not None else None
     client = AsyncAGFSClient(viking_fs.agfs)
-    lease = await _acquire_template_lock(client, path)
+    lease = await _acquire_template_lock(client, path, staging_path)
+    return await _finish_storage_call(
+        _update_locked_template(client, path, staging_path, memory_type, complete, encoded, lease)
+    )
+
+
+async def _publish_template(
+    client: AsyncAGFSClient, path: str, staging_path: str, encoded: bytes, fs_ctx: dict
+) -> None:
+    """Publish a complete file through same-mount AGFS rename/object replacement.
+
+    The caller's lease covers BOTH paths. LocalFS renames the staged file; S3
+    copies the whole staged object to the destination before deleting the source.
+    Never overwrite/restore the active file in place, including on failure.
+    """
+    try:
+        await client.write(staging_path, encoded, fs_ctx=fs_ctx)
+        try:
+            await client.mv(staging_path, path, fs_ctx=fs_ctx)
+        except Exception:
+            # An S3 move can publish successfully and then fail deleting its
+            # source. Acknowledge only a verified published version; if state
+            # cannot be verified, propagate the error without a destructive rollback.
+            try:
+                published = await _read_raw(client, path) == encoded
+            except Exception:
+                published = False
+            if not published:
+                raise
+            logger.warning("Template move reported an error after publication: %s", path)
+    finally:
+        try:
+            await client.rm(staging_path, fs_ctx=fs_ctx)
+        except AGFSNotFoundError:
+            pass
+        except Exception:
+            # Cleanup cannot undo a published version or mask the original error.
+            logger.warning(
+                "Failed to clean up staged memory template: %s", staging_path, exc_info=True
+            )
+
+
+async def _update_locked_template(
+    client: AsyncAGFSClient,
+    path: str,
+    staging_path: str | None,
+    memory_type: str,
+    complete: dict | None,
+    encoded: bytes | None,
+    lease,
+):
     fs_ctx = fs_ctx_from_agfs_path(path)
     lease_ref = getattr(lease, "lease_ref", None) or getattr(lease, "id", None)
     if isinstance(lease, dict):
@@ -289,26 +399,15 @@ async def update_account_memory_template(
             pass
         if raw is not None:
             await client.write(path + ".backup", raw)
-        try:
-            if complete is None:
-                await client.rm(path, fs_ctx=fs_ctx)
-            else:
-                await client.write(path, encoded, fs_ctx=fs_ctx)
-        except Exception:
-            try:
-                if raw is None:
-                    await client.rm(path, fs_ctx=fs_ctx)
-                else:
-                    await client.write(path, raw, fs_ctx=fs_ctx)
-            except AGFSNotFoundError:
-                pass
-            except Exception:
-                logger.exception("Failed to roll back memory template: %s", path)
-            raise
+        if complete is None:
+            await client.rm(path, fs_ctx=fs_ctx)
+        else:
+            assert staging_path is not None and encoded is not None
+            await _publish_template(client, path, staging_path, encoded, fs_ctx)
         logger.info("Updated account memory template: %s reset=%s", path, complete is None)
         return complete
     finally:
-        await client.pathlock_release(lease)
+        await client.pathlock_release(lease, fs_ctx=fs_ctx_from_agfs_path(path))
 
 
 async def resolve_account_memory_registry(
