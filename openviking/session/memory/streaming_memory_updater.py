@@ -423,9 +423,6 @@ class StreamingMemoryUpdater:
             if template is not None:
                 # Private rendering provenance is deliberately absent from model_dump.
                 template["_account_content_template"] = schema._account_content_template
-                template["_account_description"] = schema._account_description
-                for field_data, field in zip(template["fields"], schema.fields, strict=True):
-                    field_data["_account_description"] = field._account_description
             for existing, batch in by_template:
                 if existing == template:
                     batch.append(request)

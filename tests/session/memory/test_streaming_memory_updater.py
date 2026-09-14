@@ -1051,8 +1051,6 @@ def test_enforce_merge_group_peer_enabled_false_keeps_self_scope():
         "field_description",
         "body",
         "renderer",
-        "description_renderer",
-        "field_description_renderer",
     ],
 )
 async def test_template_snapshot_updates_same_uri(monkeypatch, template_change):
@@ -1081,10 +1079,6 @@ async def test_template_snapshot_updates_same_uri(monkeypatch, template_change):
                 schema.content_template = "# New body\n{{ content }}"
             elif template_change == "renderer":
                 schema._account_content_template = True
-            elif template_change == "description_renderer":
-                schema._account_description = True
-            elif template_change == "field_description_renderer":
-                schema.fields[-1]._account_description = True
         requests.append(
             MemoryUpdateRequest(
                 operations=ResolvedOperations(

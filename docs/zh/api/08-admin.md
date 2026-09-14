@@ -256,11 +256,12 @@ Registry；无关类型变更不会触发拆批。不同 Schema 分开合并、�
 记忆，后续 Commit 可按生效规则更新已有记忆。
 
 白名单内提交的说明和正文模板必须是非空字符串；单文件序列化后不超过 1 MiB。
-账户自定义 `description`（类型说明及 `fields[].description`）是纯文本，不执行 Jinja，也不检查 Jinja 语法。
-例如 `{{ language }}`、方法调用和 `{% if ... %}` 均作为文字交给模型，不会在服务器展开或执行；需要中文时可直接写“用中文描述”。
-每条说明独立与当前部署默认值作精确字符串比较：完全相同的说明保留部署原有渲染行为，修改某一条不会影响其他未修改说明。
-信任来源由加载器重新计算，不接受客户端或持久化文件中的标记；部署默认值变化后，旧副本若不再匹配，下次加载将按纯文本处理。
-此规则也保护已保存的账户自定义说明。正文 `content_template` 仍按下节的模板契约校验、执行。
+`description`（类型说明及 `fields[].description`）统一支持受限 Jinja，不因来自部署默认值或账户覆盖而改变规则，不再记录或检查说明来源标志。
+仅开放已有上下文中的 `language`，不开放正文变量、`extract_context` 或任意对象。语法复用下节受限正文的条件、局部变量、有界字面量循环、安全字符串方法及测试；不支持过滤器或任意调用。
+例如已有 Schema 渲染上下文提供 `language=en` 时，`请使用 {{ language.upper() }}。` 会展开为 `请使用 EN。`，用户修改文字不会让变量停止展开。
+本次不新增语言传递链路，Python 协议原有的静态字段说明展示路径保持不变。缺失语言时保留原来的 undefined/空字符串行为，可用 `language or '中文'` 提供回退；上下文值中的 Jinja 不会被递归执行。
+越界的自定义表达式在保存前拒绝，已保存说明在抽取加载时重新校验；部署说明渲染也受同样限制，已有部署若使用白名单外语法，需要调整，不能凭来源绕过限制。
+每条说明最多 2048 个 AST 节点，渲染结果最多 1 MiB。正文 `content_template` 的变量、源码大小及默认正文兼容规则仍按下节处理。
 每个可编辑 `description` 最多 50,000 个 Unicode 码点，按提交的原文计数，包含空格、换行和模板样式的文字，不按 UTF-8 字节或渲染后的长度计数。各说明独立计数，不合并计算；整个配置仍受 1 MiB 上限约束。超过上限返回 400，不修改当前配置。
 发布不调用 LLM。存储错误或文件损坏明确报错，不伪装成系统默认。本次不增加公共文件浏览目录、SDK/CLI 命令、草稿或历史版本 UI。
 
@@ -288,7 +289,7 @@ Events 的默认 embedding 模板引用正文，因此正文变化也可能影�
 | soul | core_truths、boundaries、vibe、continuity |
 | identity | name、creature、vibe、emoji、avatar、introduction |
 
-`language` 不属于上述正文变量；账户自定义说明也不会展开它。部署说明原有的语言渲染路径保持不变。
+`language` 属于说明模板的变量，不属于上述正文变量。
 正文不要引用其他 Account/User、请求上下文或任意 Python 对象。
 仅 Events 可调用以下 `extract_context` 只读方法（位置参数）：
 
@@ -318,9 +319,9 @@ Events 的默认 embedding 模板引用正文，因此正文变化也可能影�
 原样继承的正文继续使用部署渲染器，包括原有错误/fallback 语义，不受上述受限渲染器的源码、AST、正文输出上限约束；
 完整账户 YAML 仍受 1 MiB 上限约束。
 这些保护不代替 Worker 的 CPU/内存配额，也不评估记忆效果或做前端 Markdown/HTML 安全过滤。
-账户说明的纯文本规则与正文模板的受限执行规则相互独立。
+说明与受限正文复用语法沙箱，但可用变量及源码大小限制不同。
 
-校验失败返回 `INVALID_ARGUMENT`，`error.details` 含 `field=content_template`、受控 `reason` 和可用时的 `line`。
+校验失败返回 `INVALID_ARGUMENT`，`error.details` 含 `field=description`、`fields.<name>.description` 或 `content_template`、受控 `reason` 和可用时的 `line`。
 失败不修改当前发布配置。此前保存的、结构有效但使用不支持 Jinja 的模板仍可读取、重新发布或恢复默认；
 不会绕过新规则继续执行，抽取加载时提示修复。损坏 YAML 仍明确报错。
 

@@ -358,7 +358,7 @@ async def test_account_memory_templates_publish_and_reset(
         "identity": ("creature", "name", "vibe", "avatar", "emoji", "introduction"),
     }[memory_type]
     body = {
-        "description": "Remember business facts in {{ language | lower }}.",
+        "description": "Remember business facts in {{ language.lower() }}.",
         "fields": [
             {"name": name, "description": f"Business {name}: {{{{ language }}}}"}
             for name in editable_fields
@@ -439,6 +439,12 @@ async def test_account_memory_templates_publish_and_reset(
     "body",
     [
         {"description": 123},
+        {"description": "{{ language | upper }}"},
+        {"description": "{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}"},
+        {"description": "literal {{ unclosed"},
+        {"fields": [{"name": "summary", "description": "{{ summary }}"}]},
+        {"fields": [{"name": "summary", "description": "{{ language | lower }}"}]},
+        {"fields": [{"name": "summary", "description": "literal {{ unclosed"}]},
         {"_account_description": False},
         {"fields": [{"name": "summary", "_account_description": False}]},
         {"memory_type": "other"},
@@ -478,6 +484,55 @@ async def test_account_memory_templates_reject_invalid_configuration(
     response = await lightweight_admin_client.put(url, json=body, headers=headers)
     assert response.status_code in {400, 422}, response.text
     assert fs.agfs._files == original
+
+
+@pytest.mark.parametrize("field", ["description", "fields.content.description"])
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("{{ language | upper }}", "unsupported_filter"),
+        ("{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}", "unsupported_call"),
+        ("{{", "invalid_jinja"),
+    ],
+)
+async def test_account_memory_templates_description_diagnostics_and_legacy_recovery(
+    lightweight_admin_client, lightweight_admin_app, template_account, field, text, reason
+):
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/profile"
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    active = await client.put(url, json={"description": "Current"}, headers=headers)
+    assert active.status_code == 200
+    before = dict(fs.agfs._files)
+    body = (
+        {"description": text}
+        if field == "description"
+        else {"fields": [{"name": "content", "description": text}]}
+    )
+    response = await client.put(url, json=body, headers=headers)
+    assert response.status_code == 400, response.text
+    details = response.json()["error"]["details"]
+    assert details["field"] == field
+    assert details["reason"] == reason
+    assert details["line"] == 1
+    assert fs.agfs._files == before
+
+    # An old well-formed YAML override may contain now-unsupported expressions.
+    # Reading/resetting must stay possible, while extraction must reject it.
+    path = account_memory_template_path(account_id, "profile")
+    stored = yaml.safe_load(fs.agfs._files[path])
+    target = stored if field == "description" else stored["fields"][0]
+    target["description"] = text
+    target["_account_description"] = False
+    fs.agfs._files[path] = yaml.safe_dump(stored).encode()
+    assert (await client.get(url, headers=headers)).status_code == 200
+    from openviking_cli.exceptions import FailedPreconditionError
+
+    with pytest.raises(FailedPreconditionError, match="republish or reset"):
+        await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
+    assert (await client.delete(url, headers=headers)).status_code == 200
+    assert path not in fs.agfs._files
 
 
 @pytest.mark.parametrize("memory_type", list(EDITABLE_MEMORY_TEMPLATE_FIELDS))
@@ -913,8 +968,8 @@ async def test_account_memory_templates_permissions_and_isolation(
 @pytest.mark.parametrize("output_format", ["python", "json"])
 @pytest.mark.parametrize(
     "marker",
-    ["{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}", "literal {{ unclosed"],
-    ids=["builtins", "incomplete-jinja"],
+    ["{{ language.upper() }}", "{% if language == 'en' %}EN{% else %}OTHER{% endif %}"],
+    ids=["safe-method", "safe-condition"],
 )
 async def test_account_memory_templates_reach_live_prompts(
     lightweight_admin_client,
@@ -967,7 +1022,7 @@ async def test_account_memory_templates_reach_live_prompts(
         return vlm.get_completion_async.await_args.kwargs["messages"][0]["content"]
 
     initial = await prompt_for(account_id, "alice")
-    # Harmless B1 regression: an account ADMIN must not execute Jinja/builtins.
+    # Account descriptions render through the same restricted schema path.
     body = {
         "description": "CUSTOM_ACCOUNT_SCOPE " + marker,
         "fields": [
@@ -980,10 +1035,15 @@ async def test_account_memory_templates_reach_live_prompts(
     assert (await lightweight_admin_client.put(url, json=body, headers=headers)).status_code == 200
     for user, peer in (("alice", None), ("bob", None), ("bob", "customer")):
         prompt = await prompt_for(account_id, user, peer)
-        assert body["description"] in prompt
-        assert body["fields"][0]["description"] in prompt
-        assert "CUSTOM_ACCOUNT_SCOPE 8" not in prompt
-        assert "ACCOUNT_FIELD 8" not in prompt
+        assert "CUSTOM_ACCOUNT_SCOPE EN" in prompt
+        # Preserve the Python protocol's existing static field contract. This
+        # change does not add a language context to that separate path.
+        expected_field = (
+            body["fields"][0]["description"]
+            if output_format == "python"
+            else "ACCOUNT_FIELD EN en"
+        )
+        assert expected_field in prompt
     assert "CUSTOM_ACCOUNT_SCOPE" not in await prompt_for("other-account", "alice")
     assert registry.get("profile").description == base_description
     assert (await lightweight_admin_client.delete(url, headers=headers)).status_code == 200

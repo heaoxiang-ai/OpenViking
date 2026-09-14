@@ -23,6 +23,11 @@ from openviking.session.memory.utils.content_template import (
     ContentTemplateError,
     validate_content_template,
 )
+from openviking.session.memory.utils.description_template import (
+    MAX_DESCRIPTION_CHARS,
+    DescriptionTemplateError,
+    validate_description_template,
+)
 from openviking.storage.errors import LockAcquisitionError, ResourceBusyError
 from openviking_cli.exceptions import FailedPreconditionError, InvalidArgumentError, NotFoundError
 from openviking_cli.session.user_id import validate_account_id
@@ -33,7 +38,6 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 _MAX_CONFIG_BYTES = 1024 * 1024
-_MAX_DESCRIPTION_CHARS = 50_000
 _TEMPLATE_LOCK_TIMEOUT_SECONDS = 10.0
 _TEMPLATE_LOCK_RETRY_SECONDS = 0.05
 
@@ -85,6 +89,7 @@ def _validate_template(
     memory_type: str,
     *,
     validate_content: bool = True,
+    validate_descriptions: bool = True,
     deployment_defaults: dict | None = None,
 ) -> MemoryTypeSchema:
     if data.get("memory_type") != memory_type:
@@ -94,15 +99,12 @@ def _validate_template(
     if any(not name for name in names) or len(names) != len(set(names)):
         raise ValueError("Template field names must be nonempty and unique")
     defaults = deployment_defaults or {}
-    # Only exact server-owned descriptions inherit the deployment renderer.
-    # Compare each value independently so editing one description does not
-    # disable existing language rendering for all the unchanged descriptions.
-    schema._account_description = schema.description != defaults.get("description")
-    default_fields = {field["name"]: field for field in defaults.get("fields", [])}
-    for field in schema.fields:
-        field._account_description = field.description != default_fields.get(field.name, {}).get(
-            "description"
-        )
+    if validate_descriptions:
+        validate_description_template(schema.description)
+        for field in schema.fields:
+            validate_description_template(
+                field.description, field=f"fields.{field.name}.description"
+            )
     if memory_type in _EDITABLE_CONTENT_TEMPLATES and schema.content_template is not None:
         # Only an exact match to server-owned deployment defaults inherits the
         # legacy renderer. Never infer trust from persisted/client-supplied flags.
@@ -111,17 +113,14 @@ def _validate_template(
         )
         if validate_content and schema._account_content_template:
             validate_content_template(schema.content_template, memory_type)
-    # Account descriptions are plain text, even if they contain incomplete Jinja.
-    # Only trusted descriptions and other template fields need syntax validation.
+    # Other deployment-owned template fields retain their existing syntax check.
     env = Environment()
     for template in (
-        None if schema._account_description else schema.description,
         schema.directory,
         schema.filename_template,
         schema.content_template,
         schema.embedding_template,
         schema.overview_template,
-        *(field.description for field in schema.fields if not field._account_description),
     ):
         if template is not None:
             env.parse(template)
@@ -137,7 +136,7 @@ def _apply_editable_values(target: dict, supplied: dict, editable: set[str], pat
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{location} must be a nonempty string")
             # Python len(str) counts Unicode code points, not UTF-8 bytes.
-            if key == "description" and len(value) > _MAX_DESCRIPTION_CHARS:
+            if key == "description" and len(value) > MAX_DESCRIPTION_CHARS:
                 raise ValueError(f"{location} must not exceed 50000 Unicode characters")
             target[key] = value
         elif type(value) is not type(target[key]) or value != target[key]:
@@ -197,8 +196,8 @@ def _parse_template(raw: bytes | None, memory_type: str) -> dict | None:
         if not isinstance(data, dict):
             raise ValueError("Expected a YAML mapping")
         # Keep well-formed older configurations readable/resettable even if their
-        # content Jinja is outside the new contract. Never execute them unchecked.
-        _validate_template(data, memory_type, validate_content=False)
+        # Jinja is outside the new contract. Never execute them unchecked.
+        _validate_template(data, memory_type, validate_content=False, validate_descriptions=False)
         return data
     except (ValueError, TypeError, AttributeError, yaml.YAMLError, TemplateSyntaxError) as exc:
         raise FailedPreconditionError(f"Invalid persisted memory template: {memory_type}") from exc
@@ -311,6 +310,11 @@ async def update_account_memory_template(
     if template is not None:
         try:
             complete = _complete_template(defaults, template, memory_type)
+        except DescriptionTemplateError as exc:
+            raise InvalidArgumentError(
+                str(exc),
+                details={"field": exc.field, "reason": exc.reason, "line": exc.line},
+            ) from exc
         except ContentTemplateError as exc:
             raise InvalidArgumentError(
                 str(exc),
@@ -430,8 +434,9 @@ async def resolve_account_memory_registry(
                 if template is not None
                 else schema.model_copy(deep=True)
             )
-        except ContentTemplateError as exc:
+        except (ContentTemplateError, DescriptionTemplateError) as exc:
             raise FailedPreconditionError(
-                f"Invalid account content_template for {schema.memory_type}; republish or reset it"
+                f"Invalid account {getattr(exc, 'field', 'content_template')} "
+                f"for {schema.memory_type}; republish or reset it"
             ) from exc
     return resolved

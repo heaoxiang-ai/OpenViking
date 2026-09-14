@@ -283,17 +283,25 @@ registry is mutated. Publishing/resetting does not proactively rewrite existing
 memories; subsequent commits can update them according to the effective rules.
 
 Editable descriptions and content templates must be nonempty strings;
-each serialized file is limited to 1 MiB. Account-customized descriptions (both
-type-level and `fields[].description`) are plain text, with no Jinja execution or
-syntax validation. `{{ language }}`, method calls and `{% if ... %}` remain literal
-text for the model, not server-side expressions. Write instructions such as
-"Use concise English" directly. Each description is independently compared with
-the current server-owned deployment default: an exact match retains its existing
-deployment rendering behavior, while editing one description leaves the others
-unchanged. The loader recomputes provenance, ignoring client/persisted trust flags.
-If deployment defaults change, an old nonmatching copy becomes plain text on the
-next load. Previously saved custom descriptions receive the same protection.
-`content_template` continues to follow the separate contract below.
+each serialized file is limited to 1 MiB. Descriptions (both type-level and
+`fields[].description`) share one restricted Jinja contract, whether they come
+from deployment defaults or an Account override. Editing a description does not
+disable rendering, and no description provenance flag is stored or checked.
+Only the existing `language` context variable is available; body fields,
+`extract_context`, and arbitrary objects are not exposed. The syntax subset is
+the same as the restricted bodies below: conditionals, local variables, bounded
+literal loops, safe string methods and tests, but no filters or arbitrary calls.
+For example, `Use {{ language.upper() }}.` renders as `Use EN.` when the existing
+schema-rendering context supplies `language=en`. No new language propagation is
+introduced; the Python protocol's existing static field-description path remains
+unchanged. Missing language retains the previous undefined/empty-output behavior;
+use `language or 'English'` for a fallback. Context values are not recursively
+evaluated as Jinja. Invalid custom expressions are rejected before publication,
+and persisted overrides are revalidated before extraction. Deployment descriptions
+also use the restricted renderer, so deployment-specific unsupported syntax must
+be migrated rather than receiving a trust exemption. Descriptions are limited to
+2048 AST nodes and 1 MiB rendered output. `content_template` keeps its separate
+variable/source-size contract and inherited-body compatibility below.
 Each editable `description`
 (type-level or `fields[].description`) is limited to 50,000 Unicode code points,
 including whitespace and template-like text. This is a per-field source-character limit,
@@ -334,8 +342,7 @@ retrieval input. Paths, field definitions and merge rules remain locked.
 | soul | core_truths, boundaries, vibe, continuity |
 | identity | name, creature, vibe, emoji, avatar, introduction |
 
-`language` is not a content variable and is not expanded in Account-customized
-descriptions. Existing deployment-description language rendering is unchanged. Only Events
+`language` is a description variable, not a content variable. Only Events
 may call these read-only `extract_context` helpers with positional arguments:
 `get_resource_event_content(ranges, summary)`,
 `get_first_message_time_from_ranges(ranges)`,
@@ -375,11 +382,12 @@ existing behavior, including its error/fallback semantics; they are not subject 
 the restricted renderer's source/AST/output limits. The complete Account YAML file
 is still limited to 1 MiB.
 These guards do not replace Worker resource quotas, evaluate extraction quality or sanitize
-Markdown/HTML for UI display. Plain-text Account descriptions and restricted content
-templates have separate execution contracts.
+Markdown/HTML for UI display. Descriptions and restricted content templates share
+the syntax sandbox, but expose different variables and use different source limits.
 
 Publication validation failures return `INVALID_ARGUMENT` with `error.details`:
-`field=content_template`, a controlled `reason`, and `line` when available. The
+`field=description`, `fields.<name>.description`, or `content_template`, a controlled
+`reason`, and `line` when available. The
 active configuration remains unchanged. Structurally valid older overrides using
 unsupported Jinja can still be read, replaced or reset, but extraction refuses to
 execute them unchecked. Corrupt YAML remains an explicit error.

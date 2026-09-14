@@ -89,18 +89,27 @@ def _environment() -> _ContentEnvironment:
     return env
 
 
-def _parse(template: str, memory_type: str, env: _ContentEnvironment) -> nodes.Template:
-    if memory_type not in CONTENT_TEMPLATE_FIELDS:
+def _parse(
+    template: str,
+    memory_type: str,
+    env: _ContentEnvironment,
+    *,
+    variables: frozenset[str] | None = None,
+    max_template_bytes: int = MAX_CONTENT_TEMPLATE_BYTES,
+) -> nodes.Template:
+    # Descriptions reuse the same syntax/sandbox with their own variable and
+    # source-size contract. They never receive Events helpers or body fields.
+    if variables is None and memory_type not in CONTENT_TEMPLATE_FIELDS:
         raise ContentTemplateError("unsupported_memory_type")
     if not isinstance(template, str) or not template.strip():
         raise ContentTemplateError("empty_template")
-    if len(template.encode("utf-8")) > MAX_CONTENT_TEMPLATE_BYTES:
+    if len(template.encode("utf-8")) > max_template_bytes:
         raise ContentTemplateError("template_too_large")
     if _RESERVED_METADATA.search(template):
         raise ContentTemplateError("reserved_metadata")
     try:
         tree = env.parse(template)
-        allowed = set(CONTENT_TEMPLATE_FIELDS[memory_type])
+        allowed = set(variables if variables is not None else CONTENT_TEMPLATE_FIELDS[memory_type])
         if memory_type == "events":
             allowed.add("extract_context")
         all_nodes = list(tree.find_all(nodes.Node))

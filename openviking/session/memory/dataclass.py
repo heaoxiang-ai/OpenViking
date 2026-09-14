@@ -212,10 +212,6 @@ class SkippedMemoryOperation(BaseModel):
 class MemoryField(BaseModel):
     """Memory field definition."""
 
-    # Account-customized descriptions are literal text, not executable Jinja.
-    # Recomputed against deployment defaults by the loader; never serialized.
-    _account_description: bool = PrivateAttr(default=False)
-
     name: str = Field(..., description="Field name")
     field_type: FieldType = Field(..., description="Field type")
     description: str = Field("", description="Field description")
@@ -225,8 +221,6 @@ class MemoryField(BaseModel):
 
 class MemoryTypeSchema(BaseModel):
     """Memory type schema definition."""
-
-    _account_description: bool = PrivateAttr(default=False)
 
     # True only for account bodies differing from server-owned deployment defaults.
     # Recomputed by the loader, never serialized or accepted as a client trust flag.

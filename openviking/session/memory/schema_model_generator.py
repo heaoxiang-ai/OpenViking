@@ -23,7 +23,7 @@ from openviking.session.memory.dataclass import (
 from openviking.session.memory.memory_isolation_handler import RoleScope
 from openviking.session.memory.merge_op import MergeOp, MergeOpFactory
 from openviking.session.memory.merge_op.base import FieldType, get_python_type_for_field
-from openviking.session.memory.utils.template_utils import TemplateUtils
+from openviking.session.memory.utils.description_template import render_description_template
 from openviking_cli.utils import get_logger
 
 logger = get_logger(__name__)
@@ -93,11 +93,7 @@ class SchemaModelGenerator:
 
     def _render_description(self, source: MemoryTypeSchema | MemoryField) -> str:
         description = source.description
-        if source._account_description or not description:
-            return description
-        if "{{" not in description and "{%" not in description and "{#" not in description:
-            return description
-        return TemplateUtils.render(
+        return render_description_template(
             description,
             self._template_context,
             strip=False,
@@ -383,9 +379,7 @@ class SchemaPromptGenerator:
 
     def _render_description(self, source: MemoryTypeSchema | MemoryField) -> str:
         description = source.description
-        if source._account_description or not description:
-            return description
-        return TemplateUtils.render(description, self._template_context)
+        return render_description_template(description, self._template_context)
 
     def generate_type_descriptions(self) -> str:
         """
