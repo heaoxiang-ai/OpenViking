@@ -248,8 +248,16 @@ deployments use the target Account, with no separate kernel storage layout.
 The ordinary Session memory extraction pipeline loads Account templates before
 schema filtering and initial-file generation. The resulting registry snapshot is
 used for extraction, patch merging, and memory-file updates. A later publication
-does not change an in-flight extraction's snapshot, and requests with different
-snapshots are not merged into one streaming batch. Work queued before publication
+does not change an in-flight extraction's snapshot. Streaming updates compare the
+current memory type's schema values (including the rendering mode), not the whole
+registry: changes to unrelated types do not split a batch. Different schemas are
+merged/rendered separately. If those groups target the same file, before or after
+patch merging, the updater raises a conflict before applying any memory operations
+in that merge batch. Re-extract with current templates and file contents before
+retrying; replaying the old patches is not a fix. This is fail-fast conflict
+handling, not automatic rebasing or an atomic transaction across a whole Commit;
+other memory-type groups or append-only writes may already have completed.
+Work queued before publication
 uses the configuration at **extraction start**, not at HTTP Commit acceptance.
 All eligible Users/Peers in that Account share the templates; no shared deployment
 registry is mutated. Publishing/resetting does not proactively rewrite existing
