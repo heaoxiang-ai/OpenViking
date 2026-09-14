@@ -19,13 +19,15 @@ from openviking.core.namespace import (
 from openviking.server.identity import RequestContext, Role
 from openviking.storage.acl import (
     ACL_CONTEXT_FIELDS,
+    ACL_MODE_FIELD,
     AclAction,
     AclManager,
+    AclMode,
     acl_grant_tokens,
     acl_principals,
     is_acl_uri,
 )
-from openviking.storage.expr import And, Contains, Eq, FilterExpr, In, Or, PathScope, RawDSL
+from openviking.storage.expr import And, Eq, FilterExpr, In, Or, PathScope, RawDSL
 from openviking.storage.vector_migration import (
     rewrite_transfer_uri,
     rewrite_vector_record,
@@ -1712,12 +1714,11 @@ class VikingVectorIndexBackend:
         scopes: List[FilterExpr] = [Eq("uri", uri)]
         if recursive:
             scopes.append(PathScope("uri", uri, depth=-1))
-        if self.mode == "volcengine":
-            parent = VikingURI(uri).parent
-            if parent is not None and parent.uri != "viking://":
-                scopes.append(PathScope("uri", parent.uri, depth=1))
-        else:
-            scopes.append(Contains("uri", uri + "#"))
+        # Chunk URIs are siblings in the path index. Scan one parent level and
+        # filter exact transfer entries below, without backend-specific operators.
+        parent = VikingURI(uri).parent
+        if parent is not None and parent.uri != "viking://":
+            scopes.append(PathScope("uri", parent.uri, depth=1))
         return And([Eq("account_id", ctx.account_id), Or(scopes)])
 
     async def _scan_uri_transfer_scope(
@@ -1735,27 +1736,10 @@ class VikingVectorIndexBackend:
         if selected_entries is not None:
             if not selected_entries:
                 return [], 0
-            filters: List[FilterExpr] = []
-            for entry in sorted(selected_entries):
-                if self.mode == "volcengine":
-                    filters.append(self._uri_transfer_filter(ctx, entry, recursive=False))
-                else:
-                    # Raw prefix filters encode URI values to the stored path format.
-                    filters.append(
-                        And(
-                            [
-                                Eq("account_id", ctx.account_id),
-                                Or(
-                                    [
-                                        Eq("uri", entry),
-                                        RawDSL(
-                                            {"op": "prefix", "field": "uri", "prefix": entry + "#"}
-                                        ),
-                                    ]
-                                ),
-                            ]
-                        )
-                    )
+            filters = [
+                self._uri_transfer_filter(ctx, entry, recursive=False)
+                for entry in sorted(selected_entries)
+            ]
             transfer_filter = filters[0] if len(filters) == 1 else Or(filters)
         else:
             transfer_filter = self._uri_transfer_filter(ctx, uri, recursive=recursive)
@@ -2275,9 +2259,17 @@ class VikingVectorIndexBackend:
                 ]
             )
 
-        legacy_filter = And(
+        controlled_modes = [AclMode.INHERIT.value, AclMode.RESTRICTED.value]
+        uncontrolled_filter = And(
             [
-                RawDSL({"op": "must_not", "field": "acl_enabled", "conds": [True]}),
+                RawDSL(
+                    {
+                        "op": "must_not",
+                        "field": ACL_MODE_FIELD,
+                        # Exclude controlled modes so absent/null fields stay visible.
+                        "conds": controlled_modes,
+                    }
+                ),
                 Or([PathScope("uri", root, depth=-1) for root in visible_roots(ctx)]),
             ]
         )
@@ -2285,16 +2277,22 @@ class VikingVectorIndexBackend:
         shared_acl_filter = And(
             [
                 PathScope("uri", "viking://resources", depth=-1),
+                In(ACL_MODE_FIELD, controlled_modes),
                 Or(
                     [
                         In("acl_direct_grants", read_grants),
-                        In("acl_inherited_grants", read_grants),
+                        And(
+                            [
+                                Eq(ACL_MODE_FIELD, AclMode.INHERIT.value),
+                                In("acl_inherited_grants", read_grants),
+                            ]
+                        ),
                     ]
                 ),
             ]
         )
         access_filters: List[FilterExpr] = [
-            legacy_filter,
+            uncontrolled_filter,
             shared_acl_filter,
             PathScope("uri", f"{canonical_user_root(ctx)}/resources", depth=-1),
         ]

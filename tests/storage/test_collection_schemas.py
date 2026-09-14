@@ -725,13 +725,24 @@ async def test_embedding_handler_settles_request_wait_by_message_id(monkeypatch)
     assert completed == [("request-1", queue_data["id"], {"vector_written": True})]
 
 
-def test_context_collection_excludes_parent_uri():
+def test_context_collection_uses_acl_mode_and_excludes_parent_uri():
     schema = CollectionSchemas.context_collection("ctx", 8)
 
     field_names = [field["FieldName"] for field in schema["Fields"]]
+    acl_mode = next(field for field in schema["Fields"] if field["FieldName"] == "acl_mode")
 
+    assert acl_mode == {
+        "FieldName": "acl_mode",
+        "FieldType": "string",
+        "DefaultValue": "none",
+    }
+    assert "acl_mode" in schema["ScalarIndex"]
+    assert "acl_enabled" not in field_names
+    assert "acl_enabled" not in schema["ScalarIndex"]
     assert "parent_uri" not in field_names
     assert "parent_uri" not in schema["ScalarIndex"]
+    assert "acl_restricted" not in field_names
+    assert "acl_restricted" not in schema["ScalarIndex"]
 
 
 def test_context_collection_signature_has_no_include_parent_uri():
@@ -893,10 +904,11 @@ def test_private_vikingdb_client_wraps_connection_error(monkeypatch):
         del kwargs
         raise requests.ConnectionError("connection refused")
 
-    monkeypatch.setattr(requests, "request", _raise_connection_error)
+    client = VikingDBClient("https://vikingdb.example.com")
+    monkeypatch.setattr(client._session, "request", _raise_connection_error)
 
     with pytest.raises(ConnectionError, match="connection refused") as exc_info:
-        VikingDBClient("https://vikingdb.example.com").do_req(
+        client.do_req(
             "POST",
             "/api/vikingdb/data/upsert",
             req_body={},

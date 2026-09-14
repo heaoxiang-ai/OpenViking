@@ -1,5 +1,5 @@
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::env;
 use std::path::Path;
 
@@ -115,45 +115,14 @@ pub enum SnapshotShowResult {
 pub struct CompileAccepted {
     pub task_id: String,
     pub status: String,
-    pub to: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CompileErrorInfo {
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CompileResult {
-    #[serde(rename = "from")]
-    pub from_uris: Vec<String>,
-    pub to: String,
-    pub skill: String,
-    pub okf_version: String,
     #[serde(default)]
-    pub created: Vec<String>,
+    pub to: Option<String>,
     #[serde(default)]
-    pub updated: Vec<String>,
+    pub task_type: Option<String>,
     #[serde(default)]
-    pub unchanged: Vec<String>,
-    pub page_count: usize,
-    pub link_count: usize,
+    pub stage: Option<String>,
     #[serde(default)]
-    pub warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct CompileTaskStatus {
-    pub task_id: String,
-    pub status: String,
-    pub stage: String,
-    pub created_at: String,
-    pub updated_at: String,
-    #[serde(default)]
-    pub result: Option<CompileResult>,
-    #[serde(default)]
-    pub error: Option<CompileErrorInfo>,
+    pub resource_id: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -163,9 +132,9 @@ struct CompileCreateRequest<'a> {
     to: &'a str,
     skill: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<&'a str>,
+    instruction: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    runtime_timeout_seconds: Option<f64>,
+    args: Option<&'a serde_json::Map<String, Value>>,
 }
 
 // ============ HttpClient ============
@@ -357,21 +326,17 @@ impl HttpClient {
         from_uris: &[String],
         to: &str,
         skill: &str,
-        reason: Option<&str>,
-        runtime_timeout_seconds: Option<f64>,
+        instruction: Option<&str>,
+        args: Option<&serde_json::Map<String, Value>>,
     ) -> Result<CompileAccepted> {
         let body = CompileCreateRequest {
             from_uris,
             to,
             skill,
-            reason,
-            runtime_timeout_seconds,
+            instruction,
+            args,
         };
-        self.post("/bot/v1/compile", &body).await
-    }
-
-    pub async fn get_compile(&self, task_id: &str) -> Result<CompileTaskStatus> {
-        self.get(&format!("/bot/v1/compile/{task_id}"), &[]).await
+        self.post("/api/v1/compile", &body).await
     }
 
     pub async fn read(&self, uri: &str) -> Result<String> {
@@ -441,12 +406,20 @@ impl HttpClient {
             .await
     }
 
-    pub async fn acl_set(&self, uri: &str, entries: Vec<Value>) -> Result<Value> {
-        self.put(
-            "/api/v1/acl",
-            &serde_json::json!({"uri": uri, "entries": entries}),
-        )
-        .await
+    pub async fn acl_set(
+        &self,
+        uri: &str,
+        entries: Vec<Value>,
+        acl_mode: Option<String>,
+    ) -> Result<Value> {
+        let mut body = serde_json::json!({"uri": uri});
+        if !entries.is_empty() {
+            body["entries"] = serde_json::Value::Array(entries);
+        }
+        if let Some(acl_mode) = acl_mode {
+            body["acl_mode"] = serde_json::Value::String(acl_mode);
+        }
+        self.put("/api/v1/acl", &body).await
     }
 
     pub async fn acl_grant(&self, uri: &str, principal: &str, level: &str) -> Result<Value> {
@@ -1027,94 +1000,52 @@ impl HttpClient {
         &self,
         data: &str,
         wait: bool,
-        timeout: Option<f64>,
         show_progress: bool,
         verbose: bool,
         source_metadata: Option<Value>,
         target_uri: Option<&str>,
+        skills: &[String],
+        list_only: bool,
     ) -> Result<serde_json::Value> {
-        let path_obj = Path::new(data);
-
-        if path_obj.exists() {
-            if path_obj.is_dir() {
-                let zip_file = if show_progress {
-                    self.zip_directory_with_progress(path_obj, verbose, None)?
+        let path = Path::new(data);
+        let mut body = json!({"wait": wait});
+        if !skills.is_empty() {
+            body["skills"] = json!(skills);
+        }
+        if list_only {
+            body["list_only"] = json!(true);
+        }
+        if let Some(target_uri) = target_uri {
+            body["target_uri"] = json!(target_uri);
+        }
+        if let Some(metadata) = source_metadata {
+            body["source_metadata"] = metadata;
+        } else if path.exists() {
+            body["source_metadata"] = json!({"type": "local", "source": data, "path": data});
+        }
+        if path.is_dir() || path.is_file() {
+            let archive = if path.is_dir() {
+                Some(if show_progress {
+                    self.zip_directory_with_progress(path, verbose, None)?
                 } else {
-                    self.zip_directory(path_obj, None)?
-                };
-                let temp_file_id = if show_progress {
-                    self.upload_temp_file_with_progress(zip_file.path(), verbose)
-                        .await?
-                } else {
-                    self.upload_temp_file(zip_file.path()).await?
-                };
-
-                let mut body = serde_json::json!({
-                    "temp_file_id": temp_file_id,
-                    "wait": wait,
-                    "timeout": timeout,
-                });
-                if let Some(source_metadata) = source_metadata.clone() {
-                    body["source_metadata"] = source_metadata;
-                }
-                if let Some(target_uri) = target_uri {
-                    body["target_uri"] = serde_json::Value::String(target_uri.to_string());
-                }
-                let dynamic_timeout =
-                    TimeoutConfig::for_resource_processing().calculate(zip_file.path())?;
-                self.base
-                    .post_with_timeout("/api/v1/skills", &body, dynamic_timeout)
-                    .await
-            } else if path_obj.is_file() {
-                let temp_file_id = if show_progress {
-                    self.upload_temp_file_with_progress(path_obj, verbose)
-                        .await?
-                } else {
-                    self.upload_temp_file(path_obj).await?
-                };
-
-                let mut body = serde_json::json!({
-                    "temp_file_id": temp_file_id,
-                    "wait": wait,
-                    "timeout": timeout,
-                });
-                if let Some(source_metadata) = source_metadata.clone() {
-                    body["source_metadata"] = source_metadata;
-                }
-                if let Some(target_uri) = target_uri {
-                    body["target_uri"] = serde_json::Value::String(target_uri.to_string());
-                }
-                let dynamic_timeout =
-                    TimeoutConfig::for_resource_processing().calculate(path_obj)?;
-                self.base
-                    .post_with_timeout("/api/v1/skills", &body, dynamic_timeout)
-                    .await
+                    self.zip_directory(path, None)?
+                })
             } else {
-                let mut body = serde_json::json!({
-                    "data": data,
-                    "wait": wait,
-                    "timeout": timeout,
-                });
-                if let Some(source_metadata) = source_metadata.clone() {
-                    body["source_metadata"] = source_metadata;
-                }
-                if let Some(target_uri) = target_uri {
-                    body["target_uri"] = serde_json::Value::String(target_uri.to_string());
-                }
-                self.post("/api/v1/skills", &body).await
-            }
+                None
+            };
+            let upload = archive.as_ref().map(|file| file.path()).unwrap_or(path);
+            let id = if show_progress {
+                self.upload_temp_file_with_progress(upload, verbose).await?
+            } else {
+                self.upload_temp_file(upload).await?
+            };
+            body["temp_file_id"] = json!(id);
+            let dynamic_timeout = TimeoutConfig::for_resource_processing().calculate(upload)?;
+            self.base
+                .post_with_timeout("/api/v1/skills", &body, dynamic_timeout)
+                .await
         } else {
-            let mut body = serde_json::json!({
-                "data": data,
-                "wait": wait,
-                "timeout": timeout,
-            });
-            if let Some(source_metadata) = source_metadata {
-                body["source_metadata"] = source_metadata;
-            }
-            if let Some(target_uri) = target_uri {
-                body["target_uri"] = serde_json::Value::String(target_uri.to_string());
-            }
+            body["data"] = json!(data);
             self.post("/api/v1/skills", &body).await
         }
     }
@@ -1331,20 +1262,12 @@ impl HttpClient {
     // ============ Task Methods ============
 
     pub async fn get_task(&self, task_id: &str) -> Result<serde_json::Value> {
-        let path = if task_id.starts_with("cmp_") {
-            format!("/bot/v1/compile/{task_id}")
-        } else {
-            format!("/api/v1/tasks/{task_id}")
-        };
+        let path = format!("/api/v1/tasks/{task_id}");
         self.get(&path, &[]).await
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<serde_json::Value> {
-        let path = if task_id.starts_with("cmp_") {
-            format!("/bot/v1/compile/{task_id}/cancel")
-        } else {
-            format!("/api/v1/tasks/{task_id}/cancel")
-        };
+        let path = format!("/api/v1/tasks/{task_id}/cancel");
         self.post(&path, &serde_json::json!({})).await
     }
 
@@ -2355,8 +2278,7 @@ mod tests {
         assert!(!request.contains("include_mod_time_iso="));
 
         let (default_url, default_request_rx) = spawn_request_capture_server().await;
-        let default_client =
-            HttpClient::new(default_url, None, None, None, None, 5.0, false, None);
+        let default_client = HttpClient::new(default_url, None, None, None, None, 5.0, false, None);
         default_client
             .ls(
                 "viking://resources",
@@ -2547,8 +2469,7 @@ mod tests {
         assert!(!request.contains("include_mod_time_iso="));
 
         let (default_url, default_request_rx) = spawn_request_capture_server().await;
-        let default_client =
-            HttpClient::new(default_url, None, None, None, None, 5.0, false, None);
+        let default_client = HttpClient::new(default_url, None, None, None, None, 5.0, false, None);
         default_client
             .tree(
                 "viking://resources",
@@ -2669,7 +2590,9 @@ mod tests {
             let mut buffer = vec![0; 4096];
             let read = stream.read(&mut buffer).await.expect("request should read");
             let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.contains(r#""runtime_timeout_seconds":86400.0"#));
+            assert!(request.contains(r#""skill":"viking://agent/skills/wiki""#));
+            assert!(request.contains(r#""instruction":"Keep supporting evidence.""#));
+            assert!(request.contains(r#""args":{"model_name":"endpoint-1"}"#));
             let body = r#"{"status":"ok","result":{"task_id":"cmp_1","status":"accepted","to":"viking://resources/wiki"}}"#;
             let response = format!(
                 "HTTP/1.1 202 Accepted\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -2691,13 +2614,14 @@ mod tests {
             false,
             None,
         );
+        let args = serde_json::json!({"model_name": "endpoint-1"});
         let accepted = client
             .create_compile(
                 &["viking://resources/source".into()],
                 "viking://resources/wiki",
                 "viking://agent/skills/wiki",
-                None,
-                Some(86_400.0),
+                Some("Keep supporting evidence."),
+                args.as_object(),
             )
             .await
             .expect("202 response body should deserialize");
@@ -2705,7 +2629,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn task_methods_route_compile_ids_to_compile_endpoints() {
+    async fn task_methods_use_generic_task_endpoints_for_compile_ids() {
         let (base_url, status_request_rx) = spawn_request_capture_server().await;
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
         client
@@ -2715,7 +2639,7 @@ mod tests {
         let status_request = status_request_rx
             .await
             .expect("status request should be captured");
-        assert!(status_request.starts_with("GET /bot/v1/compile/cmp_1 "));
+        assert!(status_request.starts_with("GET /api/v1/tasks/cmp_1 "));
 
         let (base_url, cancel_request_rx) = spawn_request_capture_server().await;
         let client = HttpClient::new(base_url, None, None, None, None, 5.0, false, None);
@@ -2726,7 +2650,7 @@ mod tests {
         let cancel_request = cancel_request_rx
             .await
             .expect("cancel request should be captured");
-        assert!(cancel_request.starts_with("POST /bot/v1/compile/cmp_1/cancel "));
+        assert!(cancel_request.starts_with("POST /api/v1/tasks/cmp_1/cancel "));
     }
 
     #[tokio::test]
