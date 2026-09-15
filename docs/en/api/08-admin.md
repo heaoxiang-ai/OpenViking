@@ -291,7 +291,7 @@ Only the existing `language` context variable is available; body fields,
 `extract_context`, and arbitrary objects are not exposed. The syntax subset is
 the same as the restricted bodies below: conditionals, local variables, bounded
 literal loops, safe string methods and tests, but no filters or arbitrary calls.
-For example, `Use {{ language.upper() }}.` renders as `Use EN.` when the existing
+For example, <code v-pre>Use {{ language.upper() }}.</code> renders as `Use EN.` when the existing
 schema-rendering context supplies `language=en`. No new language propagation is
 introduced; the Python protocol's existing static field-description path remains
 unchanged. Missing language retains the previous undefined/empty-output behavior;
