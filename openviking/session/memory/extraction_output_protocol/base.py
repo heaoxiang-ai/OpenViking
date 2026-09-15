@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel
@@ -32,7 +32,6 @@ class ExtractionOutputContext:
     link_enabled: bool
     role_scope: Any | None = None
     available_tools: tuple[str, ...] = ()
-    template_context: dict[str, Any] = field(default_factory=dict)
 
 
 class ExtractionOutputProtocol(ABC):

@@ -29,7 +29,6 @@ from openviking.session.memory.utils.line_numbers import (
     every_line_has_line_numbers,
     strip_line_numbers,
 )
-from openviking.session.memory.utils.template_utils import TemplateUtils
 
 _PYTHON_FENCE_RE = re.compile(r"```python[ \t]*\r?\n(?P<code>[\s\S]*?)```", re.IGNORECASE)
 _PYTHON_FENCE_START_RE = re.compile(r"```python[ \t]*\r?\n", re.IGNORECASE)
@@ -215,12 +214,7 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
             for field in schema.fields
         }
         for name, _type_name, description in fields:
-            description = str(description or "")
-            if any(marker in description for marker in ("{{", "{%", "{#")):
-                description = TemplateUtils.render(
-                    description, context.template_context, strip=False
-                )
-            normalized_description = " ".join(description.split())
+            normalized_description = " ".join(str(description or "").split())
             qualifier = f" [{merge_ops[name]}]" if name in merge_ops else ""
             lines.append(f"  - {_identifier_alias(name)}{qualifier}: {normalized_description}")
         return lines

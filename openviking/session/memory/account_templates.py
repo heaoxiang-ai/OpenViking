@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+from collections.abc import Awaitable, Callable, Coroutine
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -21,6 +23,11 @@ from openviking.session.memory.utils.content_template import (
     ContentTemplateError,
     validate_content_template,
 )
+from openviking.session.memory.utils.description_template import (
+    MAX_DESCRIPTION_CHARS,
+    DescriptionTemplateError,
+    validate_description_template,
+)
 from openviking.storage.errors import LockAcquisitionError, ResourceBusyError
 from openviking_cli.exceptions import FailedPreconditionError, InvalidArgumentError, NotFoundError
 from openviking_cli.session.user_id import validate_account_id
@@ -31,7 +38,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 _MAX_CONFIG_BYTES = 1024 * 1024
-_MAX_DESCRIPTION_CHARS = 50_000
+_TEMPLATE_LOCK_TIMEOUT_SECONDS = 10.0
+_TEMPLATE_LOCK_RETRY_SECONDS = 0.05
 
 # Field names select existing fields; only their descriptions are editable.
 EDITABLE_MEMORY_TEMPLATE_FIELDS = {
@@ -77,7 +85,12 @@ def default_memory_template(registry: MemoryTypeRegistry, memory_type: str) -> d
 
 
 def _validate_template(
-    data: dict, memory_type: str, *, validate_content: bool = True
+    data: dict,
+    memory_type: str,
+    *,
+    validate_content: bool = True,
+    validate_descriptions: bool = True,
+    deployment_defaults: dict | None = None,
 ) -> MemoryTypeSchema:
     if data.get("memory_type") != memory_type:
         raise ValueError("memory_type must match the template in the request path")
@@ -85,20 +98,29 @@ def _validate_template(
     names = [field.name for field in schema.fields]
     if any(not name for name in names) or len(names) != len(set(names)):
         raise ValueError("Template field names must be nonempty and unique")
+    defaults = deployment_defaults or {}
+    if validate_descriptions:
+        validate_description_template(schema.description)
+        for field in schema.fields:
+            validate_description_template(
+                field.description, field=f"fields.{field.name}.description"
+            )
     if memory_type in _EDITABLE_CONTENT_TEMPLATES and schema.content_template is not None:
-        if validate_content:
+        # Only an exact match to server-owned deployment defaults inherits the
+        # legacy renderer. Never infer trust from persisted/client-supplied flags.
+        schema._account_content_template = schema.content_template != defaults.get(
+            "content_template"
+        )
+        if validate_content and schema._account_content_template:
             validate_content_template(schema.content_template, memory_type)
-        schema._account_content_template = True
-    # Description and locked deployment templates retain their existing contract.
+    # Other deployment-owned template fields retain their existing syntax check.
     env = Environment()
     for template in (
-        schema.description,
         schema.directory,
         schema.filename_template,
         schema.content_template,
         schema.embedding_template,
         schema.overview_template,
-        *(field.description for field in schema.fields),
     ):
         if template is not None:
             env.parse(template)
@@ -114,7 +136,7 @@ def _apply_editable_values(target: dict, supplied: dict, editable: set[str], pat
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{location} must be a nonempty string")
             # Python len(str) counts Unicode code points, not UTF-8 bytes.
-            if key == "description" and len(value) > _MAX_DESCRIPTION_CHARS:
+            if key == "description" and len(value) > MAX_DESCRIPTION_CHARS:
                 raise ValueError(f"{location} must not exceed 50000 Unicode characters")
             target[key] = value
         elif type(value) is not type(target[key]) or value != target[key]:
@@ -149,7 +171,7 @@ def _complete_template(defaults: dict, supplied: dict, memory_type: str) -> dict
             )
             _apply_editable_values(fields[name], field, editable, f"fields.{name}")
     # Never remove, reorder, or replace fields omitted from a partial request.
-    _validate_template(data, memory_type)
+    _validate_template(data, memory_type, deployment_defaults=defaults)
     return data
 
 
@@ -174,23 +196,79 @@ def _parse_template(raw: bytes | None, memory_type: str) -> dict | None:
         if not isinstance(data, dict):
             raise ValueError("Expected a YAML mapping")
         # Keep well-formed older configurations readable/resettable even if their
-        # content Jinja is outside the new contract. Never execute them unchecked.
-        _validate_template(data, memory_type, validate_content=False)
+        # Jinja is outside the new contract. Never execute them unchecked.
+        _validate_template(data, memory_type, validate_content=False, validate_descriptions=False)
         return data
     except (ValueError, TypeError, AttributeError, yaml.YAMLError, TemplateSyntaxError) as exc:
         raise FailedPreconditionError(f"Invalid persisted memory template: {memory_type}") from exc
 
 
-async def _acquire_template_lock(client: AsyncAGFSClient, path: str):
-    # Read and write share a lock: not every backend replaces file content atomically.
+async def _finish_storage_call(
+    operation: Coroutine[Any, Any, Any],
+    *,
+    on_cancel: Callable[[Any], Awaitable[None]] | None = None,
+):
+    """Drain submitted native I/O before propagating cancellation.
+
+    Cancelling an asyncio waiter cannot stop its worker thread. Keep the worker's
+    result reachable, and (for acquisition) release a lease won during cancellation.
+    Locked writes include their own release in a finally block.
+    """
+    task = asyncio.create_task(operation)
     try:
-        return await client.pathlock_acquire_exact(path, timeout_secs=10.0)
-    except LockAcquisitionError as exc:
-        raise ResourceBusyError(
-            "Another memory template operation is in progress. Please retry.",
-            uri=path,
-            conflict_type="memory_templates_busy",
-        ) from exc
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+
+        async def finish():
+            try:
+                result = await task
+            except Exception:
+                logger.debug("Template storage call failed while cancelling", exc_info=True)
+            else:
+                if on_cancel is not None:
+                    await on_cancel(result)
+
+        cleanup = asyncio.create_task(finish())
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not interrupt lease cleanup either.
+                continue
+        cleanup.result()
+        raise
+
+
+async def _acquire_template_lock(
+    client: AsyncAGFSClient, path: str, staging_path: str | None = None
+):
+    # Keep the cross-process lock, but never wait for contention in a worker:
+    # the holder needs that same executor to finish its I/O and release the lease.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TEMPLATE_LOCK_TIMEOUT_SECONDS
+
+    async def release_cancelled_acquire(lease):
+        await client.pathlock_release(lease, fs_ctx=fs_ctx_from_agfs_path(path))
+
+    while True:
+        try:
+            return await _finish_storage_call(
+                client.pathlock_acquire_exact_batch([path, staging_path], timeout_secs=0.0)
+                if staging_path is not None
+                else client.pathlock_acquire_exact(path, timeout_secs=0.0),
+                on_cancel=release_cancelled_acquire,
+            )
+        except LockAcquisitionError as exc:
+            remaining = deadline - loop.time()
+            if remaining > 0:
+                await asyncio.sleep(min(_TEMPLATE_LOCK_RETRY_SECONDS, remaining))
+                if loop.time() < deadline:
+                    continue
+            raise ResourceBusyError(
+                "Another memory template operation is in progress. Please retry.",
+                uri=path,
+                conflict_type="memory_templates_busy",
+            ) from exc
 
 
 async def read_account_memory_template(
@@ -198,11 +276,9 @@ async def read_account_memory_template(
 ) -> dict | None:
     path = account_memory_template_path(account_id, memory_type)
     client = AsyncAGFSClient(viking_fs.agfs)
-    lease = await _acquire_template_lock(client, path)
-    try:
-        return _parse_template(await _read_raw(client, path), memory_type)
-    finally:
-        await client.pathlock_release(lease)
+    # Publication switches a fully-written staging file into place. Readers may
+    # see either complete version (or no override after DELETE), without a lock.
+    return _parse_template(await _read_raw(client, path), memory_type)
 
 
 def memory_template_result(
@@ -230,9 +306,15 @@ async def update_account_memory_template(
     """Publish a full template, or delete its override to restore deployment defaults."""
     defaults = default_memory_template(registry, memory_type)
     complete = None
+    encoded = None
     if template is not None:
         try:
             complete = _complete_template(defaults, template, memory_type)
+        except DescriptionTemplateError as exc:
+            raise InvalidArgumentError(
+                str(exc),
+                details={"field": exc.field, "reason": exc.reason, "line": exc.line},
+            ) from exc
         except ContentTemplateError as exc:
             raise InvalidArgumentError(
                 str(exc),
@@ -246,8 +328,59 @@ async def update_account_memory_template(
             raise InvalidArgumentError("A memory template must not exceed 1 MiB")
 
     path = account_memory_template_path(account_id, memory_type)
+    staging_path = f"{path}.{uuid.uuid4().hex}.tmp" if complete is not None else None
     client = AsyncAGFSClient(viking_fs.agfs)
-    lease = await _acquire_template_lock(client, path)
+    lease = await _acquire_template_lock(client, path, staging_path)
+    return await _finish_storage_call(
+        _update_locked_template(client, path, staging_path, memory_type, complete, encoded, lease)
+    )
+
+
+async def _publish_template(
+    client: AsyncAGFSClient, path: str, staging_path: str, encoded: bytes, fs_ctx: dict
+) -> None:
+    """Publish a complete file through same-mount AGFS rename/object replacement.
+
+    The caller's lease covers BOTH paths. LocalFS renames the staged file; S3
+    copies the whole staged object to the destination before deleting the source.
+    Never overwrite/restore the active file in place, including on failure.
+    """
+    try:
+        await client.write(staging_path, encoded, fs_ctx=fs_ctx)
+        try:
+            await client.mv(staging_path, path, fs_ctx=fs_ctx)
+        except Exception:
+            # An S3 move can publish successfully and then fail deleting its
+            # source. Acknowledge only a verified published version; if state
+            # cannot be verified, propagate the error without a destructive rollback.
+            try:
+                published = await _read_raw(client, path) == encoded
+            except Exception:
+                published = False
+            if not published:
+                raise
+            logger.warning("Template move reported an error after publication: %s", path)
+    finally:
+        try:
+            await client.rm(staging_path, fs_ctx=fs_ctx)
+        except AGFSNotFoundError:
+            pass
+        except Exception:
+            # Cleanup cannot undo a published version or mask the original error.
+            logger.warning(
+                "Failed to clean up staged memory template: %s", staging_path, exc_info=True
+            )
+
+
+async def _update_locked_template(
+    client: AsyncAGFSClient,
+    path: str,
+    staging_path: str | None,
+    memory_type: str,
+    complete: dict | None,
+    encoded: bytes | None,
+    lease,
+):
     fs_ctx = fs_ctx_from_agfs_path(path)
     lease_ref = getattr(lease, "lease_ref", None) or getattr(lease, "id", None)
     if isinstance(lease, dict):
@@ -270,32 +403,21 @@ async def update_account_memory_template(
             pass
         if raw is not None:
             await client.write(path + ".backup", raw)
-        try:
-            if complete is None:
-                await client.rm(path, fs_ctx=fs_ctx)
-            else:
-                await client.write(path, encoded, fs_ctx=fs_ctx)
-        except Exception:
-            try:
-                if raw is None:
-                    await client.rm(path, fs_ctx=fs_ctx)
-                else:
-                    await client.write(path, raw, fs_ctx=fs_ctx)
-            except AGFSNotFoundError:
-                pass
-            except Exception:
-                logger.exception("Failed to roll back memory template: %s", path)
-            raise
+        if complete is None:
+            await client.rm(path, fs_ctx=fs_ctx)
+        else:
+            assert staging_path is not None and encoded is not None
+            await _publish_template(client, path, staging_path, encoded, fs_ctx)
         logger.info("Updated account memory template: %s reset=%s", path, complete is None)
         return complete
     finally:
-        await client.pathlock_release(lease)
+        await client.pathlock_release(lease, fs_ctx=fs_ctx_from_agfs_path(path))
 
 
 async def resolve_account_memory_registry(
     viking_fs: VikingFS, account_id: str, registry: MemoryTypeRegistry
 ) -> MemoryTypeRegistry:
-    """Snapshot registered types before filtering, without mutating shared defaults."""
+    """Snapshot account types over server-owned deployment defaults, without mutating them."""
     schemas = registry.list_all(include_disabled=True)
     templates = await asyncio.gather(
         *(read_account_memory_template(viking_fs, account_id, s.memory_type) for s in schemas)
@@ -304,12 +426,17 @@ async def resolve_account_memory_registry(
     for schema, template in zip(schemas, templates, strict=True):
         try:
             resolved.register(
-                _validate_template(template, schema.memory_type)
+                _validate_template(
+                    template,
+                    schema.memory_type,
+                    deployment_defaults=memory_template_data(schema),
+                )
                 if template is not None
                 else schema.model_copy(deep=True)
             )
-        except ContentTemplateError as exc:
+        except (ContentTemplateError, DescriptionTemplateError) as exc:
             raise FailedPreconditionError(
-                f"Invalid account content_template for {schema.memory_type}; republish or reset it"
+                f"Invalid account {getattr(exc, 'field', 'content_template')} "
+                f"for {schema.memory_type}; republish or reset it"
             ) from exc
     return resolved

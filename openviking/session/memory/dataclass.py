@@ -222,8 +222,8 @@ class MemoryField(BaseModel):
 class MemoryTypeSchema(BaseModel):
     """Memory type schema definition."""
 
-    # Runtime-only trust boundary, set by the account-template loader. Never
-    # serialized into YAML or accepted as a user-controlled configuration field.
+    # True only for account bodies differing from server-owned deployment defaults.
+    # Recomputed by the loader, never serialized or accepted as a client trust flag.
     _account_content_template: bool = PrivateAttr(default=False)
 
     memory_type: str = Field(..., description="Memory type name")

@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0
 """Restricted Markdown templates published through the account management API.
 
-Deployment-owned templates keep their existing renderer. Only account overrides
-use this contract, both at publication and when rendering the extraction snapshot.
+Deployment-owned templates and exact inherited copies keep their existing renderer.
+Only account bodies differing from the current deployment defaults use this contract,
+both at publication and when rendering the extraction snapshot.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ _EVENT_METHODS = {
     "get_month": (1,),
     "get_day": (1,),
 }
-_FILTERS = {"default", "trim", "lower", "upper", "length"}
+_STRING_METHODS = {"upper", "lower", "strip"}
 _TESTS = {"defined", "undefined", "none", "string"}
 _LOOP_ATTRIBUTES = {"index", "index0", "first", "last", "length"}
 _RESERVED_METADATA = re.compile(r"<!--\s*MEMORY_FIELDS\b")
@@ -49,7 +50,6 @@ _NODES = (
     nodes.Tuple,
     nodes.Getattr,
     nodes.Call,
-    nodes.Filter,
     nodes.Test,
     nodes.Compare,
     nodes.Operand,
@@ -68,30 +68,48 @@ class ContentTemplateError(ValueError):
 
 
 class _ContentEnvironment(ImmutableSandboxedEnvironment):
+    def getattr(self, obj: Any, attribute: str) -> Any:
+        # Check before Jinja looks up the attribute (or falls back to a mapping
+        # key). A same-named method/property on another object is not trusted.
+        if attribute in _STRING_METHODS and type(obj) is not str:
+            return self.unsafe_undefined(obj, attribute)
+        return super().getattr(obj, attribute)
+
     def is_safe_attribute(self, obj: Any, attr: str, value: Any) -> bool:
-        return isinstance(obj, LoopContext) and attr in _LOOP_ATTRIBUTES
+        return (type(obj) is str and attr in _STRING_METHODS) or (
+            isinstance(obj, LoopContext) and attr in _LOOP_ATTRIBUTES
+        )
 
 
 def _environment() -> _ContentEnvironment:
     env = _ContentEnvironment(autoescape=False, undefined=StrictUndefined)
     env.globals.clear()
-    env.filters = {name: env.filters[name] for name in _FILTERS}
+    env.filters.clear()
     env.tests = {name: env.tests[name] for name in _TESTS}
     return env
 
 
-def _parse(template: str, memory_type: str, env: _ContentEnvironment) -> nodes.Template:
-    if memory_type not in CONTENT_TEMPLATE_FIELDS:
+def _parse(
+    template: str,
+    memory_type: str,
+    env: _ContentEnvironment,
+    *,
+    variables: frozenset[str] | None = None,
+    max_template_bytes: int = MAX_CONTENT_TEMPLATE_BYTES,
+) -> nodes.Template:
+    # Descriptions reuse the same syntax/sandbox with their own variable and
+    # source-size contract. They never receive Events helpers or body fields.
+    if variables is None and memory_type not in CONTENT_TEMPLATE_FIELDS:
         raise ContentTemplateError("unsupported_memory_type")
     if not isinstance(template, str) or not template.strip():
         raise ContentTemplateError("empty_template")
-    if len(template.encode("utf-8")) > MAX_CONTENT_TEMPLATE_BYTES:
+    if len(template.encode("utf-8")) > max_template_bytes:
         raise ContentTemplateError("template_too_large")
     if _RESERVED_METADATA.search(template):
         raise ContentTemplateError("reserved_metadata")
     try:
         tree = env.parse(template)
-        allowed = set(CONTENT_TEMPLATE_FIELDS[memory_type])
+        allowed = set(variables if variables is not None else CONTENT_TEMPLATE_FIELDS[memory_type])
         if memory_type == "events":
             allowed.add("extract_context")
         all_nodes = list(tree.find_all(nodes.Node))
@@ -107,6 +125,8 @@ def _parse(template: str, memory_type: str, env: _ContentEnvironment) -> nodes.T
                     id(n) for n in container.items if isinstance(n, nodes.Tuple)
                 )
         for node in all_nodes:
+            if isinstance(node, nodes.Filter):
+                raise ContentTemplateError("unsupported_filter", node.lineno)
             if not isinstance(node, _NODES):
                 raise ContentTemplateError("unsupported_syntax", node.lineno)
             if isinstance(node, nodes.Name) and node.ctx == "store":
@@ -132,16 +152,21 @@ def _parse(template: str, memory_type: str, env: _ContentEnvironment) -> nodes.T
                     and memory_type == "events"
                     and id(node) in callable_attributes
                 )
-                if not helper and not (owner == "loop" and node.attr in _LOOP_ATTRIBUTES):
+                string_method = (
+                    node.attr in _STRING_METHODS
+                    and owner not in {"extract_context", "loop"}
+                    and id(node) in callable_attributes
+                )
+                if not (helper or string_method) and not (
+                    owner == "loop" and node.attr in _LOOP_ATTRIBUTES
+                ):
                     raise ContentTemplateError("unsupported_attribute", node.lineno)
             if isinstance(node, nodes.Call):
                 _validate_call(node, memory_type)
-            if isinstance(node, (nodes.Filter, nodes.Test)):
-                names = _FILTERS if isinstance(node, nodes.Filter) else _TESTS
-                if node.name not in names or node.kwargs or node.dyn_args or node.dyn_kwargs:
-                    raise ContentTemplateError("unsupported_filter_or_test", node.lineno)
-                max_args = 2 if node.name == "default" else 0
-                if len(node.args) > max_args:
+            if isinstance(node, nodes.Test):
+                if node.name not in _TESTS or node.kwargs or node.dyn_args or node.dyn_kwargs:
+                    raise ContentTemplateError("unsupported_test", node.lineno)
+                if node.args:
                     raise ContentTemplateError("invalid_arguments", node.lineno)
             if isinstance(node, nodes.For):
                 # Iterating over an explicit field list is sufficient for Markdown
@@ -168,6 +193,12 @@ def _parse(template: str, memory_type: str, env: _ContentEnvironment) -> nodes.T
 
 def _validate_call(node: nodes.Call, memory_type: str) -> None:
     target = node.node
+    if isinstance(target, nodes.Getattr) and target.attr in _STRING_METHODS:
+        if node.args or node.kwargs or node.dyn_args or node.dyn_kwargs:
+            raise ContentTemplateError("invalid_arguments", node.lineno)
+        # The receiver may be a field, local, literal, or another allowed call.
+        # Its exact runtime type is checked before attribute lookup by the sandbox.
+        return
     if (
         memory_type != "events"
         or not isinstance(target, nodes.Getattr)
@@ -184,13 +215,7 @@ def _validate_call(node: nodes.Call, memory_type: str) -> None:
     ):
         raise ContentTemplateError("invalid_arguments", node.lineno)
     # Never allow a template to fabricate an unbounded message-index range.
-    ranges: nodes.Expr | None = node.args[0]
-    if isinstance(ranges, nodes.Filter) and ranges.name == "default":
-        if ranges.args and not (
-            isinstance(ranges.args[0], nodes.Const) and ranges.args[0].value == ""
-        ):
-            raise ContentTemplateError("invalid_ranges", node.lineno)
-        ranges = ranges.node
+    ranges = node.args[0]
     if not isinstance(ranges, nodes.Name) or ranges.name != "ranges":
         raise ContentTemplateError("invalid_ranges", node.lineno)
     if len(node.args) == 3:

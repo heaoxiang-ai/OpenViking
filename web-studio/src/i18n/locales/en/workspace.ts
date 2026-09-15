@@ -208,6 +208,22 @@ const workspace = {
     },
   },
   agentExperiencePage: {
+    setup: {
+      expand: 'Expand steps',
+      collapse: 'Collapse',
+      title: 'Give your Agent experience and evolution capabilities',
+      connect: 'Connect OpenViking to your Agent',
+      docs: 'View integration guide',
+      install: 'Install the experience Skill for your Agent',
+      hint: 'Run this command in your terminal and select your Agent when prompted.',
+      copy: 'Copy install command',
+      view: 'View command',
+      copied: 'Install command copied',
+      copyFailed: 'Copy failed. Expand the command and copy it manually.',
+      enable: 'Enable Agent Evolution',
+      enableHint:
+        'Ask an account administrator to enable Agent Evolution so future session commits can generate experiences.',
+    },
     title: 'Agent Experience',
     description:
       'Track experiences distilled from committed sessions, along with the trajectories and outcomes produced after they are applied.',
@@ -404,6 +420,27 @@ const workspace = {
         'This task did not return a result. See the failure reason above.',
       noResultCancelledDescription:
         'This task was cancelled before it returned a result.',
+    },
+    events: {
+      title: 'Task execution log',
+      description:
+        'Reported task events. Times show when the backend recorded each event.',
+      created: 'Task registered',
+      statusChanged: 'Task status changed to {{status}}',
+      stageChanged: 'Reported stage changed to {{stage}}',
+      errorRecorded: 'Backend recorded an error',
+      waitingForDescendants:
+        'Unfinished work remains; waiting for owned work to settle',
+      stageContext: 'Last reported stage: {{stage}}',
+      operation: 'Operation: {{operation}}',
+      partial: 'Only events recorded after tracking began are available.',
+      truncated: '{{count}} earlier events were truncated.',
+      unsupported: 'The server did not provide task events.',
+      empty: 'No execution events were recorded for this task.',
+      copy: 'Copy events',
+      copied: 'Events copied',
+      copyFailed: 'Could not copy events',
+      context: 'Current task context',
     },
     filters: {
       label: 'Filter',
@@ -877,9 +914,9 @@ const workspace = {
     },
     toast: {
       accountCreated: 'Account created',
-      accountDeleted: '{{account}} deleted',
-      accountDeletedRecoveryFailed:
-        'The account was deleted, but the remaining account list could not be loaded: {{error}}',
+      accountDeletionStarted: '{{account}} disabled. Cleanup task: {{taskId}}',
+      accountDeletionRecoveryFailed:
+        'Account cleanup was submitted, but the remaining account list could not be loaded: {{error}}',
       connectionSaved: 'Connection saved',
       copyFailed: 'Copy failed',
       copied: 'Copied',

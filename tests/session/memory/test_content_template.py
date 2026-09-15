@@ -7,6 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openviking.message import Message, TextPart
+from openviking.session.memory.account_templates import (
+    _complete_template,
+    _validate_template,
+    memory_template_data,
+)
 from openviking.session.memory.dataclass import MemoryFile
 from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
 from openviking.session.memory.memory_updater import ExtractContext
@@ -22,13 +27,28 @@ from openviking.session.memory.utils.template_utils import TemplateUtils
 
 
 @pytest.mark.parametrize("memory_type", ["events", "soul", "identity"])
-def test_builtin_content_templates_remain_compatible(memory_type):
+def test_inherited_builtin_content_templates_keep_deployment_renderer(memory_type):
     schema = MemoryTypeRegistry().get(memory_type)
+    complete = _complete_template(
+        memory_template_data(schema), {"description": "Account instructions"}, memory_type
+    )
+    inherited = _validate_template(
+        complete, memory_type, deployment_defaults=memory_template_data(schema)
+    )
+    assert inherited._account_content_template is False
     values = {f.name: f.init_value or "" for f in schema.fields}
     context = ExtractContext([])
-    assert render_content_template(
-        schema.content_template, memory_type, values, context
-    ) == TemplateUtils.render(schema.content_template, values, context)
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type=memory_type, extra_fields=values),
+        content_template=inherited.content_template,
+        extract_context=context,
+        account_content_template_type=(
+            inherited.memory_type if inherited._account_content_template else None
+        ),
+    )
+    assert MemoryFileUtils.read(rendered).content == TemplateUtils.render(
+        schema.content_template, values, context
+    )
 
 
 @pytest.mark.parametrize("resource_event", [False, True])
@@ -51,7 +71,12 @@ def test_events_default_and_custom_render_real_context(resource_event):
     }
     template = MemoryTypeRegistry().get("events").content_template
     old = TemplateUtils.render(template, values, context)
-    assert render_content_template(template, "events", values, context) == old
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type="events", extra_fields=values),
+        content_template=template,
+        extract_context=context,
+    )
+    assert MemoryFileUtils.read(rendered).content == old
     if resource_event:
         assert "viking://resources/guide" in old
     else:
@@ -62,19 +87,117 @@ def test_events_default_and_custom_render_real_context(resource_event):
     assert ("viking://resources/guide" in result) == resource_event
 
 
-def test_content_template_if_set_for_and_filters():
+def test_content_template_if_set_for_and_string_methods():
     template = """{% set heading = 'Business rules' %}
 # {{ heading }}
 {% for title, text in [('Values', core_truths), ('Limits', boundaries)] %}
-{% if text | trim %}## {{ loop.index }}. {{ title }}
-{{ text | trim }}{% endif %}
+{% if text.strip() %}## {{ loop.index }}. {{ title }}
+{{ text.strip() }}{% endif %}
 {% endfor %}
-{% if vibe is defined and vibe %}{{ vibe | upper }}{% else %}{{ continuity | default('pending', true) }}{% endif %}"""
+{% if vibe is defined and vibe %}{{ vibe.upper() }}{% else %}{{ continuity or 'pending' }}{% endif %}"""
     output = render_content_template(
         template, "soul", {"core_truths": " truth ", "boundaries": "limits"}
     )
     assert "## 1. Values\ntruth" in output and "## 2. Limits\nlimits" in output
     assert "pending" in output
+
+
+@pytest.mark.parametrize(
+    "template, expected",
+    [
+        ("{{ summary.upper() }}", "ABC"),
+        ("{{ summary.lower() }}", "abc"),
+        ("{{ summary.strip() }}", "AbC"),
+        ("{{ summary.strip().upper() }}", "ABC"),
+        ("{{ ' HeLLo '.strip().lower() }}", "hello"),
+        ("{% set text = summary %}{{ text.upper() }}", "ABC"),
+        ("{% if summary.strip().lower() == 'abc' %}match{% endif %}", "match"),
+        (
+            "{% for title, text in [('Title', summary)] %}{{ title.upper() }}: {{ text.strip() }}{% endfor %}",
+            "TITLE: AbC",
+        ),
+        ("{{ (summary or 'pending').upper() }}", "ABC"),
+    ],
+)
+def test_content_template_string_methods_match_deployment_syntax(template, expected):
+    fields = {"summary": " AbC "}
+    assert render_content_template(template, "events", fields) == expected
+    assert TemplateUtils.render(template, fields) == expected
+
+
+def test_content_template_string_methods_on_helper_results_and_empty_fields():
+    context = SimpleNamespace(get_event_content=lambda *args: " details ")
+    assert (
+        render_content_template(
+            "{{ extract_context.get_event_content(ranges, summary).strip().upper() }}",
+            "events",
+            {"ranges": "0"},
+            context,
+        )
+        == "DETAILS"
+    )
+    assert render_content_template("{{ summary.strip() or 'pending' }}", "events", {}) == "pending"
+
+
+@pytest.mark.parametrize("receiver_kind", ["object", "mapping", "str_subclass", "none", "int"])
+def test_content_template_rejects_same_named_methods_before_attribute_lookup(receiver_kind):
+    touched = []
+
+    class Impostor:
+        @property
+        def upper(self):
+            touched.append("property")
+            return lambda: "unsafe"
+
+    class StringSubclass(str):
+        def upper(self):
+            touched.append("override")
+            return "unsafe"
+
+    receivers = {
+        "object": Impostor(),
+        "mapping": {"upper": lambda: touched.append("mapping")},
+        "str_subclass": StringSubclass("text"),
+        "none": None,
+        "int": 1,
+    }
+    context = SimpleNamespace(get_event_content=lambda *args: receivers[receiver_kind])
+    with pytest.raises(ContentTemplateError, match="render_failed"):
+        render_content_template(
+            "{{ extract_context.get_event_content(ranges, summary).upper() }}",
+            "events",
+            {"ranges": "0"},
+            context,
+        )
+    assert not touched
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "summary | upper",
+        "summary | lower",
+        "summary | trim",
+        "summary | length",
+        "summary | default('pending', true)",
+        "summary.upper() | upper",
+    ],
+)
+def test_content_template_rejects_all_filter_syntax(expression):
+    template = "{{ " + expression + " }}"
+    with pytest.raises(ContentTemplateError, match="unsupported_filter"):
+        validate_content_template(template, "events")
+    with pytest.raises(ContentTemplateError, match="unsupported_filter"):
+        render_content_template(template, "events", {"summary": "text"})
+
+
+def test_events_builtin_template_keeps_original_date_fallback():
+    template = MemoryTypeRegistry().get("events").content_template
+    assert "ranges|default('')" in template
+    context = ExtractContext([])
+    output = TemplateUtils.render(template, {"summary": "Summary", "ranges": ""}, context)
+    # Preserve existing deployment behavior: default() handles undefined, not None.
+    assert "# None ChatLog:" in output
 
 
 @pytest.mark.parametrize(
@@ -91,7 +214,19 @@ def test_content_template_if_set_for_and_filters():
         "{{ extract_context.read_message_ranges(ranges) }}",
         "{{ extract_context.get_year }}",
         "{{ extract_context['get_year'](ranges) }}",
-        "{{ summary.upper() }}",
+        "{{ summary.upper }}",
+        "{% set method = summary.upper %}{{ method() }}",
+        "{{ summary.upper('x') }}",
+        "{{ summary.strip('x') }}",
+        "{{ summary.strip(chars='x') }}",
+        "{{ summary.upper(*summary) }}",
+        "{{ summary.upper(**summary) }}",
+        "{{ summary.replace('a', 'b') }}",
+        "{{ summary.format() }}",
+        "{{ summary.strip().__class__ }}",
+        "{{ summary.upper.__self__ }}",
+        "{{ extract_context.upper() }}",
+        "{% for x in [1] %}{{ loop.upper() }}{% endfor %}",
         "{{ cycler.__init__.__globals__ }}",
         "{{ range(100) }}",
         "{% include 'private.txt' %}",
@@ -231,7 +366,7 @@ async def test_account_content_template_initialization(monkeypatch):
     [
         ("get_resource_event_content", "ranges, summary"),
         ("get_first_message_time_from_ranges", "ranges"),
-        ("get_first_message_time_with_weekday_from_ranges", "ranges|default('')"),
+        ("get_first_message_time_with_weekday_from_ranges", "ranges"),
         ("get_event_content", "ranges, summary"),
         ("get_event_content", "ranges, summary, 0"),
         ("get_year", "ranges"),

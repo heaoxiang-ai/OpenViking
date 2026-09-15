@@ -83,8 +83,8 @@ class _AccessMixin:
     }
     _NO_VECTOR_DERIVED = frozenset({".relations.json", ".ovgitignore"})
 
-    def set_user_deletion_guard(self, guard: Optional[Callable[[str, str], bool]]) -> None:
-        self._user_deletion_guard = guard
+    def set_deletion_guard(self, guard: Optional[Callable[[str, str], bool]]) -> None:
+        self._deletion_guard = guard
 
     @staticmethod
     def _default_ctx() -> RequestContext:
@@ -227,7 +227,7 @@ class _AccessMixin:
         if action is AclAction.READ:
             return
 
-        self._ensure_user_not_deleting(real_ctx)
+        self._ensure_identity_not_deleting(real_ctx)
         for uri in uris:
             self._safe_uri_parts(uri)
             if uri == "viking://" and real_ctx.role == Role.USER:
@@ -360,10 +360,10 @@ class _AccessMixin:
     async def delete_acl(self, uri: str, ctx: Optional[RequestContext] = None) -> Dict[str, Any]:
         return await self.set_acl(uri, [], acl_mode=AclMode.INHERIT, ctx=ctx)
 
-    def _ensure_user_not_deleting(self, ctx: RequestContext) -> None:
-        guard = getattr(self, "_user_deletion_guard", None)
+    def _ensure_identity_not_deleting(self, ctx: RequestContext) -> None:
+        guard = getattr(self, "_deletion_guard", None)
         if ctx.role != Role.ROOT and guard is not None and guard(ctx.account_id, ctx.user.user_id):
-            raise FailedPreconditionError("User deletion is in progress")
+            raise FailedPreconditionError("Identity deletion is in progress")
 
     def _ensure_supported_delete_namespace(self, normalized_uri: str) -> None:
         parts = [p for p in normalized_uri[len("viking://") :].strip("/").split("/") if p]
@@ -379,10 +379,6 @@ class _AccessMixin:
                 resource=normalized_uri,
             )
         if parts == ["agent"]:
-            # Parity with _ensure_supported_write_namespace, which forbids the
-            # account-shared viking://agent root: deleting it would recursively
-            # wipe every account's agent skills/endpoints/tools/payments. Concrete
-            # sub-paths (viking://agent/skills/...) remain deletable.
             raise PermissionDeniedError(
                 "Deleting viking://agent root is not supported; use a concrete "
                 "agent sub-path (e.g. viking://agent/skills/...) instead.",
@@ -402,17 +398,11 @@ class _AccessMixin:
                 f"Writing {normalized_uri} is not supported; use user-owned namespaces instead.",
                 resource=normalized_uri,
             )
-        if parts and parts[0] == "agent":
-            if len(parts) >= 2 and parts[1] not in {"skills", "endpoints", "tools", "payments"}:
-                raise PermissionDeniedError(
-                    "viking://agent/{agent_id} is deprecated. Use viking://user/.../peers/{agent_id} instead.",
-                    resource=normalized_uri,
-                )
-            if len(parts) < 2:
-                raise PermissionDeniedError(
-                    "Writing to viking://agent root is not supported.",
-                    resource=normalized_uri,
-                )
+        if self._is_legacy_agent_id_uri(normalized_uri):
+            raise PermissionDeniedError(
+                "viking://agent/{agent_id} is deprecated. Use viking://user/.../peers/{agent_id} instead.",
+                resource=normalized_uri,
+            )
 
     def _pathlock_fs_ctx(
         self,
@@ -690,6 +680,7 @@ class _AccessMixin:
             and parts[0] == "agent"
             and len(parts) >= 2
             and parts[1] not in {"skills", "endpoints", "tools", "payments"}
+            and not (len(parts) == 2 and parts[1] in self._DIR_MARKER_LEVELS)
         )
 
     def _read_paths(self, uri: str, ctx: Optional[RequestContext] = None) -> List[str]:
@@ -929,8 +920,6 @@ class _AccessMixin:
         raw_count = 0
 
         for path in self._read_paths(uri, ctx=ctx):
-            if not await self._read_path_visible(uri, path, primary_path, real_ctx):
-                continue
             try:
                 entries = await self._ls_entries(
                     path,
@@ -946,6 +935,11 @@ class _AccessMixin:
                     last_not_found = exc
                     continue
                 raise
+
+            # Missing legacy directories need no owner probes. Check visibility
+            # before merging entries from a directory that actually exists.
+            if not await self._read_path_visible(uri, path, primary_path, real_ctx):
+                continue
 
             found_path = True
             raw_count += len(entries)
