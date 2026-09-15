@@ -1108,6 +1108,7 @@ async def test_template_snapshot_updates_same_uri(monkeypatch, template_change):
 
     async def coordinated_merge(**kwargs):
         # Deterministic substitute for the LLM; the real updater still writes the file.
+        assert kwargs["registry"] is requests[0].memory_registry
         assert len(kwargs["operations"].upsert_operations) == 2
         op = requests[0].operations.upsert_operations[0].model_copy(deep=True)
         op.memory_fields["content"] = StrPatch(

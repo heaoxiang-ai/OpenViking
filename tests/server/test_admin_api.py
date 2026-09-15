@@ -44,7 +44,10 @@ from openviking.session.memory.account_templates import (
 )
 from openviking.session.memory.extract_loop import ExtractLoop
 from openviking.session.memory.memory_isolation_handler import MemoryIsolationHandler
-from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
+from openviking.session.memory.memory_type_registry import (
+    MemoryTypeRegistry,
+    get_default_registry,
+)
 from openviking.session.memory.patch_merge_context_provider import PatchMergeContextProvider
 from openviking.session.memory.session_extract_context_provider import SessionExtractContextProvider
 from openviking_cli.exceptions import OpenVikingError, PermissionDeniedError
@@ -334,7 +337,7 @@ async def test_account_memory_templates_publish_and_reset(
     fs = lightweight_admin_app.state.fake_service.viking_fs
     settings_path = f"/local/{account_id}/_system/setting.json"
     fs.agfs._files[settings_path] = b'{"agent_evolution":{"enabled":false}}'
-    registry = MemoryTypeRegistry()
+    registry = get_default_registry()
     original = {s.memory_type: s.model_dump() for s in registry.list_all(True)}
     initial = await client.get(root, headers=headers)
     assert initial.status_code == 200, initial.text
@@ -391,6 +394,8 @@ async def test_account_memory_templates_publish_and_reset(
         next(item for item in listed if item["memory_type"] == memory_type)["effective"] == stored
     )
     resolved = await resolve_account_memory_registry(fs, account_id, registry)
+    assert resolved is not registry
+    assert all(resolved.get(schema.memory_type) is not schema for schema in registry.list_all(True))
     schema = resolved.get(memory_type)
     assert schema.description == body["description"]
     expected = dict(original[memory_type])
@@ -630,7 +635,7 @@ async def test_account_memory_templates_description_only_keeps_safe_deployment_m
     account_id, headers = template_account
     defaults = MemoryTypeRegistry()
     defaults.get("events").content_template = "# {{ summary.strip().upper() }}"
-    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     response = await lightweight_admin_client.put(
         f"/api/v1/admin/accounts/{account_id}/memory-templates/events",
         json={"description": "Capture release decisions"},
@@ -669,7 +674,7 @@ async def test_account_memory_templates_inherit_exact_deployment_body(
     # Deployment code may use methods/filters that custom Account bodies cannot.
     deployment_body = "# {{ " + field_name + ".replace('old', 'new') | upper }}"
     defaults.get(memory_type).content_template = deployment_body
-    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
     body = {"description": "Account instructions"} if request_kind == "description_only" else {}
     if request_kind == "roundtrip":
@@ -718,7 +723,7 @@ async def test_account_memory_templates_recheck_persisted_body_without_trusting_
     defaults = MemoryTypeRegistry()
     deployment_body = "{{ summary | upper }}"
     defaults.get("events").content_template = deployment_body
-    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
     assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
     fs = lightweight_admin_app.state.fake_service.viking_fs
@@ -754,7 +759,7 @@ async def test_account_memory_templates_recheck_trust_after_deployment_change(
     defaults = MemoryTypeRegistry()
     old_body = "{{ summary | upper }}"
     defaults.get("events").content_template = old_body
-    monkeypatch.setattr("openviking.server.routers.admin.MemoryTypeRegistry", lambda: defaults)
+    monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
     assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
     fs = lightweight_admin_app.state.fake_service.viking_fs

@@ -49,7 +49,7 @@ from openviking.session.memory.account_templates import (
     read_account_memory_template,
     update_account_memory_template,
 )
-from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
+from openviking.session.memory.memory_type_registry import get_default_registry
 from openviking.session.memory_policy import MemoryPolicy
 from openviking.storage.viking_fs import get_viking_fs
 from openviking_cli.exceptions import (
@@ -275,7 +275,7 @@ def _user_settings_result(
         else default_memory_policy
     )
     policy = MemoryPolicy.from_dict(memory_policy_config)
-    known_memory_types = set(MemoryTypeRegistry().list_names(include_disabled=False))
+    known_memory_types = set(get_default_registry().list_names(include_disabled=False))
     policy.validate_memory_types(known_memory_types)
     memory_policy = policy.to_dict()
     if policy.memory_types is None:
@@ -505,7 +505,7 @@ async def list_memory_templates(
 ):
     """List full defaults and account overrides for the six editable memory templates."""
     service = await _memory_template_service(request, ctx, account_id)
-    registry = MemoryTypeRegistry()
+    registry = get_default_registry()
     names = list(EDITABLE_MEMORY_TEMPLATE_FIELDS)
     templates = await asyncio.gather(
         *(read_account_memory_template(service.viking_fs, account_id, name) for name in names)
@@ -532,7 +532,7 @@ async def get_memory_template(
 ):
     """Read one template's full defaults and effective account configuration."""
     service = await _memory_template_service(request, ctx, account_id)
-    registry = MemoryTypeRegistry()
+    registry = get_default_registry()
     default_memory_template(registry, memory_type)
     config = await read_account_memory_template(service.viking_fs, account_id, memory_type)
     return Response(
@@ -555,7 +555,7 @@ async def put_memory_template(
 ):
     """Fill omitted values from deployment defaults and publish a complete YAML template."""
     service = await _memory_template_service(request, ctx, account_id)
-    registry = MemoryTypeRegistry()
+    registry = get_default_registry()
     config = await update_account_memory_template(
         service.viking_fs, account_id, memory_type, body, registry
     )
@@ -578,7 +578,7 @@ async def reset_memory_template(
 ):
     """Remove one template override without rewriting existing memories."""
     service = await _memory_template_service(request, ctx, account_id)
-    registry = MemoryTypeRegistry()
+    registry = get_default_registry()
     config = await update_account_memory_template(
         service.viking_fs, account_id, memory_type, None, registry
     )
