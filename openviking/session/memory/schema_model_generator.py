@@ -10,13 +10,12 @@ definitions, with discriminator support for polymorphic fields.
 import re
 from typing import Annotated, Any, Dict, List, Optional, Tuple, Type, Union
 
-from pydantic import BaseModel, Field, WithJsonSchema, create_model, model_validator
+from pydantic import BaseModel, Field, WithJsonSchema, create_model
 from pydantic.config import ConfigDict
 
 from openviking.session.memory.dataclass import (
     DeleteId,
     FaultTolerantBaseModel,
-    MemoryField,
     MemoryTypeSchema,
     WikiLink,
 )
@@ -91,13 +90,8 @@ class SchemaModelGenerator:
         self._flat_data_models: Dict[str, Type[BaseModel]] = {}
         self._operations_model: Optional[Type[BaseModel]] = None
 
-    def _render_description(self, source: MemoryTypeSchema | MemoryField) -> str:
-        description = source.description
-        return render_description_template(
-            description,
-            self._template_context,
-            strip=False,
-        )
+    def _render_description(self, description: str) -> str:
+        return render_description_template(description, self._template_context, strip=False)
 
     def _map_field_type(self, field_type: FieldType) -> Type[Any]:
         """Map YAML field type to Python type."""
@@ -175,7 +169,7 @@ class SchemaModelGenerator:
                 immutable_field_names.append(field.name)
                 field_definitions[field.name] = (
                     base_type,
-                    Field(..., description=self._render_description(field)),
+                    Field(..., description=self._render_description(field.description)),
                 )
             else:
                 # Mutable fields: Union[base_type, patch_type], optional
@@ -183,7 +177,7 @@ class SchemaModelGenerator:
                 patch_type = merge_op.get_output_schema_type(field.field_type)
                 union_type = Union[base_type, patch_type]
                 desc = merge_op.get_output_schema_description(
-                    self._render_description(field)
+                    self._render_description(field.description)
                 )
                 field_definitions[field.name] = (
                     Optional[union_type],
@@ -260,7 +254,7 @@ class SchemaModelGenerator:
                 Field(
                     default_factory=list,
                     description=(
-                        f"{mt.memory_type} memories: {self._render_description(mt)} "
+                        f"{mt.memory_type} memories: {self._render_description(mt.description)} "
                         "(top-level field, do not nest inside other arrays)"
                     ),
                 ),
@@ -377,8 +371,7 @@ class SchemaPromptGenerator:
         self.schemas = schemas
         self._template_context = dict(template_context or {})
 
-    def _render_description(self, source: MemoryTypeSchema | MemoryField) -> str:
-        description = source.description
+    def _render_description(self, description: str) -> str:
         return render_description_template(description, self._template_context)
 
     def generate_type_descriptions(self) -> str:
@@ -392,7 +385,7 @@ class SchemaPromptGenerator:
 
         for mt in self.schemas:
             lines.append(f"\n### {mt.memory_type}")
-            lines.append(f"{self._render_description(mt)}")
+            lines.append(self._render_description(mt.description))
 
             # Add URI format information
             if mt.directory or mt.filename_template:
@@ -415,7 +408,8 @@ class SchemaPromptGenerator:
                 lines.append("\n**Fields:**")
                 for field in mt.fields:
                     lines.append(
-                        f"- `{field.name}` ({field.field_type.value}): {self._render_description(field)}"
+                        f"- `{field.name}` ({field.field_type.value}): "
+                        f"{self._render_description(field.description)}"
                     )
 
         return "\n".join(lines)
@@ -436,7 +430,7 @@ class SchemaPromptGenerator:
 
         lines = [f"### {mt.memory_type} Fields"]
         for field in mt.fields:
-            lines.append(f"- `{field.name}`: {self._render_description(field)}")
+            lines.append(f"- `{field.name}`: {self._render_description(field.description)}")
 
         return "\n".join(lines)
 

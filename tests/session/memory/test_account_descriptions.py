@@ -25,6 +25,23 @@ from openviking.session.memory.utils.description_template import (
 )
 
 
+@pytest.mark.parametrize(
+    ("generator_type", "plain_expected", "template_expected"),
+    [
+        (SchemaModelGenerator, "  plain\n", "  EN  "),
+        (SchemaPromptGenerator, "plain", "EN"),
+    ],
+)
+def test_generators_render_description_strings(generator_type, plain_expected, template_expected):
+    generator = generator_type([], template_context={"language": "en"})
+
+    assert generator._render_description("  plain\n") == plain_expected
+    assert generator._render_description("  {{ language.upper() }}  ") == template_expected
+    assert generator._render_description("") == ""
+    with pytest.raises(DescriptionTemplateError):
+        generator._render_description("{{ language | upper }}")
+
+
 @pytest.mark.parametrize("memory_type", EDITABLE_MEMORY_TEMPLATE_FIELDS)
 @pytest.mark.parametrize("origin", ["deployment", "account"])
 @pytest.mark.parametrize(
