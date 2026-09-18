@@ -434,6 +434,97 @@ async def test_account_memory_templates_publish_and_reset(
 
 
 @pytest.mark.parametrize(
+    "memory_type,edit",
+    [
+        (kind, edit)
+        for kind in EDITABLE_MEMORY_TEMPLATE_FIELDS
+        for edit in ("exact", "description", "field_description")
+    ]
+    + [
+        (kind, edit)
+        for kind in ("events", "soul", "identity")
+        for edit in ("rstrip", "newline", "crlf", "heading")
+    ],
+)
+async def test_account_memory_templates_default_form_roundtrip(
+    lightweight_admin_client,
+    lightweight_admin_app,
+    template_account,
+    memory_type,
+    edit,
+):
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.memory_updater import ExtractContext
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+    from openviking.session.memory.utils.template_utils import TemplateUtils
+
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
+    initial = await client.get(url, headers=headers)
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["result"]["status"] == "system_default"
+    defaults = initial.json()["result"]["defaults"]
+    # Match the managed form: only editable fields from the actual GET result.
+    body = {
+        "description": defaults["description"],
+        "fields": [
+            {"name": f["name"], "description": f["description"]}
+            for f in defaults["fields"]
+            if f["name"] in EDITABLE_MEMORY_TEMPLATE_FIELDS[memory_type]
+        ],
+    }
+    if memory_type in ("events", "soul", "identity"):
+        original = defaults["content_template"]
+        body["content_template"] = {
+            "rstrip": original.rstrip(),
+            "newline": original + "\n",
+            "crlf": original.replace("\n", "\r\n"),
+            "heading": "# Account memory\n" + original,
+        }.get(edit, original)
+    if edit == "description":
+        body["description"] += "\nAccount instructions."
+    elif edit == "field_description":
+        body["fields"][0]["description"] += "\nAccount field instructions."
+    published = await client.put(url, json=body, headers=headers)
+    assert published.status_code == 200, published.text
+    result = published.json()["result"]
+    assert result["status"] == "custom"
+    assert result["defaults"] == defaults
+    effective = result["effective"]
+    assert effective["description"] == body["description"]
+    for field in body["fields"]:
+        actual = next(f for f in effective["fields"] if f["name"] == field["name"])
+        assert actual["description"] == field["description"]
+    assert (await client.get(url, headers=headers)).json()["result"] == result
+    roundtrip = await client.put(url, json=effective, headers=headers)
+    assert roundtrip.status_code == 200, roundtrip.text
+    assert roundtrip.json()["result"] == result
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    snapshot = await resolve_account_memory_registry(fs, account_id, get_default_registry())
+    schema = snapshot.get(memory_type)
+    if "content_template" in body:
+        assert schema.content_template == effective["content_template"] == body["content_template"]
+        assert schema._account_content_template == (body["content_template"] != original)
+        values = {f.name: "Business fact" for f in schema.fields}
+        values["ranges"] = ""
+        context = ExtractContext([])
+        rendered = MemoryFileUtils.write(
+            MemoryFile(memory_type=memory_type, extra_fields=values),
+            content_template=schema.content_template,
+            extract_context=context,
+            account_content_template_type=memory_type if schema._account_content_template else None,
+        )
+        assert MemoryFileUtils.read(rendered).content == TemplateUtils.render(
+            body["content_template"], values, context
+        )
+    reset = await client.delete(url, headers=headers)
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["result"]["effective"] == defaults
+    assert reset.json()["result"]["status"] == "system_default"
+
+
+@pytest.mark.parametrize(
     "body",
     [
         {"description": 123},
@@ -460,7 +551,7 @@ async def test_account_memory_templates_publish_and_reset(
         {"content_template": "{{ summary | attr('__class__') }}"},
         {"content_template": "{{ summary | length }}"},
         {"content_template": "{{ summary | trim('x') }}"},
-        {"content_template": "{{ summary | default('pending') }}"},
+        {"content_template": "{{ summary | default('pending', true) }}"},
         {"content_template": "{{ summary.strip('x') }}"},
         {"content_template": "x" * (64 * 1024 + 1)},
     ],
@@ -723,7 +814,7 @@ async def test_account_memory_templates_recheck_persisted_body_without_trusting_
 
     account_id, headers = template_account
     defaults = MemoryTypeRegistry()
-    deployment_body = "{{ summary | default('pending') }}"
+    deployment_body = "{{ summary | length }}"
     defaults.get("events").content_template = deployment_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
@@ -759,7 +850,7 @@ async def test_account_memory_templates_recheck_trust_after_deployment_change(
 
     account_id, headers = template_account
     defaults = MemoryTypeRegistry()
-    old_body = "{{ summary | default('pending') }}"
+    old_body = "{{ summary | length }}"
     defaults.get("events").content_template = old_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
@@ -794,7 +885,7 @@ async def test_account_memory_templates_old_content_can_be_read_replaced_and_res
     path = account_memory_template_path(account_id, "events")
     assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
     legacy = yaml.safe_load(fs.agfs._files[path])
-    legacy["content_template"] = "{{ summary | default('pending') }}"
+    legacy["content_template"] = "{{ summary | length }}"
     raw = yaml.safe_dump(legacy).encode()
     for operation in ("PUT", "DELETE"):
         fs.agfs._files[path] = raw

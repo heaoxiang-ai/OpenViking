@@ -87,6 +87,130 @@ def test_events_default_and_custom_render_real_context(resource_event):
     assert ("viking://resources/guide" in result) == resource_event
 
 
+@pytest.mark.parametrize("memory_type", ["events", "soul", "identity"])
+@pytest.mark.parametrize("edit", ["exact", "rstrip", "newline", "crlf", "heading"])
+@pytest.mark.parametrize("message_kind", ["ordinary", "resource", "empty"])
+def test_builtin_body_edits_publish_and_render(memory_type, edit, message_kind):
+    defaults = memory_template_data(MemoryTypeRegistry().get(memory_type))
+    original = defaults["content_template"]
+    template = {
+        "exact": original,
+        "rstrip": original.rstrip(),
+        "newline": original + "\n",
+        "crlf": original.replace("\n", "\r\n"),
+        "heading": "# Account memory\n" + original,
+    }[edit]
+    data = _complete_template(defaults, {"content_template": template}, memory_type)
+    schema = _validate_template(data, memory_type, deployment_defaults=defaults)
+    assert schema._account_content_template == (template != original)
+    # The built-in syntax must pass the sandbox itself, not just inheritance.
+    validate_content_template(template, memory_type)
+    text = (
+        "## Resource Addition\nResource URI: viking://resources/guide\n"
+        if message_kind == "resource"
+        else "We agreed to launch on Monday."
+    )
+    context = ExtractContext(
+        []
+        if message_kind == "empty"
+        else [
+            Message(
+                id="m1", role="user", parts=[TextPart(text)], created_at="2026-09-07T08:00:00+00:00"
+            )
+        ]
+    )
+    values = {field.name: "Business fact" for field in schema.fields}
+    values["ranges"] = "" if message_kind == "empty" else "0"
+    expected = TemplateUtils.render(template, values, context)
+    assert render_content_template(template, memory_type, values, context) == expected
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type=memory_type, extra_fields=values),
+        content_template=schema.content_template,
+        extract_context=context,
+        account_content_template_type=memory_type if schema._account_content_template else None,
+    )
+    assert MemoryFileUtils.read(rendered).content == expected
+
+
+@pytest.mark.parametrize("expression", ["default", "default()", "default('N/A')"])
+@pytest.mark.parametrize("value_kind", ["undefined", "none", "empty", "text"])
+def test_default_filter_preserves_deployment_semantics(expression, value_kind):
+    from jinja2 import Undefined
+
+    value = {"undefined": Undefined(name="date"), "none": None, "empty": "", "text": "date"}[
+        value_kind
+    ]
+    context = SimpleNamespace(get_first_message_time_from_ranges=lambda *args: value)
+    template = (
+        "Date: {{ extract_context.get_first_message_time_from_ranges(ranges) | "
+        + expression
+        + " }}"
+    )
+    assert render_content_template(template, "events", {"ranges": ""}, context) == (
+        TemplateUtils.render(template, {"ranges": ""}, context)
+    )
+
+
+def test_default_filter_rejects_untrusted_values_without_coercion():
+    class Impostor:
+        def __str__(self):
+            pytest.fail("default must not coerce an untrusted object")
+
+        def __bool__(self):
+            pytest.fail("default must not evaluate untrusted truthiness")
+
+    class StringSubclass(str):
+        def __str__(self):
+            pytest.fail("default must not coerce a string subclass")
+
+    for value in (Impostor(), StringSubclass("text"), {}, 1, False):
+        context = SimpleNamespace(get_event_content=lambda *args, result=value: result)
+        with pytest.raises(ContentTemplateError, match="render_failed"):
+            render_content_template(
+                "{{ extract_context.get_event_content(ranges, summary) | default('fallback') }}",
+                "events",
+                {"ranges": "0"},
+                context,
+            )
+
+
+@pytest.mark.parametrize("expression", ["ranges|default", "ranges|default()", "ranges|default('')"])
+@pytest.mark.parametrize("ranges", ["", "0", "0-3,7"])
+def test_default_filter_cannot_change_helper_ranges(expression, ranges):
+    seen = []
+
+    def get_year(value):
+        seen.append(value)
+        return "2026"
+
+    template = "{{ extract_context.get_year(" + expression + ") }}"
+    assert (
+        render_content_template(
+            template, "events", {"ranges": ranges}, SimpleNamespace(get_year=get_year)
+        )
+        == "2026"
+    )
+    assert seen == [ranges]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "ranges|default('0-999')",
+        "ranges|default('', true)",
+        "ranges|default(summary)",
+        "ranges|default(default_value='')",
+        "ranges|default(*ranges)",
+        "ranges|default(**ranges)",
+        "ranges|default('')|trim",
+        "summary|default('')",
+    ],
+)
+def test_default_filter_rejects_fabricated_helper_ranges(expression):
+    with pytest.raises(ContentTemplateError):
+        validate_content_template("{{ extract_context.get_year(" + expression + ") }}", "events")
+
+
 def test_content_template_if_set_for_and_string_methods():
     template = """{% set heading = 'Business rules' %}
 # {{ heading }}
@@ -121,6 +245,7 @@ def test_content_template_if_set_for_and_string_methods():
         ("{{ summary | upper }}", "ABC"),
         ("{{ summary | lower }}", "abc"),
         ("{{ summary | trim | upper }}", "ABC"),
+        ("{{ summary | default('pending') | trim | upper }}", "ABC"),
         ("{{ summary.strip() | lower }}", "abc"),
         ("{{ (summary | trim).upper() }}", "ABC"),
         ("{{ ' HeLLo ' | trim | lower }}", "hello"),
@@ -213,7 +338,7 @@ def test_content_template_rejects_untrusted_string_receivers(receiver_kind, oper
     "expression",
     [
         "summary | length",
-        "summary | default('pending', true)",
+        "summary | d('pending')",
         "summary | replace('a', 'b')",
         "summary | safe",
         "summary | unknown",
@@ -235,6 +360,13 @@ def test_content_template_rejects_unapproved_filters(expression):
         "summary | upper(1)",
         "summary | lower(*summary)",
         "summary | trim(**summary)",
+        "summary | default('pending', true)",
+        "summary | default(default_value='pending')",
+        "summary | default(summary)",
+        "summary | default(1)",
+        "summary | default(none)",
+        "summary | default(*summary)",
+        "summary | default(**summary)",
     ],
 )
 def test_content_template_rejects_filter_arguments(expression):

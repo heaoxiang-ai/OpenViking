@@ -13,7 +13,7 @@ import re
 from functools import partial
 from typing import Any, Mapping
 
-from jinja2 import StrictUndefined, TemplateError, meta, nodes
+from jinja2 import StrictUndefined, TemplateError, Undefined, meta, nodes
 from jinja2.runtime import LoopContext
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -92,12 +92,23 @@ def _string_filter(method: str, value: Any) -> str:
     return getattr(value, method)()
 
 
+def _default_filter(value: Any, default_value: str = "") -> str | None:
+    # Match Jinja's undefined-only fallback, including None/empty-string behavior.
+    # Do not test truthiness or coerce objects supplied by context helpers.
+    if isinstance(value, Undefined):
+        return default_value
+    if value is None or type(value) is str:
+        return value
+    raise TemplateError("Default filter requires a plain string, None or undefined")
+
+
 def _environment() -> _ContentEnvironment:
     env = _ContentEnvironment(autoescape=False, undefined=StrictUndefined)
     env.globals.clear()
     env.filters = {
         name: partial(_string_filter, method) for name, method in _STRING_FILTERS.items()
     }
+    env.filters["default"] = _default_filter
     env.tests = {name: env.tests[name] for name in _TESTS}
     return env
 
@@ -139,9 +150,17 @@ def _parse(
                 )
         for node in all_nodes:
             if isinstance(node, nodes.Filter):
-                if node.name not in _STRING_FILTERS:
+                if node.name not in {*_STRING_FILTERS, "default"}:
                     raise ContentTemplateError("unsupported_filter", node.lineno)
-                if node.args or node.kwargs or node.dyn_args or node.dyn_kwargs:
+                if node.kwargs or node.dyn_args or node.dyn_kwargs:
+                    raise ContentTemplateError("invalid_arguments", node.lineno)
+                if node.name == "default":
+                    if len(node.args) > 1 or any(
+                        not isinstance(arg, nodes.Const) or type(arg.value) is not str
+                        for arg in node.args
+                    ):
+                        raise ContentTemplateError("invalid_arguments", node.lineno)
+                elif node.args:
                     raise ContentTemplateError("invalid_arguments", node.lineno)
             if not isinstance(node, _NODES):
                 raise ContentTemplateError("unsupported_syntax", node.lineno)
@@ -232,6 +251,22 @@ def _validate_call(node: nodes.Call, memory_type: str) -> None:
         raise ContentTemplateError("invalid_arguments", node.lineno)
     # Never allow a template to fabricate an unbounded message-index range.
     ranges = node.args[0]
+    # Built-in Events uses ranges|default(''). Only the empty fallback preserves
+    # the original ranges; do not permit nonempty fallbacks, chains or aliases.
+    if (
+        isinstance(ranges, nodes.Filter)
+        and ranges.name == "default"
+        and not (ranges.kwargs or ranges.dyn_args or ranges.dyn_kwargs)
+        and (
+            not ranges.args
+            or (
+                len(ranges.args) == 1
+                and isinstance(ranges.args[0], nodes.Const)
+                and ranges.args[0].value == ""
+            )
+        )
+    ):
+        ranges = ranges.node
     if not isinstance(ranges, nodes.Name) or ranges.name != "ranges":
         raise ContentTemplateError("invalid_ranges", node.lineno)
     if len(node.args) == 3:

@@ -349,8 +349,11 @@ may call these read-only `extract_context` helpers with positional arguments:
 `get_first_message_time_with_weekday_from_ranges(ranges)`,
 `get_event_content(ranges, summary[, ratio_threshold])`,
 `get_year(ranges)`, `get_month(ranges)`, `get_day(ranges)`.
-The first argument must be `ranges` directly; missing field values are supplied as
-empty strings, so no fallback filter is needed. An explicit ratio must be a numeric
+The first argument must be `ranges` directly, or the built-in-compatible
+`ranges | default('')` / `ranges | default()`. Only an empty literal fallback is
+allowed here: nonempty fallbacks, other variables and filter chains cannot replace
+the original message ranges. Missing field values are already supplied as empty
+strings. An explicit ratio must be a numeric
 literal from 0 to 1 (omitted: 0.2; built-in: 0).
 
 Supported Jinja: `if/elif/else`, comparisons/boolean expressions, local `set`, and
@@ -368,8 +371,14 @@ String filters: `| upper`, `| lower`, and `| trim`, equivalent to `.upper()`,
 `.lower()`, and `.strip()`. Like the methods, they accept only plain strings and
 no positional or keyword arguments. They can be chained or mixed with methods,
 for example `summary | trim | upper` or `summary.strip() | upper`.
-Other filters, including `| default(...)`, `| length`, and `| attr(...)`, remain
-unsupported. Use `summary or 'pending'` or an explicit conditional for fallbacks.
+The `default` filter accepts no argument or one literal string, for example
+`| default` / `| default()` / `| default('N/A')`. It replaces only undefined values;
+empty strings and `None` remain unchanged, matching the built-in Events template.
+It accepts only plain strings, `None` or undefined values without object coercion.
+The boolean argument, keyword arguments and expanded/dynamic arguments are not
+supported. Use `summary or 'pending'` or an explicit conditional for empty-value
+fallbacks. Other filters, including `| length`, `| d(...)` and `| attr(...)`, remain
+unsupported.
 Tests: `defined`, `undefined`, `none`, `string` remain supported.
 Built-in field/context names cannot be overwritten. Imports,
 inheritance, macros, arbitrary calls/attributes, subscripts, arithmetic/string
@@ -378,6 +387,9 @@ multiplication/concatenation and reserved `MEMORY_FIELDS` comments are not allow
 Limits: 64 KiB UTF-8 source, 2048 AST nodes, 1 MiB rendered body excluding system
 metadata. Nonmatching Account bodies are checked at publication and extraction load,
 then rendered with a restricted Jinja environment and only approved fields/helpers.
+The built-in Events, Soul and Identity bodies also pass this restricted syntax,
+including after edits to headings, trailing newlines or CRLF line endings. These
+edits do not bypass validation or mark the edited body as deployment-owned.
 Runtime failures on this restricted path stop that file write instead of falling
 back to an empty body. Exact inherited bodies keep the deployment renderer's
 existing behavior, including its error/fallback semantics; they are not subject to

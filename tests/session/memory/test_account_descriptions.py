@@ -57,6 +57,7 @@ def test_generators_render_description_strings(generator_type, plain_expected, t
         ("{{ language.strip().upper().lower() }}", "en"),
         ("{{ language | trim | upper | lower }}", "en"),
         ("{% set label = language | upper %}{{ label }}", "EN"),
+        ("{{ language | default('en') | upper }}", "EN"),
         ("{% set label = language.upper() %}{{ label }}", "EN"),
         (
             "{% for title, value in [('Use', language), ('Also', 'dates')] %}{{ loop.index }} {{ title }} {{ value }};{% endfor %}",
@@ -208,6 +209,8 @@ def test_deployment_change_does_not_change_old_description_rendering():
 
 def test_missing_context_keeps_existing_undefined_behavior_and_does_not_recurse():
     assert render_description_template("{{ language }}", {}) == ""
+    assert render_description_template("{{ language | default('en') }}", {}) == "en"
+    assert render_description_template("{{ language | default('en') }}", {"language": ""}) == ""
     assert render_description_template("{{ language or 'unspecified' }}", {}) == "unspecified"
     assert (
         render_description_template("{{ (language or 'unspecified') | upper }}", {})
