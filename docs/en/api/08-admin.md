@@ -218,8 +218,15 @@ objects can be submitted unchanged: locked values matching defaults are accepted
 Changed locked values, unknown keys/fields and duplicate field names return
 `INVALID_ARGUMENT` without modifying the active file. To edit one description while
 preserving all other customizations, GET `effective`, modify that object, then
-PUT it. An empty object publishes a complete copy of the defaults as custom;
-DELETE removes the custom file. DELETE is idempotent.
+PUT it. If the completed, validated configuration exactly matches deployment
+defaults (before publication metadata is added), PUT removes that type's override
+and returns `status=system_default`, `updated_at=null`. This includes an empty
+object, an unchanged default form, or saving after restoring all edited fields
+to their defaults. Any remaining difference keeps the template `custom`;
+whitespace and newline differences in descriptions or bodies are not ignored.
+Once the override is removed, subsequent extractions follow deployment defaults;
+previously captured extraction snapshots are unchanged. DELETE always removes
+the type's override. Repeated default PUTs and DELETEs are idempotent.
 
 Results contain `memory_type`, `status` (`system_default` or `custom`),
 `updated_at` (UTC publication time or null), and full `defaults` / `effective`
@@ -290,7 +297,7 @@ disable rendering, and no description provenance flag is stored or checked.
 Only the existing `language` context variable is available; body fields,
 `extract_context`, and arbitrary objects are not exposed. The syntax subset is
 the same as the restricted bodies below: conditionals, local variables, bounded
-literal loops, safe string methods and tests, but no filters or arbitrary calls.
+literal loops, safe string methods, approved string filters and tests, but no arbitrary calls.
 For example, <code v-pre>Use {{ language.upper() }}.</code> renders as `Use EN.` when the existing
 schema-rendering context supplies `language=en`. No new language propagation is
 introduced; the Python protocol's existing static field-description path remains
@@ -349,8 +356,17 @@ may call these read-only `extract_context` helpers with positional arguments:
 `get_first_message_time_with_weekday_from_ranges(ranges)`,
 `get_event_content(ranges, summary[, ratio_threshold])`,
 `get_year(ranges)`, `get_month(ranges)`, `get_day(ranges)`.
-The first argument must be `ranges` directly; missing field values are supplied as
-empty strings, so no fallback filter is needed. An explicit ratio must be a numeric
+The first argument may use any expression allowed by the same syntax sandbox,
+including local aliases, conditionals and approved filter chains. Immediately
+before each helper call, its evaluated value must be a plain string exactly equal
+to the current memory's original `ranges`, or an empty string (no source messages).
+For example, `ranges | default('') | trim` works when it leaves the value unchanged;
+`{% set selected = ranges %}` can be followed by `get_year(selected)`.
+No normalization is performed when comparing ranges. Missing field values are
+already supplied as empty strings. Publication checks syntax without executing
+helpers; a changed or non-string range value fails at rendering with
+`content_template: invalid_ranges`, before the helper reads any messages, and stops
+that memory file write. An explicit ratio must be a numeric
 literal from 0 to 1 (omitted: 0.2; built-in: 0).
 
 Supported Jinja: `if/elif/else`, comparisons/boolean expressions, local `set`, and
@@ -364,10 +380,18 @@ string subclasses) are not allowed. Methods can be chained or used on string fie
 locals, literals, and string results of approved Events helpers. Method references
 cannot be stored or accessed without calling them.
 
-No filters are supported in custom Account bodies, including `| upper`,
-`| lower`, `| trim`, `| default(...)`, or `| length`; this unreleased interface does
-not retain a filter compatibility mode. Use `summary or 'pending'` or an explicit
-conditional for fallbacks, and `summary.strip().upper()` for string formatting.
+String filters: `| upper`, `| lower`, and `| trim`, equivalent to `.upper()`,
+`.lower()`, and `.strip()`. Like the methods, they accept only plain strings and
+no positional or keyword arguments. They can be chained or mixed with methods,
+for example `summary | trim | upper` or `summary.strip() | upper`.
+The `default` filter accepts no argument or one literal string, for example
+`| default` / `| default()` / `| default('N/A')`. It replaces only undefined values;
+empty strings and `None` remain unchanged, matching the built-in Events template.
+It accepts only plain strings, `None` or undefined values without object coercion.
+The boolean argument, keyword arguments and expanded/dynamic arguments are not
+supported. Use `summary or 'pending'` or an explicit conditional for empty-value
+fallbacks. Other filters, including `| length`, `| d(...)` and `| attr(...)`, remain
+unsupported.
 Tests: `defined`, `undefined`, `none`, `string` remain supported.
 Built-in field/context names cannot be overwritten. Imports,
 inheritance, macros, arbitrary calls/attributes, subscripts, arithmetic/string
@@ -376,6 +400,9 @@ multiplication/concatenation and reserved `MEMORY_FIELDS` comments are not allow
 Limits: 64 KiB UTF-8 source, 2048 AST nodes, 1 MiB rendered body excluding system
 metadata. Nonmatching Account bodies are checked at publication and extraction load,
 then rendered with a restricted Jinja environment and only approved fields/helpers.
+The built-in Events, Soul and Identity bodies also pass this restricted syntax,
+including after edits to headings, trailing newlines or CRLF line endings. These
+edits do not bypass validation or mark the edited body as deployment-owned.
 Runtime failures on this restricted path stop that file write instead of falling
 back to an empty body. Exact inherited bodies keep the deployment renderer's
 existing behavior, including its error/fallback semantics; they are not subject to

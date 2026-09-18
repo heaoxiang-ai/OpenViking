@@ -8,6 +8,7 @@ import hashlib
 import json
 import threading
 import uuid
+from copy import deepcopy
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -44,10 +45,7 @@ from openviking.session.memory.account_templates import (
 )
 from openviking.session.memory.extract_loop import ExtractLoop
 from openviking.session.memory.memory_isolation_handler import MemoryIsolationHandler
-from openviking.session.memory.memory_type_registry import (
-    MemoryTypeRegistry,
-    get_default_registry,
-)
+from openviking.session.memory.memory_type_registry import MemoryTypeRegistry, get_default_registry
 from openviking.session.memory.patch_merge_context_provider import PatchMergeContextProvider
 from openviking.session.memory.session_extract_context_provider import SessionExtractContextProvider
 from openviking_cli.exceptions import OpenVikingError, PermissionDeniedError
@@ -438,17 +436,244 @@ async def test_account_memory_templates_publish_and_reset(
     )
     assert default_form.status_code == 200, default_form.text
     assert default_form.json()["result"]["effective"] == result["defaults"]
+    assert default_form.json()["result"]["status"] == "system_default"
+    assert default_form.json()["result"]["updated_at"] is None
+    assert path not in fs.agfs._files
+
+
+@pytest.mark.parametrize(
+    "memory_type,edit",
+    [
+        (kind, edit)
+        for kind in EDITABLE_MEMORY_TEMPLATE_FIELDS
+        for edit in ("exact", "description", "field_description")
+    ]
+    + [
+        (kind, edit)
+        for kind in ("events", "soul", "identity")
+        for edit in ("rstrip", "newline", "crlf", "heading")
+    ],
+)
+async def test_account_memory_templates_default_form_roundtrip(
+    lightweight_admin_client,
+    lightweight_admin_app,
+    template_account,
+    memory_type,
+    edit,
+):
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.memory_updater import ExtractContext
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+    from openviking.session.memory.utils.template_utils import TemplateUtils
+
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
+    initial = await client.get(url, headers=headers)
+    assert initial.status_code == 200, initial.text
+    assert initial.json()["result"]["status"] == "system_default"
+    defaults = initial.json()["result"]["defaults"]
+    # Match the managed form: only editable fields from the actual GET result.
+    body = {
+        "description": defaults["description"],
+        "fields": [
+            {"name": f["name"], "description": f["description"]}
+            for f in defaults["fields"]
+            if f["name"] in EDITABLE_MEMORY_TEMPLATE_FIELDS[memory_type]
+        ],
+    }
+    if memory_type in ("events", "soul", "identity"):
+        original = defaults["content_template"]
+        body["content_template"] = {
+            "rstrip": original.rstrip(),
+            "newline": original + "\n",
+            "crlf": original.replace("\n", "\r\n"),
+            "heading": "# Account memory\n" + original,
+        }.get(edit, original)
+    if edit == "description":
+        body["description"] += "\nAccount instructions."
+    elif edit == "field_description":
+        body["fields"][0]["description"] += "\nAccount field instructions."
+    published = await client.put(url, json=body, headers=headers)
+    assert published.status_code == 200, published.text
+    result = published.json()["result"]
+    assert result["defaults"] == defaults
+    effective = result["effective"]
+    is_default = effective == defaults
+    assert result["status"] == ("system_default" if is_default else "custom")
+    assert (result["updated_at"] is None) == is_default
+    assert effective["description"] == body["description"]
+    for field in body["fields"]:
+        actual = next(f for f in effective["fields"] if f["name"] == field["name"])
+        assert actual["description"] == field["description"]
+    assert (await client.get(url, headers=headers)).json()["result"] == result
+    roundtrip = await client.put(url, json=effective, headers=headers)
+    assert roundtrip.status_code == 200, roundtrip.text
+    assert roundtrip.json()["result"] == result
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    snapshot = await resolve_account_memory_registry(fs, account_id, get_default_registry())
+    schema = snapshot.get(memory_type)
+    if "content_template" in body:
+        assert schema.content_template == effective["content_template"] == body["content_template"]
+        assert schema._account_content_template == (body["content_template"] != original)
+        values = {f.name: "Business fact" for f in schema.fields}
+        values["ranges"] = ""
+        context = ExtractContext([])
+        rendered = MemoryFileUtils.write(
+            MemoryFile(memory_type=memory_type, extra_fields=values),
+            content_template=schema.content_template,
+            extract_context=context,
+            account_content_template_type=memory_type if schema._account_content_template else None,
+        )
+        assert MemoryFileUtils.read(rendered).content == TemplateUtils.render(
+            body["content_template"], values, context
+        )
+    reset = await client.delete(url, headers=headers)
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["result"]["effective"] == defaults
+    assert reset.json()["result"]["status"] == "system_default"
+
+
+def _editable_template_form(defaults, memory_type):
+    body = {
+        "description": defaults["description"],
+        "fields": [
+            {"name": field["name"], "description": field["description"]}
+            for field in defaults["fields"]
+            if field["name"] in EDITABLE_MEMORY_TEMPLATE_FIELDS[memory_type]
+        ],
+    }
+    if memory_type in ("events", "soul", "identity"):
+        body["content_template"] = defaults["content_template"]
+    return body
+
+
+@pytest.mark.parametrize(
+    "memory_type,module",
+    [
+        (kind, module)
+        for kind, fields in EDITABLE_MEMORY_TEMPLATE_FIELDS.items()
+        for module in ("description", *fields)
+    ]
+    + [(kind, "content_template") for kind in ("events", "soul", "identity")],
+)
+async def test_account_memory_templates_module_reset_clears_override(
+    lightweight_admin_client, lightweight_admin_app, template_account, memory_type, module
+):
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    root = f"/api/v1/admin/accounts/{account_id}/memory-templates"
+    url = f"{root}/{memory_type}"
+    initial = (await client.get(url, headers=headers)).json()["result"]
+    form = _editable_template_form(initial["defaults"], memory_type)
+    body = deepcopy(form)
+    if module in ("description", "content_template"):
+        body[module] += "\nAccount instructions."
+    else:
+        field = next(field for field in body["fields"] if field["name"] == module)
+        field["description"] += "\nAccount field instructions."
+    publish = await client.put(url, json=body, headers=headers)
+    assert publish.status_code == 200, publish.text
+    result = publish.json()["result"]
+    assert result["status"] == "custom"
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    path = account_memory_template_path(account_id, memory_type)
+    previous = fs.agfs._files[path]
+    snapshot = await resolve_account_memory_registry(fs, account_id, get_default_registry())
+    previous_schema = snapshot.get(memory_type).model_dump()
+    untouched = {key: value for key, value in fs.agfs._files.items() if key != path}
+
+    # Reopen the editor, reset only the edited module, then save the whole form.
+    reopened = (await client.get(url, headers=headers)).json()["result"]
+    body = _editable_template_form(reopened["effective"], memory_type)
+    if module in ("description", "content_template"):
+        body[module] = form[module]
+    else:
+        field = next(field for field in body["fields"] if field["name"] == module)
+        field["description"] = next(
+            field["description"] for field in form["fields"] if field["name"] == module
+        )
+    # Field order does not change the completed configuration.
+    body["fields"].reverse()
+    restored = await client.put(url, json=body, headers=headers)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["result"] == initial
+    assert path not in fs.agfs._files
+    assert fs.agfs._files[path + ".backup"] == previous
+    assert all(fs.agfs._files[key] == value for key, value in untouched.items())
+    assert (await client.get(url, headers=headers)).json()["result"] == initial
+    listed = (await client.get(root, headers=headers)).json()["result"]["templates"]
+    assert next(item for item in listed if item["memory_type"] == memory_type) == {
+        key: value for key, value in initial.items() if key != "account_id"
+    }
+    resolved = await resolve_account_memory_registry(fs, account_id, get_default_registry())
+    assert (
+        resolved.get(memory_type).model_dump()
+        == get_default_registry().get(memory_type).model_dump()
+    )
+    assert snapshot.get(memory_type).model_dump() == previous_schema
+    stored = dict(fs.agfs._files)
+    repeated = await client.put(url, json=body, headers=headers)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["result"] == initial
+    assert fs.agfs._files == stored
+
+
+@pytest.mark.parametrize("memory_type", EDITABLE_MEMORY_TEMPLATE_FIELDS)
+async def test_account_memory_templates_module_reset_keeps_other_edits(
+    lightweight_admin_client, lightweight_admin_app, template_account, memory_type
+):
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
+    initial = (await client.get(url, headers=headers)).json()["result"]
+    body = _editable_template_form(initial["defaults"], memory_type)
+    body["description"] += "\nType edit."
+    body["fields"][0]["description"] += "\nField edit."
+    response = await client.put(url, json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    body["description"] = initial["defaults"]["description"]
+    response = await client.put(url, json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["status"] == "custom"
+    assert result["updated_at"]
+    assert result["effective"]["description"] == initial["defaults"]["description"]
+    field = next(f for f in result["effective"]["fields"] if f["name"] == body["fields"][0]["name"])
+    assert field["description"] == body["fields"][0]["description"]
+    assert account_memory_template_path(account_id, memory_type) in (
+        lightweight_admin_app.state.fake_service.viking_fs.agfs._files
+    )
+
+
+async def test_account_memory_templates_save_clears_legacy_default_override(
+    lightweight_admin_client, lightweight_admin_app, template_account
+):
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/profile"
+    initial = (await client.get(url, headers=headers)).json()["result"]
+    legacy = {**initial["defaults"], "_updated_at": "2026-09-01T00:00:00+00:00"}
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    path = account_memory_template_path(account_id, "profile")
+    fs.agfs._files[path] = yaml.safe_dump(legacy).encode()
+    before = (await client.get(url, headers=headers)).json()["result"]
+    assert before["status"] == "custom"  # Reads do not migrate persisted overrides.
+    response = await client.put(url, json=before["effective"], headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["result"] == initial
+    assert path not in fs.agfs._files
 
 
 @pytest.mark.parametrize(
     "body",
     [
         {"description": 123},
-        {"description": "{{ language | upper }}"},
+        {"description": "{{ language | length }}"},
         {"description": "{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}"},
         {"description": "literal {{ unclosed"},
         {"fields": [{"name": "summary", "description": "{{ summary }}"}]},
-        {"fields": [{"name": "summary", "description": "{{ language | lower }}"}]},
+        {"fields": [{"name": "summary", "description": "{{ language | trim('x') }}"}]},
         {"fields": [{"name": "summary", "description": "literal {{ unclosed"}]},
         {"_account_description": False},
         {"fields": [{"name": "summary", "_account_description": False}]},
@@ -462,11 +687,11 @@ async def test_account_memory_templates_publish_and_reset(
         {"content_template": "{{"},
         {"content_template": "{{ unknown_field }}"},
         {"content_template": "{{ extract_context.messages }}"},
-        {"content_template": "{{ extract_context.get_year('0-999999999') }}"},
         {"content_template": "{% include 'private.yaml' %}"},
         {"content_template": "{{ summary | attr('__class__') }}"},
-        {"content_template": "{{ summary | upper }}"},
-        {"content_template": "{{ summary | default('pending') }}"},
+        {"content_template": "{{ summary | length }}"},
+        {"content_template": "{{ summary | trim('x') }}"},
+        {"content_template": "{{ summary | default('pending', true) }}"},
         {"content_template": "{{ summary.strip('x') }}"},
         {"content_template": "x" * (64 * 1024 + 1)},
     ],
@@ -495,7 +720,7 @@ async def test_account_memory_templates_reject_invalid_configuration(
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
-        ("{{ language | upper }}", "unsupported_filter"),
+        ("{{ language | length }}", "unsupported_filter"),
         ("{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}", "unsupported_call"),
         ("{{", "invalid_jinja"),
     ],
@@ -596,24 +821,109 @@ async def test_account_memory_templates_content_validation_error_details(
 
 
 @pytest.mark.parametrize(
+    "expression",
+    ["selected", "ranges|default('')|trim", "ranges|default('0-999')", "ranges if summary else ''"],
+)
+async def test_account_memory_templates_range_expressions_reach_file_body(
+    lightweight_admin_client, lightweight_admin_app, template_account, expression
+):
+    from openviking.message import Message, TextPart
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.memory_updater import ExtractContext
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+
+    account_id, headers = template_account
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
+    template = (
+        "{% set selected = ranges %}{{ extract_context.get_event_content("
+        + expression
+        + ", summary, 0) }}"
+    )
+    published = await lightweight_admin_client.put(
+        url, json={"content_template": template}, headers=headers
+    )
+    assert published.status_code == 200, published.text
+    result = (await lightweight_admin_client.get(url, headers=headers)).json()["result"]
+    assert result["effective"]["content_template"] == template
+    roundtrip = await lightweight_admin_client.put(url, json=result["effective"], headers=headers)
+    assert roundtrip.status_code == 200, roundtrip.text
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    snapshot = await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
+    schema = snapshot.get("events")
+    context = ExtractContext(
+        [
+            Message(id="m1", role="user", parts=[TextPart("Selected source message")]),
+            Message(id="m2", role="user", parts=[TextPart("Unrelated source message")]),
+        ]
+    )
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type="events", extra_fields={"ranges": "0", "summary": "summary"}),
+        content_template=schema.content_template,
+        extract_context=context,
+        account_content_template_type="events" if schema._account_content_template else None,
+    )
+    content = MemoryFileUtils.read(rendered).content
+    assert "Selected source message" in content
+    assert "Unrelated source message" not in content
+
+
+async def test_account_memory_templates_range_values_are_checked_at_render_time(
+    lightweight_admin_client, lightweight_admin_app, template_account
+):
+    from types import SimpleNamespace
+
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.utils.content_template import ContentTemplateError
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+
+    account_id, headers = template_account
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
+    template = "{% set selected = summary %}{{ extract_context.get_year(selected) }}"
+    published = await lightweight_admin_client.put(
+        url, json={"content_template": template}, headers=headers
+    )
+    assert published.status_code == 200, published.text
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    snapshot = await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
+    schema = snapshot.get("events")
+    get_year = Mock(spec=[], return_value="2026")
+    with pytest.raises(ContentTemplateError, match="invalid_ranges"):
+        MemoryFileUtils.write(
+            MemoryFile(memory_type="events", extra_fields={"ranges": "0", "summary": "0-999"}),
+            content_template=schema.content_template,
+            extract_context=SimpleNamespace(get_year=get_year),
+            account_content_template_type="events",
+        )
+    get_year.assert_not_called()
+
+
+@pytest.mark.parametrize(
     "memory_type, field_name",
     [("events", "summary"), ("soul", "core_truths"), ("identity", "introduction")],
 )
-async def test_account_memory_templates_string_methods_reach_file_body(
+@pytest.mark.parametrize("formatting", [".strip().upper()", " | trim | upper"])
+async def test_account_memory_templates_string_formatting_reaches_file_body(
     lightweight_admin_client,
     lightweight_admin_app,
     template_account,
     memory_type,
     field_name,
+    formatting,
 ):
     from openviking.session.memory.dataclass import MemoryFile
     from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
 
     account_id, headers = template_account
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
-    body = {"content_template": "# {{ " + field_name + ".strip().upper() }}"}
+    body = {"content_template": "# {{ " + field_name + formatting + " }}"}
     response = await lightweight_admin_client.put(url, json=body, headers=headers)
     assert response.status_code == 200, response.text
+    effective = (await lightweight_admin_client.get(url, headers=headers)).json()["result"][
+        "effective"
+    ]
+    assert effective["content_template"] == body["content_template"]
+    roundtrip = await lightweight_admin_client.put(url, json=effective, headers=headers)
+    assert roundtrip.status_code == 200, roundtrip.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
     snapshot = await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
     schema = snapshot.get(memory_type)
@@ -684,7 +994,9 @@ async def test_account_memory_templates_inherit_exact_deployment_body(
         body["description"] = "Account instructions"
     response = await lightweight_admin_client.put(url, json=body, headers=headers)
     assert response.status_code == 200, response.text
-    assert response.json()["result"]["status"] == "custom"
+    assert response.json()["result"]["status"] == (
+        "system_default" if request_kind == "empty" else "custom"
+    )
     assert response.json()["result"]["effective"]["content_template"] == deployment_body
     # Roundtrip a persisted override too, not only defaults returned before a PUT.
     response = await lightweight_admin_client.put(
@@ -692,8 +1004,13 @@ async def test_account_memory_templates_inherit_exact_deployment_body(
     )
     assert response.status_code == 200, response.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
-    stored = yaml.safe_load(fs.agfs._files[account_memory_template_path(account_id, memory_type)])
-    assert "_account_content_template" not in stored
+    path = account_memory_template_path(account_id, memory_type)
+    if request_kind == "empty":
+        assert path not in fs.agfs._files
+        assert response.json()["result"]["updated_at"] is None
+    else:
+        stored = yaml.safe_load(fs.agfs._files[path])
+        assert "_account_content_template" not in stored
     snapshot = await resolve_account_memory_registry(fs, account_id, defaults)
     schema = snapshot.get(memory_type)
     assert schema._account_content_template is False
@@ -721,11 +1038,14 @@ async def test_account_memory_templates_recheck_persisted_body_without_trusting_
 
     account_id, headers = template_account
     defaults = MemoryTypeRegistry()
-    deployment_body = "{{ summary | upper }}"
+    deployment_body = "{{ summary | length }}"
     defaults.get("events").content_template = deployment_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
-    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    response = await lightweight_admin_client.put(
+        url, json={"description": "Account instructions"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
     path = account_memory_template_path(account_id, "events")
     original = fs.agfs._files[path]
@@ -747,26 +1067,39 @@ async def test_account_memory_templates_recheck_persisted_body_without_trusting_
     assert (await lightweight_admin_client.get(url, headers=headers)).status_code == 200
 
 
+@pytest.mark.parametrize("restore_defaults", [False, True])
 async def test_account_memory_templates_recheck_trust_after_deployment_change(
     lightweight_admin_client,
     lightweight_admin_app,
     template_account,
     monkeypatch,
+    restore_defaults,
 ):
     from openviking_cli.exceptions import FailedPreconditionError
 
     account_id, headers = template_account
     defaults = MemoryTypeRegistry()
-    old_body = "{{ summary | upper }}"
+    old_body = "{{ summary | length }}"
     defaults.get("events").content_template = old_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
-    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    response = await lightweight_admin_client.put(
+        url, json={"description": "Account instructions"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
     old_snapshot = await resolve_account_memory_registry(fs, account_id, defaults)
+    if restore_defaults:
+        response = await lightweight_admin_client.put(url, json={}, headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["result"]["status"] == "system_default"
     defaults.get("events").content_template = "# {{ summary }}"
-    with pytest.raises(FailedPreconditionError):
-        await resolve_account_memory_registry(fs, account_id, defaults)
+    if restore_defaults:
+        current = await resolve_account_memory_registry(fs, account_id, defaults)
+        assert current.get("events").content_template == "# {{ summary }}"
+    else:
+        with pytest.raises(FailedPreconditionError):
+            await resolve_account_memory_registry(fs, account_id, defaults)
     # Already-started extractions keep their snapshot, not a mutable defaults view.
     assert old_snapshot.get("events").content_template == old_body
     assert old_snapshot.get("events")._account_content_template is False
@@ -790,9 +1123,12 @@ async def test_account_memory_templates_old_content_can_be_read_replaced_and_res
     fs = lightweight_admin_app.state.fake_service.viking_fs
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
     path = account_memory_template_path(account_id, "events")
-    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    response = await lightweight_admin_client.put(
+        url, json={"description": "Account instructions"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
     legacy = yaml.safe_load(fs.agfs._files[path])
-    legacy["content_template"] = "{{ summary | upper }}"
+    legacy["content_template"] = "{{ summary | length }}"
     raw = yaml.safe_dump(legacy).encode()
     for operation in ("PUT", "DELETE"):
         fs.agfs._files[path] = raw
@@ -973,8 +1309,12 @@ async def test_account_memory_templates_permissions_and_isolation(
 @pytest.mark.parametrize("output_format", ["python", "json"])
 @pytest.mark.parametrize(
     "marker",
-    ["{{ language.upper() }}", "{% if language == 'en' %}EN{% else %}OTHER{% endif %}"],
-    ids=["safe-method", "safe-condition"],
+    [
+        "{{ language.upper() }}",
+        "{% if language == 'en' %}EN{% else %}OTHER{% endif %}",
+        "{{ language | trim | upper }}",
+    ],
+    ids=["safe-method", "safe-condition", "safe-filters"],
 )
 async def test_account_memory_templates_reach_live_prompts(
     lightweight_admin_client,
