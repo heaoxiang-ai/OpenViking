@@ -11,7 +11,12 @@ from openviking.session.memory.account_templates import (
     _validate_template,
     memory_template_data,
 )
+from openviking.session.memory.extraction_output_protocol import (
+    ExtractionOutputContext,
+    create_extraction_output_protocol,
+)
 from openviking.session.memory.memory_type_registry import MemoryTypeRegistry
+from openviking.session.memory.page_id_map import PageIdMap
 from openviking.session.memory.schema_model_generator import (
     SchemaModelGenerator,
     SchemaPromptGenerator,
@@ -88,8 +93,18 @@ def test_descriptions_render_identically_in_all_schema_prompts(memory_type, orig
     prompts = SchemaPromptGenerator([schema], template_context={"language": "en"})
     type_prompt = prompts.generate_type_descriptions()
     field_prompt = prompts.generate_field_descriptions(memory_type)
+    protocol_context = ExtractionOutputContext(
+        operations_model=operations,
+        schemas=(schema,),
+        page_id_map=PageIdMap(),
+        read_file_contents={},
+        link_enabled=False,
+        template_context={"language": "en"},
+    )
+    python_contract = create_extraction_output_protocol("python").render_contract(protocol_context)
     assert "TYPE: " + expected in operations.model_fields[memory_type].description
     assert "TYPE: " + expected in type_prompt
+    assert "TYPE: " + expected in python_contract
     for field in schema.fields:
         if field.name in editable:
             assert not hasattr(field, "_account_description")
@@ -97,6 +112,7 @@ def test_descriptions_render_identically_in_all_schema_prompts(memory_type, orig
             assert field.name + ": " + expected in model.model_fields[field.name].description
             assert field.name + ": " + expected in type_prompt
             assert field.name + ": " + expected in field_prompt
+            assert field.name + ": " + expected in python_contract
 
 
 @pytest.mark.parametrize("request_kind", ["empty", "roundtrip", "type_only", "field_only"])

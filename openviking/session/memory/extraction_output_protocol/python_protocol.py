@@ -26,6 +26,7 @@ from openviking.session.memory.merge_op import (
     SearchReplaceBlock,
     StrPatch,
 )
+from openviking.session.memory.utils.description_template import render_description_template
 from openviking.session.memory.utils.line_numbers import (
     every_line_has_line_numbers,
     strip_line_numbers,
@@ -215,6 +216,11 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
             for field in schema.fields
         }
         for name, _type_name, description in fields:
+            if name in merge_ops:
+                # Render only YAML field descriptions, using the same context and
+                # restricted renderer as JSON. Keep the DSL's own edit instructions
+                # instead of copying the JSON model's merge-operation wrappers.
+                description = render_description_template(description, context.template_context)
             normalized_description = " ".join(str(description or "").split())
             qualifier = f" [{merge_ops[name]}]" if name in merge_ops else ""
             lines.append(f"  - {_identifier_alias(name)}{qualifier}: {normalized_description}")

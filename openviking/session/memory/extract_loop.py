@@ -253,6 +253,7 @@ class ExtractLoop:
             link_enabled=self._link_enabled,
             role_scope=role_scope,
             available_tools=tuple(allowed_tools),
+            template_context={"language": output_language},
         )
         tracer.set("memory.extraction.output_format", output_format)
 
