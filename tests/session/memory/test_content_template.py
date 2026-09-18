@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -174,41 +174,133 @@ def test_default_filter_rejects_untrusted_values_without_coercion():
             )
 
 
-@pytest.mark.parametrize("expression", ["ranges|default", "ranges|default()", "ranges|default('')"])
-@pytest.mark.parametrize("ranges", ["", "0", "0-3,7"])
-def test_default_filter_cannot_change_helper_ranges(expression, ranges):
-    seen = []
-
-    def get_year(value):
-        seen.append(value)
-        return "2026"
-
-    template = "{{ extract_context.get_year(" + expression + ") }}"
-    assert (
-        render_content_template(
-            template, "events", {"ranges": ranges}, SimpleNamespace(get_year=get_year)
-        )
-        == "2026"
-    )
-    assert seen == [ranges]
-
-
 @pytest.mark.parametrize(
     "expression",
     [
+        "ranges",
+        "ranges|default",
+        "ranges|default()",
+        "ranges|default('')",
         "ranges|default('0-999')",
-        "ranges|default('', true)",
-        "ranges|default(summary)",
-        "ranges|default(default_value='')",
-        "ranges|default(*ranges)",
-        "ranges|default(**ranges)",
         "ranges|default('')|trim",
-        "summary|default('')",
+        "ranges.strip()",
+        "selected",
+        "selected|trim|upper|lower",
+        "ranges if summary else ''",
+        "summary",
     ],
 )
-def test_default_filter_rejects_fabricated_helper_ranges(expression):
-    with pytest.raises(ContentTemplateError):
-        validate_content_template("{{ extract_context.get_year(" + expression + ") }}", "events")
+@pytest.mark.parametrize("ranges", ["", "0", "0-3,7"])
+def test_event_helper_accepts_equivalent_range_expressions(expression, ranges):
+    get_year = Mock(spec=[], return_value="2026")
+    template = "{% set selected = ranges %}{{ extract_context.get_year(" + expression + ") }}"
+    validate_content_template(template, "events")
+    assert (
+        render_content_template(
+            template,
+            "events",
+            {"ranges": ranges, "summary": ranges},
+            SimpleNamespace(get_year=get_year),
+        )
+        == "2026"
+    )
+    get_year.assert_called_once_with(ranges)
+
+
+@pytest.mark.parametrize(
+    "expression,ranges",
+    [
+        ("'0-999999999'", "0"),
+        ("summary|default('')", "0"),
+        ("selected", "0"),
+        ("ranges or '0-999'", ""),
+        ("ranges if not summary else summary", "0"),
+        ("ranges|trim", " 0 "),
+        ("none", "0"),
+        ("false", "0"),
+        ("1", "0"),
+    ],
+)
+def test_event_helper_rejects_changed_or_nonstring_ranges_before_call(expression, ranges):
+    get_year = Mock(spec=[], return_value="2026")
+    template = "{% set selected = summary %}{{ extract_context.get_year(" + expression + ") }}"
+    # Publication checks syntax; only extraction has the actual field values.
+    validate_content_template(template, "events")
+    with pytest.raises(ContentTemplateError, match="invalid_ranges"):
+        render_content_template(
+            template,
+            "events",
+            {"ranges": ranges, "summary": "0-999"},
+            SimpleNamespace(get_year=get_year),
+        )
+    get_year.assert_not_called()
+
+
+def test_event_helper_checks_nested_call_results_without_object_coercion():
+    class Impostor:
+        def __eq__(self, other):
+            pytest.fail("Range validation must not compare arbitrary objects")
+
+        def __str__(self):
+            pytest.fail("Range validation must not coerce arbitrary objects")
+
+        def __bool__(self):
+            pytest.fail("Range validation must not evaluate arbitrary truthiness")
+
+    class StringSubclass(str):
+        def __eq__(self, other):
+            pytest.fail("Range validation must not compare string subclasses")
+
+    template = "{{ extract_context.get_year(extract_context.get_event_content(ranges, summary)) }}"
+    validate_content_template(template, "events")
+    for value in (Impostor(), StringSubclass("0"), {}, [], 0, False, None):
+        get_content = Mock(spec=[], return_value=value)
+        get_year = Mock(spec=[], return_value="2026")
+        with pytest.raises(ContentTemplateError, match="invalid_ranges"):
+            render_content_template(
+                template,
+                "events",
+                {"ranges": "0", "summary": "summary"},
+                SimpleNamespace(get_event_content=get_content, get_year=get_year),
+            )
+        get_content.assert_called_once_with("0", "summary")
+        get_year.assert_not_called()
+
+
+@pytest.mark.parametrize("flag", ["unsafe_callable", "alters_data"])
+def test_event_helper_preserves_sandbox_callable_flags(flag):
+    helper = Mock(spec=[], return_value="2026")
+    setattr(helper, flag, True)
+    with pytest.raises(ContentTemplateError, match="render_failed"):
+        render_content_template(
+            "{{ extract_context.get_year(ranges) }}",
+            "events",
+            {"ranges": "0"},
+            SimpleNamespace(get_year=helper),
+        )
+    helper.assert_not_called()
+
+
+def test_event_helper_checks_each_call_against_current_render_ranges():
+    helper = Mock(spec=[], return_value="2026")
+    context = SimpleNamespace(get_year=helper)
+    template = "{% for selected in [ranges, summary] %}{{ extract_context.get_year(selected) }}{% endfor %}"
+    for ranges in ("0", "1"):
+        helper.reset_mock()
+        assert (
+            render_content_template(
+                template, "events", {"ranges": ranges, "summary": ranges}, context
+            )
+            == "20262026"
+        )
+        assert [call.args for call in helper.call_args_list] == [(ranges,), (ranges,)]
+        helper.reset_mock()
+        with pytest.raises(ContentTemplateError, match="invalid_ranges"):
+            render_content_template(
+                template, "events", {"ranges": ranges, "summary": "0-999"}, context
+            )
+        # Earlier valid reads do not exempt subsequent calls from validation.
+        helper.assert_called_once_with(ranges)
 
 
 def test_content_template_if_set_for_and_string_methods():
@@ -432,7 +524,6 @@ def test_events_builtin_template_keeps_original_date_fallback():
         "{% for x in [1] recursive %}x{% endfor %}",
         "{% set x = [summary, summary] %}{{ x }}",
         "{{ extract_context.get_event_content() }}",
-        "{{ extract_context.get_year('0-999999999') }}",
         "{{ extract_context.get_year(ranges|default('0-999', true)) }}",
         "{{ extract_context.get_year(ranges_str=ranges) }}",
         "{{ extract_context.get_event_content(ranges, summary, 2) }}",
@@ -489,7 +580,8 @@ def test_content_template_cannot_override_hidden_metadata():
 
 
 @pytest.mark.asyncio
-async def test_account_content_template_runtime_failure_preserves_existing_file():
+@pytest.mark.parametrize("changed_ranges", [False, True])
+async def test_account_content_template_runtime_failure_preserves_existing_file(changed_ranges):
     from openviking.server.identity import RequestContext, Role
     from openviking.session.memory.dataclass import ResolvedOperation
     from openviking.session.memory.memory_updater import MemoryUpdater
@@ -497,8 +589,12 @@ async def test_account_content_template_runtime_failure_preserves_existing_file(
 
     registry = MemoryTypeRegistry()
     schema = registry.get("events")
-    # Valid template, but the extraction context is unavailable at write time.
-    schema.content_template = "{{ extract_context.get_year(ranges) }}"
+    # Valid syntax can still fail on unavailable context or changed ranges.
+    schema.content_template = (
+        "{% set selected = summary %}{{ extract_context.get_year(selected) }}"
+        if changed_ranges
+        else "{{ extract_context.get_year(ranges) }}"
+    )
     schema._account_content_template = True
     validate_content_template(schema.content_template, "events")
     fs = SimpleNamespace(
@@ -506,16 +602,21 @@ async def test_account_content_template_runtime_failure_preserves_existing_file(
     )
     updater = MemoryUpdater(registry=registry)
     updater._viking_fs = fs
-    with pytest.raises(ContentTemplateError, match="render_failed"):
+    get_year = Mock(spec=[], return_value="2026")
+    with pytest.raises(
+        ContentTemplateError, match="invalid_ranges" if changed_ranges else "render_failed"
+    ):
         await updater._apply_upsert(
             ResolvedOperation(
                 memory_type="events",
                 uris=["viking://user/alice/memories/events/meeting.md"],
-                memory_fields={},
+                memory_fields={"ranges": "0", "summary": "0-999"},
             ),
             RequestContext(user=UserIdentifier("space_a", "alice"), role=Role.USER),
+            extract_context=SimpleNamespace(get_year=get_year) if changed_ranges else None,
         )
     fs.write_file.assert_not_awaited()
+    get_year.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -563,14 +664,34 @@ async def test_account_content_template_initialization(monkeypatch):
         ("get_day", "ranges"),
     ],
 )
-def test_content_template_all_documented_helpers(method, args):
-    context = SimpleNamespace(**{method: lambda *args: "ok"})
+@pytest.mark.parametrize("expression", ["ranges", "selected", "ranges|default('')|trim", "''"])
+def test_content_template_all_documented_helpers(method, args, expression):
+    helper = Mock(spec=[], return_value="ok")
+    context = SimpleNamespace(**{method: helper})
+    prelude = "{% set selected = ranges %}"
+    actual_args = args.replace("ranges", expression, 1)
     assert (
         render_content_template(
-            "{{ extract_context." + method + "(" + args + ") }}",
+            prelude + "{{ extract_context." + method + "(" + actual_args + ") }}",
             "events",
             {"ranges": "0", "summary": "summary"},
             context,
         )
         == "ok"
     )
+    expected_args = ("" if expression == "''" else "0",)
+    if "summary" in args:
+        expected_args += ("summary",)
+    if args.endswith(", 0"):
+        expected_args += (0,)
+    helper.assert_called_once_with(*expected_args)
+    helper.reset_mock()
+    changed_args = args.replace("ranges", "'0-999'", 1)
+    with pytest.raises(ContentTemplateError, match="invalid_ranges"):
+        render_content_template(
+            "{{ extract_context." + method + "(" + changed_args + ") }}",
+            "events",
+            {"ranges": "0", "summary": "summary"},
+            context,
+        )
+    helper.assert_not_called()

@@ -299,8 +299,10 @@ Events 的默认 embedding 模板引用正文，因此正文变化也可能影�
 - `get_event_content(ranges, summary[, ratio_threshold])`：按已有逻辑选择 ChatLog/摘要；省略阈值为 0.2，显式 0 表示存在原文时优先原文。
 - `get_year(ranges)`、`get_month(ranges)`、`get_day(ranges)`：来源日期分量。
 
-首个参数直接使用 `ranges`，或使用默认模板兼容写法 `ranges | default('')` / `ranges | default()`。
-此处只允许空字符串字面量兜底，不能使用非空回退值、其他变量或过滤器链替换原始消息范围；缺失字段本来就会传入空字符串。
+首个参数可使用统一语法白名单内的表达式，包括局部变量、条件表达式及允许的过滤器链。
+每次实际调用方法前，参数求值结果必须是普通字符串，且与当前记忆原始 `ranges` 完全相等，或为空字符串（不读取来源消息）。
+例如 `ranges | default('') | trim` 在结果未改变时可用；也可先 `{% set selected = ranges %}`，再调用 `get_year(selected)`。
+比较范围时不做归一化；缺失字段本来就会传入空字符串。发布时仅校验语法，不执行方法；改变范围或传入非字符串会在实际渲染时返回 `content_template: invalid_ranges`，在方法读取消息前拒绝，并停止该次记忆文件写入。
 阈值只能为 0～1 的数字字面量。
 允许去掉 ChatLog 或资源事件分支，但去掉后不再自动展示这些正文/资源链接；原始 Session 仍保留。
 

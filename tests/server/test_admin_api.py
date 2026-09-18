@@ -546,7 +546,6 @@ async def test_account_memory_templates_default_form_roundtrip(
         {"content_template": "{{"},
         {"content_template": "{{ unknown_field }}"},
         {"content_template": "{{ extract_context.messages }}"},
-        {"content_template": "{{ extract_context.get_year('0-999999999') }}"},
         {"content_template": "{% include 'private.yaml' %}"},
         {"content_template": "{{ summary | attr('__class__') }}"},
         {"content_template": "{{ summary | length }}"},
@@ -678,6 +677,83 @@ async def test_account_memory_templates_content_validation_error_details(
         "reason": "unknown_variable",
         "line": 2,
     }
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["selected", "ranges|default('')|trim", "ranges|default('0-999')", "ranges if summary else ''"],
+)
+async def test_account_memory_templates_range_expressions_reach_file_body(
+    lightweight_admin_client, lightweight_admin_app, template_account, expression
+):
+    from openviking.message import Message, TextPart
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.memory_updater import ExtractContext
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+
+    account_id, headers = template_account
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
+    template = (
+        "{% set selected = ranges %}{{ extract_context.get_event_content("
+        + expression
+        + ", summary, 0) }}"
+    )
+    published = await lightweight_admin_client.put(
+        url, json={"content_template": template}, headers=headers
+    )
+    assert published.status_code == 200, published.text
+    result = (await lightweight_admin_client.get(url, headers=headers)).json()["result"]
+    assert result["effective"]["content_template"] == template
+    roundtrip = await lightweight_admin_client.put(url, json=result["effective"], headers=headers)
+    assert roundtrip.status_code == 200, roundtrip.text
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    snapshot = await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
+    schema = snapshot.get("events")
+    context = ExtractContext(
+        [
+            Message(id="m1", role="user", parts=[TextPart("Selected source message")]),
+            Message(id="m2", role="user", parts=[TextPart("Unrelated source message")]),
+        ]
+    )
+    rendered = MemoryFileUtils.write(
+        MemoryFile(memory_type="events", extra_fields={"ranges": "0", "summary": "summary"}),
+        content_template=schema.content_template,
+        extract_context=context,
+        account_content_template_type="events" if schema._account_content_template else None,
+    )
+    content = MemoryFileUtils.read(rendered).content
+    assert "Selected source message" in content
+    assert "Unrelated source message" not in content
+
+
+async def test_account_memory_templates_range_values_are_checked_at_render_time(
+    lightweight_admin_client, lightweight_admin_app, template_account
+):
+    from types import SimpleNamespace
+
+    from openviking.session.memory.dataclass import MemoryFile
+    from openviking.session.memory.utils.content_template import ContentTemplateError
+    from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
+
+    account_id, headers = template_account
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
+    template = "{% set selected = summary %}{{ extract_context.get_year(selected) }}"
+    published = await lightweight_admin_client.put(
+        url, json={"content_template": template}, headers=headers
+    )
+    assert published.status_code == 200, published.text
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    snapshot = await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
+    schema = snapshot.get("events")
+    get_year = Mock(spec=[], return_value="2026")
+    with pytest.raises(ContentTemplateError, match="invalid_ranges"):
+        MemoryFileUtils.write(
+            MemoryFile(memory_type="events", extra_fields={"ranges": "0", "summary": "0-999"}),
+            content_template=schema.content_template,
+            extract_context=SimpleNamespace(get_year=get_year),
+            account_content_template_type="events",
+        )
+    get_year.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -349,11 +349,17 @@ may call these read-only `extract_context` helpers with positional arguments:
 `get_first_message_time_with_weekday_from_ranges(ranges)`,
 `get_event_content(ranges, summary[, ratio_threshold])`,
 `get_year(ranges)`, `get_month(ranges)`, `get_day(ranges)`.
-The first argument must be `ranges` directly, or the built-in-compatible
-`ranges | default('')` / `ranges | default()`. Only an empty literal fallback is
-allowed here: nonempty fallbacks, other variables and filter chains cannot replace
-the original message ranges. Missing field values are already supplied as empty
-strings. An explicit ratio must be a numeric
+The first argument may use any expression allowed by the same syntax sandbox,
+including local aliases, conditionals and approved filter chains. Immediately
+before each helper call, its evaluated value must be a plain string exactly equal
+to the current memory's original `ranges`, or an empty string (no source messages).
+For example, `ranges | default('') | trim` works when it leaves the value unchanged;
+`{% set selected = ranges %}` can be followed by `get_year(selected)`.
+No normalization is performed when comparing ranges. Missing field values are
+already supplied as empty strings. Publication checks syntax without executing
+helpers; a changed or non-string range value fails at rendering with
+`content_template: invalid_ranges`, before the helper reads any messages, and stops
+that memory file write. An explicit ratio must be a numeric
 literal from 0 to 1 (omitted: 0.2; built-in: 0).
 
 Supported Jinja: `if/elif/else`, comparisons/boolean expressions, local `set`, and

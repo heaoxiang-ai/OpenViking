@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from functools import partial
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from jinja2 import StrictUndefined, TemplateError, Undefined, meta, nodes
 from jinja2.runtime import LoopContext
@@ -249,26 +249,8 @@ def _validate_call(node: nodes.Call, memory_type: str) -> None:
         or len(node.args) not in _EVENT_METHODS[target.attr]
     ):
         raise ContentTemplateError("invalid_arguments", node.lineno)
-    # Never allow a template to fabricate an unbounded message-index range.
-    ranges = node.args[0]
-    # Built-in Events uses ranges|default(''). Only the empty fallback preserves
-    # the original ranges; do not permit nonempty fallbacks, chains or aliases.
-    if (
-        isinstance(ranges, nodes.Filter)
-        and ranges.name == "default"
-        and not (ranges.kwargs or ranges.dyn_args or ranges.dyn_kwargs)
-        and (
-            not ranges.args
-            or (
-                len(ranges.args) == 1
-                and isinstance(ranges.args[0], nodes.Const)
-                and ranges.args[0].value == ""
-            )
-        )
-    ):
-        ranges = ranges.node
-    if not isinstance(ranges, nodes.Name) or ranges.name != "ranges":
-        raise ContentTemplateError("invalid_ranges", node.lineno)
+    # Range expressions follow the same syntax rules as other expressions.
+    # Their evaluated values are checked before calling an extraction helper.
     if len(node.args) == 3:
         ratio = node.args[2]
         if (
@@ -277,6 +259,28 @@ def _validate_call(node: nodes.Call, memory_type: str) -> None:
             or not 0 <= ratio.value <= 1
         ):
             raise ContentTemplateError("invalid_ratio", node.lineno)
+
+
+def _call_event_helper(
+    env: _ContentEnvironment,
+    helper: Callable[..., Any],
+    original_ranges: str,
+    ranges: Any,
+    *args: Any,
+) -> Any:
+    # Validate values, not a particular AST shape: aliases, conditions and
+    # filters are fine, but cannot change which source messages a helper reads.
+    # Check exact types before equality to avoid invoking user-defined methods.
+    if (
+        type(ranges) is not str
+        or type(original_ranges) is not str
+        or ranges not in ("", original_ranges)
+    ):
+        raise ContentTemplateError("invalid_ranges")
+    # Wrapping a helper must not bypass its original sandbox callable flags.
+    if not env.is_safe_callable(helper):
+        raise TemplateError("Unsafe event helper")
+    return helper(ranges, *args)
 
 
 def validate_content_template(template: str, memory_type: str) -> None:
@@ -299,7 +303,7 @@ def render_content_template(
         raise ContentTemplateError("invalid_field_value")
     if memory_type == "events":
         values["extract_context"] = {
-            name: getattr(extract_context, name)
+            name: partial(_call_event_helper, env, getattr(extract_context, name), values["ranges"])
             for name in _EVENT_METHODS
             if extract_context is not None and hasattr(extract_context, name)
         }
