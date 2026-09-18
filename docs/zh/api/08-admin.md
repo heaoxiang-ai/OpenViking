@@ -208,8 +208,12 @@ PUT 从**部署默认模板**补齐未传入的配置，不从上一次 Account 
 完整 GET `effective` 对象可以回传：锁定字段值与默认值相同则接受，任何锁定值变更、
 未知配置项、未知字段或重复字段名均返回 `INVALID_ARGUMENT`，当前生效文件不变。
 若仅调整一个 description 且需保留其他自定义内容，应先 GET，修改 `effective` 对象后
-整体 PUT。空对象会发布一份完整默认配置，状态仍为自定义；恢复系统默认应调用 DELETE。
-DELETE 幂等。
+整体 PUT。补齐并校验后的完整配置若与部署默认值完全一致（不含发布时间元数据），
+PUT 会移除该类型的自定义覆盖，返回 `status=system_default`、`updated_at=null`。
+这包括提交空对象、原样提交默认表单，以及在编辑页逐项恢复默认后保存；只要还有任意配置
+不同，就继续返回 `custom`。比较不忽略说明或正文中的空格、换行等内容差异。
+移除覆盖后，后续抽取跟随部署默认模板；此前已取得的抽取快照不变。
+DELETE 始终移除该类型的覆盖；重复 PUT 默认配置或 DELETE 都是幂等的。
 
 返回包含 `memory_type`、`status`（`system_default` / `custom`）、
 `updated_at`（UTC 发布时间，默认状态为 null），以及完整的 `defaults` / `effective`。

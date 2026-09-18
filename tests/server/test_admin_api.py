@@ -8,6 +8,7 @@ import hashlib
 import json
 import threading
 import uuid
+from copy import deepcopy
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -431,6 +432,9 @@ async def test_account_memory_templates_publish_and_reset(
     )
     assert default_form.status_code == 200, default_form.text
     assert default_form.json()["result"]["effective"] == result["defaults"]
+    assert default_form.json()["result"]["status"] == "system_default"
+    assert default_form.json()["result"]["updated_at"] is None
+    assert path not in fs.agfs._files
 
 
 @pytest.mark.parametrize(
@@ -489,9 +493,11 @@ async def test_account_memory_templates_default_form_roundtrip(
     published = await client.put(url, json=body, headers=headers)
     assert published.status_code == 200, published.text
     result = published.json()["result"]
-    assert result["status"] == "custom"
     assert result["defaults"] == defaults
     effective = result["effective"]
+    is_default = effective == defaults
+    assert result["status"] == ("system_default" if is_default else "custom")
+    assert (result["updated_at"] is None) == is_default
     assert effective["description"] == body["description"]
     for field in body["fields"]:
         actual = next(f for f in effective["fields"] if f["name"] == field["name"])
@@ -522,6 +528,137 @@ async def test_account_memory_templates_default_form_roundtrip(
     assert reset.status_code == 200, reset.text
     assert reset.json()["result"]["effective"] == defaults
     assert reset.json()["result"]["status"] == "system_default"
+
+
+def _editable_template_form(defaults, memory_type):
+    body = {
+        "description": defaults["description"],
+        "fields": [
+            {"name": field["name"], "description": field["description"]}
+            for field in defaults["fields"]
+            if field["name"] in EDITABLE_MEMORY_TEMPLATE_FIELDS[memory_type]
+        ],
+    }
+    if memory_type in ("events", "soul", "identity"):
+        body["content_template"] = defaults["content_template"]
+    return body
+
+
+@pytest.mark.parametrize(
+    "memory_type,module",
+    [
+        (kind, module)
+        for kind, fields in EDITABLE_MEMORY_TEMPLATE_FIELDS.items()
+        for module in ("description", *fields)
+    ]
+    + [(kind, "content_template") for kind in ("events", "soul", "identity")],
+)
+async def test_account_memory_templates_module_reset_clears_override(
+    lightweight_admin_client, lightweight_admin_app, template_account, memory_type, module
+):
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    root = f"/api/v1/admin/accounts/{account_id}/memory-templates"
+    url = f"{root}/{memory_type}"
+    initial = (await client.get(url, headers=headers)).json()["result"]
+    form = _editable_template_form(initial["defaults"], memory_type)
+    body = deepcopy(form)
+    if module in ("description", "content_template"):
+        body[module] += "\nAccount instructions."
+    else:
+        field = next(field for field in body["fields"] if field["name"] == module)
+        field["description"] += "\nAccount field instructions."
+    publish = await client.put(url, json=body, headers=headers)
+    assert publish.status_code == 200, publish.text
+    result = publish.json()["result"]
+    assert result["status"] == "custom"
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    path = account_memory_template_path(account_id, memory_type)
+    previous = fs.agfs._files[path]
+    snapshot = await resolve_account_memory_registry(fs, account_id, get_default_registry())
+    previous_schema = snapshot.get(memory_type).model_dump()
+    untouched = {key: value for key, value in fs.agfs._files.items() if key != path}
+
+    # Reopen the editor, reset only the edited module, then save the whole form.
+    reopened = (await client.get(url, headers=headers)).json()["result"]
+    body = _editable_template_form(reopened["effective"], memory_type)
+    if module in ("description", "content_template"):
+        body[module] = form[module]
+    else:
+        field = next(field for field in body["fields"] if field["name"] == module)
+        field["description"] = next(
+            field["description"] for field in form["fields"] if field["name"] == module
+        )
+    # Field order does not change the completed configuration.
+    body["fields"].reverse()
+    restored = await client.put(url, json=body, headers=headers)
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["result"] == initial
+    assert path not in fs.agfs._files
+    assert fs.agfs._files[path + ".backup"] == previous
+    assert all(fs.agfs._files[key] == value for key, value in untouched.items())
+    assert (await client.get(url, headers=headers)).json()["result"] == initial
+    listed = (await client.get(root, headers=headers)).json()["result"]["templates"]
+    assert next(item for item in listed if item["memory_type"] == memory_type) == {
+        key: value for key, value in initial.items() if key != "account_id"
+    }
+    resolved = await resolve_account_memory_registry(fs, account_id, get_default_registry())
+    assert (
+        resolved.get(memory_type).model_dump()
+        == get_default_registry().get(memory_type).model_dump()
+    )
+    assert snapshot.get(memory_type).model_dump() == previous_schema
+    stored = dict(fs.agfs._files)
+    repeated = await client.put(url, json=body, headers=headers)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["result"] == initial
+    assert fs.agfs._files == stored
+
+
+@pytest.mark.parametrize("memory_type", EDITABLE_MEMORY_TEMPLATE_FIELDS)
+async def test_account_memory_templates_module_reset_keeps_other_edits(
+    lightweight_admin_client, lightweight_admin_app, template_account, memory_type
+):
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
+    initial = (await client.get(url, headers=headers)).json()["result"]
+    body = _editable_template_form(initial["defaults"], memory_type)
+    body["description"] += "\nType edit."
+    body["fields"][0]["description"] += "\nField edit."
+    response = await client.put(url, json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    body["description"] = initial["defaults"]["description"]
+    response = await client.put(url, json=body, headers=headers)
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    assert result["status"] == "custom"
+    assert result["updated_at"]
+    assert result["effective"]["description"] == initial["defaults"]["description"]
+    field = next(f for f in result["effective"]["fields"] if f["name"] == body["fields"][0]["name"])
+    assert field["description"] == body["fields"][0]["description"]
+    assert account_memory_template_path(account_id, memory_type) in (
+        lightweight_admin_app.state.fake_service.viking_fs.agfs._files
+    )
+
+
+async def test_account_memory_templates_save_clears_legacy_default_override(
+    lightweight_admin_client, lightweight_admin_app, template_account
+):
+    account_id, headers = template_account
+    client = lightweight_admin_client
+    url = f"/api/v1/admin/accounts/{account_id}/memory-templates/profile"
+    initial = (await client.get(url, headers=headers)).json()["result"]
+    legacy = {**initial["defaults"], "_updated_at": "2026-09-01T00:00:00+00:00"}
+    fs = lightweight_admin_app.state.fake_service.viking_fs
+    path = account_memory_template_path(account_id, "profile")
+    fs.agfs._files[path] = yaml.safe_dump(legacy).encode()
+    before = (await client.get(url, headers=headers)).json()["result"]
+    assert before["status"] == "custom"  # Reads do not migrate persisted overrides.
+    response = await client.put(url, json=before["effective"], headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["result"] == initial
+    assert path not in fs.agfs._files
 
 
 @pytest.mark.parametrize(
@@ -853,7 +990,9 @@ async def test_account_memory_templates_inherit_exact_deployment_body(
         body["description"] = "Account instructions"
     response = await lightweight_admin_client.put(url, json=body, headers=headers)
     assert response.status_code == 200, response.text
-    assert response.json()["result"]["status"] == "custom"
+    assert response.json()["result"]["status"] == (
+        "system_default" if request_kind == "empty" else "custom"
+    )
     assert response.json()["result"]["effective"]["content_template"] == deployment_body
     # Roundtrip a persisted override too, not only defaults returned before a PUT.
     response = await lightweight_admin_client.put(
@@ -861,8 +1000,13 @@ async def test_account_memory_templates_inherit_exact_deployment_body(
     )
     assert response.status_code == 200, response.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
-    stored = yaml.safe_load(fs.agfs._files[account_memory_template_path(account_id, memory_type)])
-    assert "_account_content_template" not in stored
+    path = account_memory_template_path(account_id, memory_type)
+    if request_kind == "empty":
+        assert path not in fs.agfs._files
+        assert response.json()["result"]["updated_at"] is None
+    else:
+        stored = yaml.safe_load(fs.agfs._files[path])
+        assert "_account_content_template" not in stored
     snapshot = await resolve_account_memory_registry(fs, account_id, defaults)
     schema = snapshot.get(memory_type)
     assert schema._account_content_template is False
@@ -894,7 +1038,10 @@ async def test_account_memory_templates_recheck_persisted_body_without_trusting_
     defaults.get("events").content_template = deployment_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
-    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    response = await lightweight_admin_client.put(
+        url, json={"description": "Account instructions"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
     path = account_memory_template_path(account_id, "events")
     original = fs.agfs._files[path]
@@ -916,11 +1063,13 @@ async def test_account_memory_templates_recheck_persisted_body_without_trusting_
     assert (await lightweight_admin_client.get(url, headers=headers)).status_code == 200
 
 
+@pytest.mark.parametrize("restore_defaults", [False, True])
 async def test_account_memory_templates_recheck_trust_after_deployment_change(
     lightweight_admin_client,
     lightweight_admin_app,
     template_account,
     monkeypatch,
+    restore_defaults,
 ):
     from openviking_cli.exceptions import FailedPreconditionError
 
@@ -930,12 +1079,23 @@ async def test_account_memory_templates_recheck_trust_after_deployment_change(
     defaults.get("events").content_template = old_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
-    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    response = await lightweight_admin_client.put(
+        url, json={"description": "Account instructions"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
     old_snapshot = await resolve_account_memory_registry(fs, account_id, defaults)
+    if restore_defaults:
+        response = await lightweight_admin_client.put(url, json={}, headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["result"]["status"] == "system_default"
     defaults.get("events").content_template = "# {{ summary }}"
-    with pytest.raises(FailedPreconditionError):
-        await resolve_account_memory_registry(fs, account_id, defaults)
+    if restore_defaults:
+        current = await resolve_account_memory_registry(fs, account_id, defaults)
+        assert current.get("events").content_template == "# {{ summary }}"
+    else:
+        with pytest.raises(FailedPreconditionError):
+            await resolve_account_memory_registry(fs, account_id, defaults)
     # Already-started extractions keep their snapshot, not a mutable defaults view.
     assert old_snapshot.get("events").content_template == old_body
     assert old_snapshot.get("events")._account_content_template is False
@@ -959,7 +1119,10 @@ async def test_account_memory_templates_old_content_can_be_read_replaced_and_res
     fs = lightweight_admin_app.state.fake_service.viking_fs
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
     path = account_memory_template_path(account_id, "events")
-    assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
+    response = await lightweight_admin_client.put(
+        url, json={"description": "Account instructions"}, headers=headers
+    )
+    assert response.status_code == 200, response.text
     legacy = yaml.safe_load(fs.agfs._files[path])
     legacy["content_template"] = "{{ summary | length }}"
     raw = yaml.safe_dump(legacy).encode()

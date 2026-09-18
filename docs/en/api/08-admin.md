@@ -218,8 +218,15 @@ objects can be submitted unchanged: locked values matching defaults are accepted
 Changed locked values, unknown keys/fields and duplicate field names return
 `INVALID_ARGUMENT` without modifying the active file. To edit one description while
 preserving all other customizations, GET `effective`, modify that object, then
-PUT it. An empty object publishes a complete copy of the defaults as custom;
-DELETE removes the custom file. DELETE is idempotent.
+PUT it. If the completed, validated configuration exactly matches deployment
+defaults (before publication metadata is added), PUT removes that type's override
+and returns `status=system_default`, `updated_at=null`. This includes an empty
+object, an unchanged default form, or saving after restoring all edited fields
+to their defaults. Any remaining difference keeps the template `custom`;
+whitespace and newline differences in descriptions or bodies are not ignored.
+Once the override is removed, subsequent extractions follow deployment defaults;
+previously captured extraction snapshots are unchanged. DELETE always removes
+the type's override. Repeated default PUTs and DELETEs are idempotent.
 
 Results contain `memory_type`, `status` (`system_default` or `custom`),
 `updated_at` (UTC publication time or null), and full `defaults` / `effective`
