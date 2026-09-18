@@ -290,7 +290,7 @@ disable rendering, and no description provenance flag is stored or checked.
 Only the existing `language` context variable is available; body fields,
 `extract_context`, and arbitrary objects are not exposed. The syntax subset is
 the same as the restricted bodies below: conditionals, local variables, bounded
-literal loops, safe string methods and tests, but no filters or arbitrary calls.
+literal loops, safe string methods, approved string filters and tests, but no arbitrary calls.
 For example, <code v-pre>Use {{ language.upper() }}.</code> renders as `Use EN.` when the existing
 schema-rendering context supplies `language=en`. No new language propagation is
 introduced; the Python protocol's existing static field-description path remains
@@ -364,10 +364,12 @@ string subclasses) are not allowed. Methods can be chained or used on string fie
 locals, literals, and string results of approved Events helpers. Method references
 cannot be stored or accessed without calling them.
 
-No filters are supported in custom Account bodies, including `| upper`,
-`| lower`, `| trim`, `| default(...)`, or `| length`; this unreleased interface does
-not retain a filter compatibility mode. Use `summary or 'pending'` or an explicit
-conditional for fallbacks, and `summary.strip().upper()` for string formatting.
+String filters: `| upper`, `| lower`, and `| trim`, equivalent to `.upper()`,
+`.lower()`, and `.strip()`. Like the methods, they accept only plain strings and
+no positional or keyword arguments. They can be chained or mixed with methods,
+for example `summary | trim | upper` or `summary.strip() | upper`.
+Other filters, including `| default(...)`, `| length`, and `| attr(...)`, remain
+unsupported. Use `summary or 'pending'` or an explicit conditional for fallbacks.
 Tests: `defined`, `undefined`, `none`, `string` remain supported.
 Built-in field/context names cannot be overwritten. Imports,
 inheritance, macros, arbitrary calls/attributes, subscripts, arithmetic/string

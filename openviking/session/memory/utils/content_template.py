@@ -10,6 +10,7 @@ both at publication and when rendering the extraction snapshot.
 from __future__ import annotations
 
 import re
+from functools import partial
 from typing import Any, Mapping
 
 from jinja2 import StrictUndefined, TemplateError, meta, nodes
@@ -34,6 +35,7 @@ _EVENT_METHODS = {
     "get_day": (1,),
 }
 _STRING_METHODS = {"upper", "lower", "strip"}
+_STRING_FILTERS = {"upper": "upper", "lower": "lower", "trim": "strip"}
 _TESTS = {"defined", "undefined", "none", "string"}
 _LOOP_ATTRIBUTES = {"index", "index0", "first", "last", "length"}
 _RESERVED_METADATA = re.compile(r"<!--\s*MEMORY_FIELDS\b")
@@ -50,6 +52,7 @@ _NODES = (
     nodes.Tuple,
     nodes.Getattr,
     nodes.Call,
+    nodes.Filter,
     nodes.Test,
     nodes.Compare,
     nodes.Operand,
@@ -81,10 +84,20 @@ class _ContentEnvironment(ImmutableSandboxedEnvironment):
         )
 
 
+def _string_filter(method: str, value: Any) -> str:
+    # Unlike Jinja's built-ins, do not coerce arbitrary objects through __str__
+    # or invoke overridden methods on string subclasses.
+    if type(value) is not str:
+        raise TemplateError("String filters require a plain string")
+    return getattr(value, method)()
+
+
 def _environment() -> _ContentEnvironment:
     env = _ContentEnvironment(autoescape=False, undefined=StrictUndefined)
     env.globals.clear()
-    env.filters.clear()
+    env.filters = {
+        name: partial(_string_filter, method) for name, method in _STRING_FILTERS.items()
+    }
     env.tests = {name: env.tests[name] for name in _TESTS}
     return env
 
@@ -126,7 +139,10 @@ def _parse(
                 )
         for node in all_nodes:
             if isinstance(node, nodes.Filter):
-                raise ContentTemplateError("unsupported_filter", node.lineno)
+                if node.name not in _STRING_FILTERS:
+                    raise ContentTemplateError("unsupported_filter", node.lineno)
+                if node.args or node.kwargs or node.dyn_args or node.dyn_kwargs:
+                    raise ContentTemplateError("invalid_arguments", node.lineno)
             if not isinstance(node, _NODES):
                 raise ContentTemplateError("unsupported_syntax", node.lineno)
             if isinstance(node, nodes.Name) and node.ctx == "store":

@@ -37,7 +37,16 @@ from openviking.service.task_store import (
     SYSTEM_TASK_USER_ID,
 )
 from openviking.service.task_tracker import get_task_tracker
-from openviking.session.memory.account_templates import EDITABLE_MEMORY_TEMPLATE_FIELDS
+from openviking.session.memory.account_templates import (
+    EDITABLE_MEMORY_TEMPLATE_FIELDS,
+    account_memory_template_path,
+    resolve_account_memory_registry,
+)
+from openviking.session.memory.extract_loop import ExtractLoop
+from openviking.session.memory.memory_isolation_handler import MemoryIsolationHandler
+from openviking.session.memory.memory_type_registry import MemoryTypeRegistry, get_default_registry
+from openviking.session.memory.patch_merge_context_provider import PatchMergeContextProvider
+from openviking.session.memory.session_extract_context_provider import SessionExtractContextProvider
 from openviking_cli.exceptions import OpenVikingError
 from openviking_cli.session.user_id import UserIdentifier
 from openviking_cli.utils.config import get_openviking_config
@@ -428,11 +437,11 @@ async def test_account_memory_templates_publish_and_reset(
     "body",
     [
         {"description": 123},
-        {"description": "{{ language | upper }}"},
+        {"description": "{{ language | length }}"},
         {"description": "{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}"},
         {"description": "literal {{ unclosed"},
         {"fields": [{"name": "summary", "description": "{{ summary }}"}]},
-        {"fields": [{"name": "summary", "description": "{{ language | lower }}"}]},
+        {"fields": [{"name": "summary", "description": "{{ language | trim('x') }}"}]},
         {"fields": [{"name": "summary", "description": "literal {{ unclosed"}]},
         {"_account_description": False},
         {"fields": [{"name": "summary", "_account_description": False}]},
@@ -449,7 +458,8 @@ async def test_account_memory_templates_publish_and_reset(
         {"content_template": "{{ extract_context.get_year('0-999999999') }}"},
         {"content_template": "{% include 'private.yaml' %}"},
         {"content_template": "{{ summary | attr('__class__') }}"},
-        {"content_template": "{{ summary | upper }}"},
+        {"content_template": "{{ summary | length }}"},
+        {"content_template": "{{ summary | trim('x') }}"},
         {"content_template": "{{ summary | default('pending') }}"},
         {"content_template": "{{ summary.strip('x') }}"},
         {"content_template": "x" * (64 * 1024 + 1)},
@@ -479,7 +489,7 @@ async def test_account_memory_templates_reject_invalid_configuration(
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
-        ("{{ language | upper }}", "unsupported_filter"),
+        ("{{ language | length }}", "unsupported_filter"),
         ("{{ cycler.__init__.__globals__.__builtins__.len('harmless') }}", "unsupported_call"),
         ("{{", "invalid_jinja"),
     ],
@@ -583,21 +593,29 @@ async def test_account_memory_templates_content_validation_error_details(
     "memory_type, field_name",
     [("events", "summary"), ("soul", "core_truths"), ("identity", "introduction")],
 )
-async def test_account_memory_templates_string_methods_reach_file_body(
+@pytest.mark.parametrize("formatting", [".strip().upper()", " | trim | upper"])
+async def test_account_memory_templates_string_formatting_reaches_file_body(
     lightweight_admin_client,
     lightweight_admin_app,
     template_account,
     memory_type,
     field_name,
+    formatting,
 ):
     from openviking.session.memory.dataclass import MemoryFile
     from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
 
     account_id, headers = template_account
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}"
-    body = {"content_template": "# {{ " + field_name + ".strip().upper() }}"}
+    body = {"content_template": "# {{ " + field_name + formatting + " }}"}
     response = await lightweight_admin_client.put(url, json=body, headers=headers)
     assert response.status_code == 200, response.text
+    effective = (await lightweight_admin_client.get(url, headers=headers)).json()["result"][
+        "effective"
+    ]
+    assert effective["content_template"] == body["content_template"]
+    roundtrip = await lightweight_admin_client.put(url, json=effective, headers=headers)
+    assert roundtrip.status_code == 200, roundtrip.text
     fs = lightweight_admin_app.state.fake_service.viking_fs
     snapshot = await resolve_account_memory_registry(fs, account_id, MemoryTypeRegistry())
     schema = snapshot.get(memory_type)
@@ -705,7 +723,7 @@ async def test_account_memory_templates_recheck_persisted_body_without_trusting_
 
     account_id, headers = template_account
     defaults = MemoryTypeRegistry()
-    deployment_body = "{{ summary | upper }}"
+    deployment_body = "{{ summary | default('pending') }}"
     defaults.get("events").content_template = deployment_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
@@ -741,7 +759,7 @@ async def test_account_memory_templates_recheck_trust_after_deployment_change(
 
     account_id, headers = template_account
     defaults = MemoryTypeRegistry()
-    old_body = "{{ summary | upper }}"
+    old_body = "{{ summary | default('pending') }}"
     defaults.get("events").content_template = old_body
     monkeypatch.setattr("openviking.server.routers.admin.get_default_registry", lambda: defaults)
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/events"
@@ -776,7 +794,7 @@ async def test_account_memory_templates_old_content_can_be_read_replaced_and_res
     path = account_memory_template_path(account_id, "events")
     assert (await lightweight_admin_client.put(url, json={}, headers=headers)).status_code == 200
     legacy = yaml.safe_load(fs.agfs._files[path])
-    legacy["content_template"] = "{{ summary | upper }}"
+    legacy["content_template"] = "{{ summary | default('pending') }}"
     raw = yaml.safe_dump(legacy).encode()
     for operation in ("PUT", "DELETE"):
         fs.agfs._files[path] = raw
@@ -957,8 +975,12 @@ async def test_account_memory_templates_permissions_and_isolation(
 @pytest.mark.parametrize("output_format", ["python", "json"])
 @pytest.mark.parametrize(
     "marker",
-    ["{{ language.upper() }}", "{% if language == 'en' %}EN{% else %}OTHER{% endif %}"],
-    ids=["safe-method", "safe-condition"],
+    [
+        "{{ language.upper() }}",
+        "{% if language == 'en' %}EN{% else %}OTHER{% endif %}",
+        "{{ language | trim | upper }}",
+    ],
+    ids=["safe-method", "safe-condition", "safe-filters"],
 )
 async def test_account_memory_templates_reach_live_prompts(
     lightweight_admin_client,

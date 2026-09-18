@@ -117,10 +117,24 @@ def test_content_template_if_set_for_and_string_methods():
             "TITLE: AbC",
         ),
         ("{{ (summary or 'pending').upper() }}", "ABC"),
+        ("{{ summary | trim }}", "AbC"),
+        ("{{ summary | upper }}", "ABC"),
+        ("{{ summary | lower }}", "abc"),
+        ("{{ summary | trim | upper }}", "ABC"),
+        ("{{ summary.strip() | lower }}", "abc"),
+        ("{{ (summary | trim).upper() }}", "ABC"),
+        ("{{ ' HeLLo ' | trim | lower }}", "hello"),
+        ("{% set text = summary | trim %}{{ text | upper }}", "ABC"),
+        ("{% if summary | trim | lower == 'abc' %}match{% endif %}", "match"),
+        (
+            "{% for title, text in [('Title', summary)] %}{{ title | upper }}: {{ text | trim }}{% endfor %}",
+            "TITLE: AbC",
+        ),
     ],
 )
-def test_content_template_string_methods_match_deployment_syntax(template, expected):
+def test_content_template_string_formatting_matches_deployment_syntax(template, expected):
     fields = {"summary": " AbC "}
+    validate_content_template(template, "events")
     assert render_content_template(template, "events", fields) == expected
     assert TemplateUtils.render(template, fields) == expected
 
@@ -139,17 +153,40 @@ def test_content_template_string_methods_on_helper_results_and_empty_fields():
     assert render_content_template("{{ summary.strip() or 'pending' }}", "events", {}) == "pending"
 
 
+def test_content_template_filters_on_helper_results_and_empty_fields():
+    context = SimpleNamespace(get_event_content=lambda *args: " details ")
+    assert (
+        render_content_template(
+            "{{ extract_context.get_event_content(ranges, summary) | trim | upper }}",
+            "events",
+            {"ranges": "0"},
+            context,
+        )
+        == "DETAILS"
+    )
+    assert render_content_template("{{ (summary | trim) or 'pending' }}", "events", {}) == "pending"
+
+
+@pytest.mark.parametrize("operation", [".upper()", " | upper", " | lower", " | trim"])
 @pytest.mark.parametrize("receiver_kind", ["object", "mapping", "str_subclass", "none", "int"])
-def test_content_template_rejects_same_named_methods_before_attribute_lookup(receiver_kind):
+def test_content_template_rejects_untrusted_string_receivers(receiver_kind, operation):
     touched = []
 
     class Impostor:
+        def __str__(self):
+            touched.append("string conversion")
+            return "unsafe"
+
         @property
         def upper(self):
             touched.append("property")
             return lambda: "unsafe"
 
     class StringSubclass(str):
+        def __str__(self):
+            touched.append("subclass conversion")
+            return "unsafe"
+
         def upper(self):
             touched.append("override")
             return "unsafe"
@@ -164,7 +201,7 @@ def test_content_template_rejects_same_named_methods_before_attribute_lookup(rec
     context = SimpleNamespace(get_event_content=lambda *args: receivers[receiver_kind])
     with pytest.raises(ContentTemplateError, match="render_failed"):
         render_content_template(
-            "{{ extract_context.get_event_content(ranges, summary).upper() }}",
+            "{{ extract_context.get_event_content(ranges, summary)" + operation + " }}",
             "events",
             {"ranges": "0"},
             context,
@@ -175,19 +212,36 @@ def test_content_template_rejects_same_named_methods_before_attribute_lookup(rec
 @pytest.mark.parametrize(
     "expression",
     [
-        "summary | upper",
-        "summary | lower",
-        "summary | trim",
         "summary | length",
         "summary | default('pending', true)",
-        "summary.upper() | upper",
+        "summary | replace('a', 'b')",
+        "summary | safe",
+        "summary | unknown",
     ],
 )
-def test_content_template_rejects_all_filter_syntax(expression):
+def test_content_template_rejects_unapproved_filters(expression):
     template = "{{ " + expression + " }}"
     with pytest.raises(ContentTemplateError, match="unsupported_filter"):
         validate_content_template(template, "events")
     with pytest.raises(ContentTemplateError, match="unsupported_filter"):
+        render_content_template(template, "events", {"summary": "text"})
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "summary | trim('x')",
+        "summary | trim(chars='x')",
+        "summary | upper(1)",
+        "summary | lower(*summary)",
+        "summary | trim(**summary)",
+    ],
+)
+def test_content_template_rejects_filter_arguments(expression):
+    template = "{{ " + expression + " }}"
+    with pytest.raises(ContentTemplateError, match="invalid_arguments"):
+        validate_content_template(template, "events")
+    with pytest.raises(ContentTemplateError, match="invalid_arguments"):
         render_content_template(template, "events", {"summary": "text"})
 
 
@@ -224,6 +278,9 @@ def test_events_builtin_template_keeps_original_date_fallback():
         "{{ summary.replace('a', 'b') }}",
         "{{ summary.format() }}",
         "{{ summary.strip().__class__ }}",
+        "{{ (summary | trim).__class__ }}",
+        "{{ summary | trim | attr('__class__') }}",
+        "{% filter trim %}text{% endfilter %}",
         "{{ summary.upper.__self__ }}",
         "{{ extract_context.upper() }}",
         "{% for x in [1] %}{{ loop.upper() }}{% endfor %}",
