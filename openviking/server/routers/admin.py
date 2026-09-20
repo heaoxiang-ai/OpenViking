@@ -471,7 +471,7 @@ async def patch_account_settings(
 
 async def _memory_template_service(request: Request, ctx: RequestContext, account_id: str):
     _check_account_access(ctx, account_id)
-    await _check_account_exists(request, account_id)
+    _check_account_exists(request, account_id)
     service = get_service()
     if service.viking_fs is None:
         raise FailedPreconditionError("OpenViking service is not initialized.")

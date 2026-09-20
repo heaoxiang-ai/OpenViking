@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
 # SPDX-License-Identifier: AGPL-3.0
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -83,8 +84,10 @@ def test_phase2_batches_keep_a_turn_together_when_it_fits():
 
 
 @pytest.mark.asyncio
-async def test_working_memory_batches_carry_the_previous_summary_forward():
+async def test_working_memory_batches_carry_the_previous_summary_forward(monkeypatch):
     session = Session(viking_fs=None)
+    config = SimpleNamespace(vlm=SimpleNamespace(is_available=lambda: True))
+    monkeypatch.setattr("openviking.session.session.get_openviking_config", lambda: config)
     messages = [_message("u1"), _message("u2"), _message("u3")]
     calls = []
 

@@ -299,9 +299,9 @@ Only the existing `language` context variable is available; body fields,
 the same as the restricted bodies below: conditionals, local variables, bounded
 literal loops, safe string methods, approved string filters and tests, but no arbitrary calls.
 For example, <code v-pre>Use {{ language.upper() }}.</code> renders as `Use EN.` when the existing
-schema-rendering context supplies `language=en`. No new language propagation is
-introduced; the Python protocol's existing static field-description path remains
-unchanged. Missing language retains the previous undefined/empty-output behavior;
+schema-rendering context supplies `language=en`. This release keeps the existing
+JSON extraction protocol, which renders both type and field descriptions; no new
+language propagation is introduced. Missing language retains the previous undefined/empty-output behavior;
 use `language or 'English'` for a fallback. Context values are not recursively
 evaluated as Jinja. Invalid custom expressions are rejected before publication,
 and persisted overrides are revalidated before extraction. Deployment descriptions

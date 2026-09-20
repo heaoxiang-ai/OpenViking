@@ -50,7 +50,6 @@ from openviking.session.memory.patch_merge_context_provider import PatchMergeCon
 from openviking.session.memory.session_extract_context_provider import SessionExtractContextProvider
 from openviking_cli.exceptions import OpenVikingError, PermissionDeniedError
 from openviking_cli.session.user_id import UserIdentifier
-from openviking_cli.utils.config import get_openviking_config
 
 
 def _uid() -> str:
@@ -1306,7 +1305,6 @@ async def test_account_memory_templates_permissions_and_isolation(
 
 
 @pytest.mark.parametrize("merge", [False, True], ids=["extraction", "patch-merge"])
-@pytest.mark.parametrize("output_format", ["python", "json"])
 @pytest.mark.parametrize(
     "marker",
     [
@@ -1321,11 +1319,8 @@ async def test_account_memory_templates_reach_live_prompts(
     lightweight_admin_app,
     template_account,
     merge,
-    output_format,
     marker,
-    monkeypatch,
 ):
-    monkeypatch.setattr(get_openviking_config().memory, "extraction_output_format", output_format)
     account_id, headers = template_account
     url = f"/api/v1/admin/accounts/{account_id}/memory-templates/profile"
     fs = lightweight_admin_app.state.fake_service.viking_fs
@@ -1347,9 +1342,7 @@ async def test_account_memory_templates_reach_live_prompts(
         provider.prefetch = AsyncMock(return_value=[])
         vlm = Mock(
             model="test-memory-templates",
-            get_completion_async=AsyncMock(
-                return_value="sdk.commit()" if output_format == "python" else '{"delete_ids":[]}'
-            ),
+            get_completion_async=AsyncMock(return_value='{"delete_ids":[]}'),
         )
         isolation = MemoryIsolationHandler(
             ctx,
@@ -1381,14 +1374,8 @@ async def test_account_memory_templates_reach_live_prompts(
     for user, peer in (("alice", None), ("bob", None), ("bob", "customer")):
         prompt = await prompt_for(account_id, user, peer)
         assert "CUSTOM_ACCOUNT_SCOPE EN" in prompt
-        # Preserve the Python protocol's existing static field contract. This
-        # change does not add a language context to that separate path.
-        expected_field = (
-            body["fields"][0]["description"]
-            if output_format == "python"
-            else "ACCOUNT_FIELD EN en"
-        )
-        assert expected_field in prompt
+        # The 0.4.18 JSON schema renders both type and field descriptions.
+        assert "ACCOUNT_FIELD EN en" in prompt
     assert "CUSTOM_ACCOUNT_SCOPE" not in await prompt_for("other-account", "alice")
     assert registry.get("profile").description == base_description
     assert (await lightweight_admin_client.delete(url, headers=headers)).status_code == 200
