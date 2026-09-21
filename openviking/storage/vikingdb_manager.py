@@ -59,6 +59,18 @@ class VikingDBManager(VikingVectorIndexBackend):
         self._queue_manager = queue_manager
         self._closing = False
         self.scene_index = None
+        self.associative_index = None
+
+    async def initialize_associative_index(self, settings) -> None:
+        from openviking.storage.associative_index import AssociativeIndex
+        from openviking.storage.collection_schemas import init_context_collection
+
+        index = AssociativeIndex(self, settings)
+        if settings.enabled or await index.store.collection_exists():
+            await init_context_collection(index.store, name=index.store.collection_name)
+            self.associative_index = index
+        else:
+            await index.store.close()
 
     async def initialize_scene_index(self, settings) -> None:
         from openviking.storage.collection_schemas import init_context_collection
@@ -116,35 +128,47 @@ class VikingDBManager(VikingVectorIndexBackend):
         result = await super().remove_by_uri(uri, ctx=ctx)
         if self.scene_index:
             await self.scene_index.store.remove_by_uri(uri, ctx=ctx)
+        if self.associative_index:
+            await self.associative_index.store.remove_by_uri(uri, ctx=ctx)
         return result
 
     async def delete_uris(self, ctx, uris):
         await super().delete_uris(ctx, uris)
         if self.scene_index:
             await self.scene_index.store.delete_uris(ctx, uris)
+        if self.associative_index:
+            await self.associative_index.store.delete_uris(ctx, uris)
 
     async def delete_account_data(self, account_id, *, ctx):
         result = await super().delete_account_data(account_id, ctx=ctx)
         if self.scene_index:
             await self.scene_index.store.delete_account_data(account_id, ctx=ctx)
+        if self.associative_index:
+            await self.associative_index.store.delete_account_data(account_id, ctx=ctx)
         return result
 
     async def delete_user_data(self, account_id, user_id, *, ctx):
         result = await super().delete_user_data(account_id, user_id, ctx=ctx)
         if self.scene_index:
             await self.scene_index.store.delete_user_data(account_id, user_id, ctx=ctx)
+        if self.associative_index:
+            await self.associative_index.store.delete_user_data(account_id, user_id, ctx=ctx)
         return result
 
     async def clear(self, *, ctx=None):
         result = await super().clear(ctx=ctx)
         if self.scene_index:
             await self.scene_index.store.clear(ctx=ctx)
+        if self.associative_index:
+            await self.associative_index.store.clear(ctx=ctx)
         return result
 
     async def drop_collection(self):
         result = await super().drop_collection()
         if self.scene_index:
             await self.scene_index.store.drop_collection()
+        if self.associative_index:
+            await self.associative_index.store.drop_collection()
         return result
 
     async def copy_uri_mapping(self, ctx, source_uri, target_uri, recursive=False, **kwargs):
@@ -153,6 +177,8 @@ class VikingDBManager(VikingVectorIndexBackend):
             await self.scene_index.store.copy_uri_mapping(
                 ctx, source_uri, target_uri, recursive, **kwargs
             )
+        if self.associative_index:
+            await self.associative_index.transfer(ctx, source_uri, target_uri, recursive, **kwargs)
         return result
 
     async def update_uri_mapping(self, ctx, source_uri, target_uri, recursive=False, **kwargs):
@@ -160,6 +186,10 @@ class VikingDBManager(VikingVectorIndexBackend):
         if self.scene_index:
             await self.scene_index.store.update_uri_mapping(
                 ctx, source_uri, target_uri, recursive, **kwargs
+            )
+        if self.associative_index:
+            await self.associative_index.transfer(
+                ctx, source_uri, target_uri, recursive, move=True, **kwargs
             )
         return result
 
@@ -182,6 +212,8 @@ class VikingDBManager(VikingVectorIndexBackend):
             # Then close the base backend
             if self.scene_index:
                 await self.scene_index.store.close()
+            if self.associative_index:
+                await self.associative_index.store.close()
             await super().close()
 
         except Exception as e:

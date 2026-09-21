@@ -2410,6 +2410,10 @@ class VikingVectorIndexBackend:
             await self._delete_vector_transfer_ids(ctx, affected_target_ids)
         return source_records, batches, target_acl_fields
 
+    def _rewrite_transfer_record(self, record, **kwargs):
+        """Allow auxiliary multi-view indexes to retain their record identities."""
+        return rewrite_vector_record(record, **kwargs)
+
     async def copy_uri_mapping(
         self,
         ctx: RequestContext,
@@ -2436,7 +2440,7 @@ class VikingVectorIndexBackend:
         result = VectorTransferResult(scanned=len(source_records), batches=batches)
         timestamp = get_current_timestamp()
         target_payloads = [
-            rewrite_vector_record(
+            self._rewrite_transfer_record(
                 record,
                 source_uri=source_uri,
                 target_uri=target_uri,
@@ -2522,7 +2526,7 @@ class VikingVectorIndexBackend:
         moved_acl_by_uri: Dict[str, Dict[str, Any]] = {}
         target_payloads: List[Dict[str, Any]] = []
         for record in source_records:
-            payload = rewrite_vector_record(
+            payload = self._rewrite_transfer_record(
                 record,
                 source_uri=source_uri,
                 target_uri=target_uri,

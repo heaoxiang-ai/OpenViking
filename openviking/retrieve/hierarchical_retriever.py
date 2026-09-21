@@ -173,6 +173,58 @@ class HierarchicalRetriever:
         if image_query and context_type is None:
             context_type = ContextType.RESOURCE.value
 
+        from openviking.storage.associative_index import AssociativeIndex
+
+        associative = getattr(self.vector_store, "associative_index", None)
+        if (
+            isinstance(associative, AssociativeIndex)
+            and associative.settings.enabled
+            and not image_query
+            and context_type in (None, ContextType.MEMORY.value)
+            and (level is None or 2 in level)
+            and (
+                context_type == ContextType.MEMORY.value
+                or (target_dirs and all("/memories" in uri for uri in target_dirs))
+            )
+        ):
+            from openviking.retrieve.associative_retriever import AssociativeRetriever
+            from openviking.storage.viking_fs import get_viking_fs
+
+            if associative.settings.rerank_required and not self._rerank_client:
+                raise ValueError("Associative retrieval requires the configured reranker")
+
+            async def rerank_evidence(text, documents, fallback_scores):
+                return await self._rerank_scores(
+                    text, documents, fallback_scores, strict=associative.settings.rerank_required
+                )
+
+            evidence = await AssociativeRetriever(
+                associative, get_viking_fs(), rerank_evidence
+            ).retrieve(
+                query.query,
+                query_vector,
+                ctx,
+                targets=target_dirs,
+                extra_filter=scope_dsl,
+                limit=limit,
+                threshold=effective_threshold,
+                score_gte=score_gte,
+            )
+            if evidence is not None:
+                matched = await self._convert_to_matched_contexts(
+                    evidence, ctx=ctx, apply_hotness=False
+                )
+                get_stats_collector().record_query(
+                    context_type="memory",
+                    result_count=len(matched),
+                    scores=[m.score for m in matched],
+                    latency_ms=(time.monotonic() - t0) * 1000,
+                    rerank_used=self._rerank_client is not None,
+                )
+                return QueryResult(
+                    query=query, matched_contexts=matched, searched_directories=root_uris
+                )
+
         scene_index = getattr(self.vector_store, "scene_index", None)
         use_scenes = (
             isinstance(scene_index, SceneCueIndex)
@@ -428,6 +480,8 @@ class HierarchicalRetriever:
         query: str,
         documents: List[str],
         fallback_scores: List[float],
+        *,
+        strict: bool = False,
     ) -> List[float]:
         """Return rerank scores or fall back to vector scores."""
         if not self._rerank_client or not documents:
@@ -457,12 +511,16 @@ class HierarchicalRetriever:
                 [document for _, document in rerank_documents],
             )
         except Exception as e:
+            if strict:
+                raise RuntimeError("Associative evidence reranking failed") from e
             logger.warning(
                 "[HierarchicalRetriever] Rerank failed, fallback to vector scores: %s", e
             )
             return fallback_scores
 
         if not scores or len(scores) != len(rerank_documents):
+            if strict:
+                raise RuntimeError("Associative reranker returned invalid score count")
             logger.warning(
                 "[HierarchicalRetriever] Invalid rerank result, fallback to vector scores"
             )
@@ -470,6 +528,8 @@ class HierarchicalRetriever:
 
         normalized_scores = list(fallback_scores)
         for score, (index, _) in zip(scores, rerank_documents, strict=True):
+            if strict and not math.isfinite(float(score)):
+                raise RuntimeError("Associative reranker returned a non-finite score")
             normalized_scores[index] = self._finite_score(score, fallback_scores[index])
         return normalized_scores
 

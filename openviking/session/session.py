@@ -84,7 +84,7 @@ _MEMORY_EXTRACTION_RETRY_BASE_DELAY_SECONDS = 1.0
 _MEMORY_EXTRACTION_RETRY_MAX_DELAY_SECONDS = 8.0
 _AGENT_TRAINING_REQUIRED_MEMORY_TYPES = frozenset({"experiences"})
 _SESSION_PHASE1_LOCK_TIMEOUT_SECONDS = 30.0
-_MEMORY_STEP_NAMES = ("long_term",)
+_MEMORY_STEP_NAMES = ("long_term", "associative")
 _CUMULATIVE_CHECKPOINT_VERSION = 2
 # Match inline image transports emitted inside coding-agent tool output.
 _INLINE_IMAGE_DATA_URL_RE = re.compile(
@@ -2779,7 +2779,23 @@ class Session:
                         and (long_term_memory_types is None or bool(long_term_memory_types))
                         and bool(long_term_messages)
                     )
-                    if working_memory_enabled or (self._session_compressor and long_term_has_work):
+                    associative_messages = [
+                        message
+                        for message in extraction_messages
+                        if message.id not in completed_memory_steps.get("associative", set())
+                    ]
+                    associative_has_work = (
+                        ov_config.memory.associative.enabled
+                        and memory_extraction_enabled
+                        and (self_memory_enabled or allowed_peer_ids)
+                        and (long_term_memory_types is None or "events" in long_term_memory_types)
+                        and bool(associative_messages)
+                    )
+                    if (
+                        working_memory_enabled
+                        or (self._session_compressor and long_term_has_work)
+                        or associative_has_work
+                    ):
                         logger.info(
                             "Starting post-commit extraction from %s archived messages",
                             len(messages),
@@ -2838,6 +2854,35 @@ class Session:
                                     )
                                 )
                             extraction_labels.append("long_term")
+
+                        if associative_has_work:
+                            from openviking.session.associative.builder import AssociativeBuilder
+
+                            async def _run_associative_extraction():
+                                builder = AssociativeBuilder(
+                                    index=self._viking_fs._get_vector_store().associative_index,
+                                    fs=self._viking_fs,
+                                    ctx=self.ctx,
+                                    config=ov_config,
+                                )
+                                return await builder.build(
+                                    associative_messages,
+                                    archive_uri,
+                                    allow_self=self_memory_enabled,
+                                    allowed_peers=allowed_peer_ids,
+                                    peer_enabled=peer_memory_enabled,
+                                    tags=event_search_tags,
+                                )
+
+                            extraction_tasks.append(
+                                _run_recorded_memory_step(
+                                    "associative_memory_extraction",
+                                    "associative",
+                                    associative_messages,
+                                    _run_associative_extraction,
+                                )
+                            )
+                            extraction_labels.append("associative")
 
                         _results = await asyncio.gather(
                             *extraction_tasks,

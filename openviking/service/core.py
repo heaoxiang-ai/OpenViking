@@ -421,6 +421,10 @@ class OpenVikingService:
             raise RuntimeError("VikingDBManager not initialized")
         await init_context_collection(self._vikingdb_manager)
         await self._vikingdb_manager.initialize_scene_index(config.memory.scene_cues)
+        associative = config.memory.associative
+        if associative.enabled and associative.rerank_required and not config.rerank.is_available():
+            raise ValueError("memory.associative requires a configured rerank provider")
+        await self._vikingdb_manager.initialize_associative_index(associative)
 
         if self._agfs_client is None:
             raise RuntimeError("AGFS client not initialized")
