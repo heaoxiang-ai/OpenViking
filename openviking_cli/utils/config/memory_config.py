@@ -19,6 +19,13 @@ class SessionAutoCommitConfig(BaseModel):
     scan_batch_pause_seconds: float = Field(default=0.0, ge=0)
 
 
+class SceneCueConfig(BaseModel):
+    """Experimental Event scene embeddings; disable recall for index-matched ablations."""
+
+    enabled: bool = False
+    recall_enabled: bool = True
+
+
 class MemoryConfig(BaseModel):
     """Memory configuration for OpenViking."""
 
@@ -98,6 +105,14 @@ class MemoryConfig(BaseModel):
     session_auto_commit: SessionAutoCommitConfig = Field(
         default_factory=SessionAutoCommitConfig,
         description="Server-wide controls for automatic session commits.",
+    )
+    scene_cues: SceneCueConfig = Field(
+        default_factory=SceneCueConfig,
+        description=(
+            "Opt-in descriptive Event cues in a separate <collection>_scene_cues collection. "
+            "enabled controls extraction/indexing; recall_enabled controls dual-view recall. "
+            "Existing Events are not backfilled."
+        ),
     )
 
     @model_validator(mode="before")

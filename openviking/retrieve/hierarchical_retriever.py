@@ -24,6 +24,7 @@ from openviking.retrieve.retrieval_stats import get_stats_collector
 from openviking.server.identity import RequestContext
 from openviking.storage.abstract_overview import AbstractOverviewFormatError, body_for_preview
 from openviking.storage.expr import FilterExpr
+from openviking.storage.scene_cue_index import SceneCueIndex
 from openviking.storage.vikingdb_manager import VikingDBManager, VikingDBManagerProxy
 from openviking.telemetry import get_current_telemetry
 from openviking.utils.tags import normalize_search_tags
@@ -172,12 +173,37 @@ class HierarchicalRetriever:
         if image_query and context_type is None:
             context_type = ContextType.RESOURCE.value
 
+        scene_index = getattr(self.vector_store, "scene_index", None)
+        use_scenes = (
+            isinstance(scene_index, SceneCueIndex)
+            and scene_index.recall_enabled
+            and not image_query
+            and context_type in (None, ContextType.MEMORY.value)
+            and (level is None or 2 in level)
+        )
+
+        async def scene_search():
+            hits = await scene_index.search(
+                ctx=ctx,
+                query_vector=query_vector,
+                sparse_query_vector=sparse_query_vector,
+                context_type=context_type,
+                target_directories=target_dirs,
+                extra_filter=scope_dsl,
+                level=level,
+                limit=max(limit, self.GLOBAL_SEARCH_TOPK),
+            )
+            telemetry.count("vector.searches", 1)
+            telemetry.count("vector.scored", len(hits))
+            telemetry.count("vector.scanned", len(hits))
+            return hits
+
         if mode == RetrieverMode.QUICK:
             search_limit = (
                 max(limit * 5, 50) if image_query else max(limit, self.GLOBAL_SEARCH_TOPK)
             )
             with telemetry.measure("search.vector_retrieval"):
-                quick_results = await vector_proxy.search_in_tenant(
+                primary_search = vector_proxy.search_in_tenant(
                     query_vector=query_vector,
                     sparse_query_vector=sparse_query_vector,
                     context_type=context_type,
@@ -186,9 +212,19 @@ class HierarchicalRetriever:
                     level=level,
                     limit=search_limit,
                 )
+                if use_scenes:
+                    quick_results, scene_results = await asyncio.gather(
+                        primary_search, scene_search()
+                    )
+                else:
+                    quick_results = await primary_search
             telemetry.count("vector.searches", 1)
             telemetry.count("vector.scored", len(quick_results))
             telemetry.count("vector.scanned", len(quick_results))
+            if use_scenes:
+                # Max-score fusion: views use the same embedding model/distance.
+                # Count the auxiliary candidates only once in telemetry.
+                quick_results = quick_results + scene_results
 
             collected_by_uri: Dict[str, Dict[str, Any]] = {}
             for result in quick_results:
@@ -326,6 +362,25 @@ class HierarchicalRetriever:
                 )
             apply_hotness = True
             rerank_used = self._rerank_client is not None and mode == RetrieverMode.THINKING
+
+            if use_scenes:
+                scene_results = await scene_search()
+                scores = [self._finite_score(hit.get("_score", 0.0)) for hit in scene_results]
+                if rerank_used:
+                    # Score the original evidence, not the generated description.
+                    scores = await self._rerank_scores(
+                        query.query, [hit.get("abstract", "") for hit in scene_results], scores
+                    )
+                by_uri = {hit["uri"]: hit for hit in candidates}
+                for hit, score in zip(scene_results, scores, strict=True):
+                    if not self._passes_threshold(score, effective_threshold, score_gte):
+                        continue
+                    previous = by_uri.get(hit["uri"])
+                    if previous is None or score > previous.get(
+                        "_final_score", previous.get("_score", 0)
+                    ):
+                        by_uri[hit["uri"]] = {**hit, "_score": score, "_final_score": score}
+                candidates = list(by_uri.values())
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(

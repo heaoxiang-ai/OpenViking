@@ -91,6 +91,12 @@ class MemoryTypeRegistry:
                     memory_templates_dir,
                 )
 
+        from openviking.session.memory.scene_cues import configure_scene_field
+
+        events = self.get("events")
+        if events:
+            configure_scene_field(events, config.memory.scene_cues.enabled)
+
     def register(self, memory_type: MemoryTypeSchema) -> None:
         """Register a memory type. Raises error if already exists."""
         if memory_type.memory_type in self._types:

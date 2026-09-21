@@ -420,6 +420,7 @@ class OpenVikingService:
         if self._vikingdb_manager is None:
             raise RuntimeError("VikingDBManager not initialized")
         await init_context_collection(self._vikingdb_manager)
+        await self._vikingdb_manager.initialize_scene_index(config.memory.scene_cues)
 
         if self._agfs_client is None:
             raise RuntimeError("AGFS client not initialized")

@@ -290,7 +290,7 @@ def _decode_collection_description(
     return base.strip(), payload if isinstance(payload, dict) else None
 
 
-async def init_context_collection(storage) -> bool:
+async def init_context_collection(storage, *, name: Optional[str] = None) -> bool:
     """
     Initialize the context collection with proper schema.
 
@@ -303,7 +303,7 @@ async def init_context_collection(storage) -> bool:
     from openviking_cli.utils.config import get_openviking_config
 
     config = get_openviking_config()
-    name = config.storage.vectordb.name
+    name = name or config.storage.vectordb.name
     vector_dim = config.embedding.dimension
     if not name:
         raise ValueError("Vector DB collection name is required")
@@ -781,6 +781,22 @@ class TextEmbeddingHandler(DequeueHandlerBase):
                             embedding_msg.message,
                             is_query=False,
                         )
+                        scene_index = getattr(self._vikingdb, "scene_index", None)
+                        from openviking.storage.scene_cue_index import SceneCueIndex
+
+                        if isinstance(scene_index, SceneCueIndex) and scene_index.is_event(
+                            inserted_data
+                        ):
+                            inserted_data["_scene_cue_embedding"] = None
+                            cue = inserted_data.get("_scene_cue")
+                            if scene_index.settings.enabled and cue:
+                                cue_result = await embed_compat(self._embedder, cue, is_query=False)
+                                if len(cue_result.dense_vector or []) != self._vector_dim:
+                                    raise ValueError("Scene cue embedding dimension mismatch")
+                                inserted_data["_scene_cue_embedding"] = (
+                                    cue_result.dense_vector,
+                                    cue_result.sparse_vector,
+                                )
                         _embed_elapsed = _time.monotonic() - _embed_t0
                         try:
                             from openviking.metrics.datasources import EmbeddingEventDataSource

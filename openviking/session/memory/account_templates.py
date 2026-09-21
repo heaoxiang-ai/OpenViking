@@ -445,4 +445,12 @@ async def resolve_account_memory_registry(
                 f"Invalid account {getattr(exc, 'field', 'content_template')} "
                 f"for {schema.memory_type}; republish or reset it"
             ) from exc
+    from openviking.session.memory.scene_cues import SCENE_FIELD, configure_scene_field
+
+    events = resolved.get("events")
+    deployment_events = registry.get("events")
+    if events and deployment_events:
+        configure_scene_field(
+            events, any(field.name == SCENE_FIELD for field in deployment_events.fields)
+        )
     return resolved

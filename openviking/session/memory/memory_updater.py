@@ -1203,6 +1203,18 @@ class MemoryUpdater:
                 ),
                 extract_context=extract_context,
             )
+            # Bind a newly generated cue to the rendered evidence. Preserved cues retain
+            # their old hash, so edits without a fresh cue cannot index stale descriptions.
+            from openviking.session.memory.scene_cues import (
+                SCENE_FIELD,
+                SOURCE_FIELD,
+                source_digest,
+            )
+
+            if schema.memory_type == "events" and SCENE_FIELD in resolved_op.memory_fields:
+                rendered = MemoryFileUtils.read(new_full_content, uri=uri)
+                rendered.extra_fields[SOURCE_FIELD] = source_digest(rendered.content or "")
+                new_full_content = MemoryFileUtils.write(rendered)
             await viking_fs.write_file(
                 uri,
                 new_full_content,
@@ -1499,6 +1511,12 @@ class MemoryUpdater:
                 # Convert to embedding msg and enqueue
                 embedding_msg = EmbeddingMsgConverter.from_context(memory_context)
                 if embedding_msg:
+                    if memory_type == "events":
+                        from openviking.session.memory.scene_cues import valid_scene_cue
+
+                        cue = valid_scene_cue(mf)
+                        if cue:
+                            embedding_msg.context_data["_scene_cue"] = cue
                     if getattr(ingest_options, "search_tags", None) is not None:
                         embedding_msg.context_data["search_tags"] = list(ingest_options.search_tags)
                         embedding_msg.context_data["_upsert_options"] = {
