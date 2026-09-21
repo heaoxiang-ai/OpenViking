@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Beijing Volcano Engine Technology Co., Ltd.
 # SPDX-License-Identifier: AGPL-3.0
-"""Union native retrieval and trigger hits, then rerank canonical evidence once."""
+"""Union native retrieval and trigger hits, rank by reciprocal rank fusion."""
 
 import asyncio
 
@@ -9,7 +9,7 @@ from openviking.session.memory.utils.content_visibility import visible_content
 from openviking_cli.exceptions import PermissionDeniedError
 
 
-async def fuse_memory_candidates(primary, triggered, *, fs, ctx, query, rerank):
+async def fuse_memory_candidates(primary, triggered, *, fs, ctx):
     # Both lanes point to the SAME canonical namespace. URI is the identity; never
     # collapse different dated events just because their summaries look similar.
     by_uri = {row["uri"]: row for row in [*triggered, *primary] if row.get("uri")}
@@ -41,13 +41,8 @@ async def fuse_memory_candidates(primary, triggered, *, fs, ctx, query, rerank):
     rows = [row for row in rows if row is not None]
     if not rows:
         return []
-    ranked = await rerank(
-        query, [row["abstract"] for row in rows], [scores[row["uri"]] for row in rows], strict=True
-    )
+    # RRF is a rank score, not cosine similarity or a model relevance score.
     return sorted(
-        [
-            {**row, "_score": score, "_final_score": score}
-            for row, score in zip(rows, ranked, strict=True)
-        ],
+        [{**row, "_score": scores[row["uri"]], "_final_score": scores[row["uri"]]} for row in rows],
         key=lambda row: (-row["_final_score"], row["uri"]),
     )

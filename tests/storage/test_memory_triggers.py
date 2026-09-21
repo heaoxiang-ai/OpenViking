@@ -272,7 +272,7 @@ async def test_copy_move_retain_all_views_without_id_collisions(store):
 
 
 @pytest.mark.asyncio
-async def test_native_and_trigger_candidates_unified_rerank_and_user_topk(store, monkeypatch):
+async def test_native_and_trigger_candidates_rrf_and_user_topk(store, monkeypatch):
     await add(store)
     pref_body = "Alice prefers quiet restaurants."
     await add(store, uri=PREFERENCE, body=pref_body, triggers=False)
@@ -283,26 +283,24 @@ async def test_native_and_trigger_candidates_unified_rerank_and_user_topk(store,
         embed_async=AsyncMock(return_value=EmbedResult(dense_vector=[1.0, 0.0, 0.0, 0.0])),
     )
     retriever = HierarchicalRetriever(store, embedder)
-    rerank = Mock(side_effect=lambda q, docs: [0.95 if x == pref_body else 0.8 for x in docs])
-    retriever._rerank_client = SimpleNamespace(rerank_batch=rerank)
+    assert retriever._rerank_client is None
     query = TypedQuery(query="Where should we eat?", context_type=ContextType.MEMORY, intent="")
     result = await retriever.retrieve(query, context(), limit=2, mode=RetrieverMode.QUICK)
-    assert [x.uri for x in result.matched_contexts] == [PREFERENCE, EVENT]
+    assert {x.uri for x in result.matched_contexts} == {PREFERENCE, EVENT}
+    assert result.matched_contexts[0].uri == EVENT  # Supported by both lanes.
     assert embedder.embed_async.call_count == 1
-    docs = rerank.call_args.args[1]
-    assert set(docs) == {BODY, pref_body}
-    assert len(docs) == 2  # primary + trigger hit for EVENT is reranked only once
-    assert not any("team dinner" in x for x in docs)
+    assert {x.abstract for x in result.matched_contexts} == {BODY, pref_body}
     short = await retriever.retrieve(query, context(), limit=1, mode=RetrieverMode.QUICK)
-    assert [x.uri for x in short.matched_contexts] == [PREFERENCE]
+    assert [x.uri for x in short.matched_contexts] == [EVENT]
     store.trigger_index.settings.recall_enabled = False
-    rerank.reset_mock()
-    await retriever.retrieve(query, context(), limit=2, mode=RetrieverMode.QUICK)
-    rerank.assert_not_called()  # QUICK retains its original behavior when disabled
+    ordinary = await retriever.retrieve(query, context(), limit=2, mode=RetrieverMode.QUICK)
+    # Both canonical vectors are orthogonal to the query; ordinary QUICK keeps
+    # its original strict > 0 threshold and does not return the trigger hits.
+    assert ordinary.matched_contexts == []
 
 
 @pytest.mark.asyncio
-async def test_rerank_failure_does_not_mix_incomparable_lane_scores(store, monkeypatch):
+async def test_trigger_fusion_never_calls_a_configured_reranker(store, monkeypatch):
     await add(store)
     monkeypatch.setattr("openviking.storage.viking_fs.get_viking_fs", filesystem)
     embedder = SimpleNamespace(
@@ -310,7 +308,9 @@ async def test_rerank_failure_does_not_mix_incomparable_lane_scores(store, monke
         embed_async=AsyncMock(return_value=EmbedResult(dense_vector=[1.0, 0.0, 0.0, 0.0])),
     )
     retriever = HierarchicalRetriever(store, embedder)
-    retriever._rerank_client = SimpleNamespace(rerank_batch=Mock(side_effect=RuntimeError("429")))
+    rerank = Mock(side_effect=AssertionError("Unexpected rerank request"))
+    retriever._rerank_client = SimpleNamespace(rerank_batch=rerank)
     query = TypedQuery(query="restaurant", context_type=ContextType.MEMORY, intent="")
-    with pytest.raises(RuntimeError, match="reranking failed"):
-        await retriever.retrieve(query, context(), mode=RetrieverMode.QUICK)
+    result = await retriever.retrieve(query, context(), mode=RetrieverMode.QUICK)
+    assert [x.uri for x in result.matched_contexts] == [EVENT]
+    rerank.assert_not_called()

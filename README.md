@@ -351,7 +351,7 @@ retrieval. This is an OV adaptation of the write-time cue idea in
 }
 ```
 
-Enable this only with a configured rerank provider. The feature is off by default.
+The feature is off by default and does not require a rerank provider.
 After a normal memory write, a separate model call generates source-anchored cues;
 the original extraction schema, visible evidence and primary embedding are unchanged.
 Concept/bridge cues apply to Events, Entities and Preferences; Event files may also
@@ -365,16 +365,17 @@ the original URI. A body hash invalidates stale cues. No new memory files or typ
 are created. Existing unmodified files are not automatically backfilled.
 
 Both `find` and `search` retain their ordinary memory candidates and add trigger
-candidates. The union is deduplicated by canonical URI and reranked on current
-visible evidence, with the caller's `limit` applied afterwards. There are no fixed
-Scene/Item quotas. A matching trigger enables this rerank even for QUICK `find`.
-Trigger text is not sent to the reranker or returned as evidence. Different dated
+candidates. The union is deduplicated by canonical URI and ordered by reciprocal
+rank fusion, `sum(1 / (60 + rank))`, with the caller's `limit` applied afterwards.
+Fused scores and score thresholds use RRF rank scores, not cosine similarity. There are no fixed
+Scene/Item quotas. Trigger fusion makes no rerank call, including for QUICK `find`.
+Trigger text is never returned as evidence; current visible bodies are read instead. Different dated
 files are not merged merely because their summaries are similar.
 
 The auxiliary collection uses the same account, user, directory, tag and ACL scope;
 current file permissions and body hashes are rechecked at retrieval. Deletes and
 moves maintain the auxiliary records. A generation failure is logged and retains
-the normal memory; a fusion reranker failure is surfaced rather than mixing vector
-scores with rerank scores. Set `recall_enabled` to false to retain cached/indexed
+the normal memory. Commit and embedding queue workers share a cross-event-loop
+asynchronous limiter. Set `recall_enabled` to false to retain cached/indexed
 cues while using ordinary retrieval. Generation adds model/embedding cost at write
-time; recall adds an auxiliary vector lookup, evidence reads and unified reranking.
+time; recall adds an auxiliary vector lookup, evidence reads and local rank fusion.

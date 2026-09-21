@@ -365,18 +365,13 @@ class HierarchicalRetriever:
             telemetry.count("search.memory_triggers.native_candidates", len(candidates))
             telemetry.count("search.memory_triggers.trigger_candidates", len(triggered))
             if triggered:
-                if not self._rerank_client:
-                    raise ValueError("Memory trigger fusion requires a configured reranker")
                 candidates = await fuse_memory_candidates(
                     candidates,
                     triggered,
                     fs=fs,
                     ctx=ctx,
-                    query=query.query,
-                    rerank=self._rerank_scores,
                 )
                 apply_hotness = False
-                rerank_used = True
                 telemetry.count("search.memory_triggers.merged_candidates", len(candidates))
             candidates = [
                 r
@@ -432,8 +427,6 @@ class HierarchicalRetriever:
         query: str,
         documents: List[str],
         fallback_scores: List[float],
-        *,
-        strict: bool = False,
     ) -> List[float]:
         """Return rerank scores or fall back to vector scores."""
         if not self._rerank_client or not documents:
@@ -463,16 +456,12 @@ class HierarchicalRetriever:
                 [document for _, document in rerank_documents],
             )
         except Exception as e:
-            if strict:
-                raise RuntimeError("Memory trigger evidence reranking failed") from e
             logger.warning(
                 "[HierarchicalRetriever] Rerank failed, fallback to vector scores: %s", e
             )
             return fallback_scores
 
         if not scores or len(scores) != len(rerank_documents):
-            if strict:
-                raise RuntimeError("Memory trigger reranker returned invalid score count")
             logger.warning(
                 "[HierarchicalRetriever] Invalid rerank result, fallback to vector scores"
             )
@@ -480,8 +469,6 @@ class HierarchicalRetriever:
 
         normalized_scores = list(fallback_scores)
         for score, (index, _) in zip(scores, rerank_documents, strict=True):
-            if strict and not math.isfinite(float(score)):
-                raise RuntimeError("Memory trigger reranker returned a non-finite score")
             normalized_scores[index] = self._finite_score(score, fallback_scores[index])
         return normalized_scores
 

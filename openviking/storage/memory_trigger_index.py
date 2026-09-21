@@ -5,6 +5,7 @@
 import asyncio
 import json
 
+from openviking.concurrency import AsyncSemaphore
 from openviking.models.embedder.base import embed_compat
 from openviking.server.error_mapping import is_not_found_error
 from openviking.session.memory.retrieval_triggers import memory_type_for_uri, source_hash
@@ -33,7 +34,8 @@ class MemoryTriggerIndex:
             )
         )
         self.store.acl_manager = primary.acl_manager
-        self.model_slots = asyncio.Semaphore(settings.max_concurrent)
+        # Commit and embedding queues run on different worker event loops.
+        self.model_slots = AsyncSemaphore(settings.max_concurrent)
 
     @property
     def recall_enabled(self):

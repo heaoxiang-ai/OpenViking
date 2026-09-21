@@ -420,12 +420,6 @@ class OpenVikingService:
         if self._vikingdb_manager is None:
             raise RuntimeError("VikingDBManager not initialized")
         await init_context_collection(self._vikingdb_manager)
-        if (
-            config.memory.triggers.enabled
-            and config.memory.triggers.recall_enabled
-            and not config.rerank.is_available()
-        ):
-            raise ValueError("memory.triggers recall requires a configured rerank provider")
         await self._vikingdb_manager.initialize_trigger_index(config.memory.triggers)
 
         if self._agfs_client is None:
