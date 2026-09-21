@@ -364,6 +364,7 @@ class HierarchicalRetriever:
             )
             telemetry.count("search.memory_triggers.native_candidates", len(candidates))
             telemetry.count("search.memory_triggers.trigger_candidates", len(triggered))
+            final_threshold = effective_threshold
             if triggered:
                 candidates = await fuse_memory_candidates(
                     candidates,
@@ -372,12 +373,15 @@ class HierarchicalRetriever:
                     ctx=ctx,
                 )
                 apply_hotness = False
+                # Configured similarity/rerank thresholds use a different scale
+                # from RRF. Only an explicit caller threshold applies to RRF.
+                final_threshold = score_threshold if score_threshold is not None else 0.0
                 telemetry.count("search.memory_triggers.merged_candidates", len(candidates))
             candidates = [
                 r
                 for r in candidates
                 if self._passes_threshold(
-                    r.get("_final_score", r.get("_score", 0)), effective_threshold, score_gte
+                    r.get("_final_score", r.get("_score", 0)), final_threshold, score_gte
                 )
             ]
 

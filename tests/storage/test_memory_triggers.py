@@ -31,6 +31,7 @@ from openviking_cli.retrieve.types import ContextType, TypedQuery
 from openviking_cli.session.user_id import UserIdentifier
 from openviking_cli.utils.config.memory_config import MemoryConfig
 from openviking_cli.utils.config.memory_trigger_config import MemoryTriggerConfig
+from openviking_cli.utils.config.rerank_config import RerankConfig
 from openviking_cli.utils.config.vectordb_config import VectorDBBackendConfig
 
 EVENT = "viking://user/alice/memories/events/2026/09/21/dinner.md"
@@ -282,7 +283,8 @@ async def test_native_and_trigger_candidates_rrf_and_user_topk(store, monkeypatc
         prepare_embedding_input=lambda text: text,
         embed_async=AsyncMock(return_value=EmbedResult(dense_vector=[1.0, 0.0, 0.0, 0.0])),
     )
-    retriever = HierarchicalRetriever(store, embedder)
+    # Normal configured threshold 0.1 must not discard RRF scores (max 2/61).
+    retriever = HierarchicalRetriever(store, embedder, rerank_config=RerankConfig())
     assert retriever._rerank_client is None
     query = TypedQuery(query="Where should we eat?", context_type=ContextType.MEMORY, intent="")
     result = await retriever.retrieve(query, context(), limit=2, mode=RetrieverMode.QUICK)
@@ -292,6 +294,10 @@ async def test_native_and_trigger_candidates_rrf_and_user_topk(store, monkeypatc
     assert {x.abstract for x in result.matched_contexts} == {BODY, pref_body}
     short = await retriever.retrieve(query, context(), limit=1, mode=RetrieverMode.QUICK)
     assert [x.uri for x in short.matched_contexts] == [EVENT]
+    filtered = await retriever.retrieve(
+        query, context(), mode=RetrieverMode.QUICK, score_threshold=0.05
+    )
+    assert filtered.matched_contexts == []
     store.trigger_index.settings.recall_enabled = False
     ordinary = await retriever.retrieve(query, context(), limit=2, mode=RetrieverMode.QUICK)
     # Both canonical vectors are orthogonal to the query; ordinary QUICK keeps

@@ -367,7 +367,9 @@ are created. Existing unmodified files are not automatically backfilled.
 Both `find` and `search` retain their ordinary memory candidates and add trigger
 candidates. The union is deduplicated by canonical URI and ordered by reciprocal
 rank fusion, `sum(1 / (60 + rank))`, with the caller's `limit` applied afterwards.
-Fused scores and score thresholds use RRF rank scores, not cosine similarity. There are no fixed
+Fused scores and explicit caller score thresholds use RRF rank scores, not cosine
+similarity. The default fused threshold is zero; a configured similarity/rerank
+threshold does not filter RRF scores. There are no fixed
 Scene/Item quotas. Trigger fusion makes no rerank call, including for QUICK `find`.
 Trigger text is never returned as evidence; current visible bodies are read instead. Different dated
 files are not merged merely because their summaries are similar.
