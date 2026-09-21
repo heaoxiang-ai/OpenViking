@@ -4,7 +4,7 @@ from typing import Any, Dict, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from openviking_cli.utils.config.associative_memory_config import AssociativeMemoryConfig
+from openviking_cli.utils.config.memory_trigger_config import MemoryTriggerConfig
 from openviking_cli.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -20,15 +20,10 @@ class SessionAutoCommitConfig(BaseModel):
     scan_batch_pause_seconds: float = Field(default=0.0, ge=0)
 
 
-class SceneCueConfig(BaseModel):
-    """Experimental Event scene embeddings; disable recall for index-matched ablations."""
-
-    enabled: bool = False
-    recall_enabled: bool = True
-
-
 class MemoryConfig(BaseModel):
     """Memory configuration for OpenViking."""
+
+    triggers: MemoryTriggerConfig = Field(default_factory=MemoryTriggerConfig)
 
     version: str = Field(
         default="v3",
@@ -107,27 +102,6 @@ class MemoryConfig(BaseModel):
         default_factory=SessionAutoCommitConfig,
         description="Server-wide controls for automatic session commits.",
     )
-    scene_cues: SceneCueConfig = Field(
-        default_factory=SceneCueConfig,
-        description=(
-            "Opt-in descriptive Event cues in a separate <collection>_scene_cues collection. "
-            "enabled controls extraction/indexing; recall_enabled controls dual-view recall. "
-            "Existing Events are not backfilled."
-        ),
-    )
-    associative: AssociativeMemoryConfig = Field(
-        default_factory=AssociativeMemoryConfig,
-        description=(
-            "Independent topic/scene/item evidence and Entity/Bridge/Scene/Horizon retrieval. "
-            "Uses OV model, embedding, rerank, storage and isolation. New session commits only."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def validate_scene_pipeline(self) -> "MemoryConfig":
-        if self.associative.enabled and self.scene_cues.enabled:
-            raise ValueError("Enable memory.associative or legacy memory.scene_cues, not both")
-        return self
 
     @model_validator(mode="before")
     @classmethod

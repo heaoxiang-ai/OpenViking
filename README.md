@@ -334,3 +334,47 @@ The OpenViking project uses different licenses for different components:
 - **crates/ov\_cli**: Apache 2.0 - see the [LICENSE](./crates/LICENSE) for details
 - **examples**: Apache 2.0 - see the [LICENSE](./examples/LICENSE) for details. The Hermes plugin in `examples/hermes-plugin` retains its [MIT license](./examples/hermes-plugin/LICENSE).
 - **third\_party**: Respective original licenses of third-party projects
+
+
+### Optional retrieval triggers on existing memories
+
+`memory.triggers` adds retrieval-only views to existing Event, Entity and Preference
+files. It does not create another topic/scene/item hierarchy or replace native OV
+retrieval. This is an OV adaptation of the write-time cue idea in
+[T-Mem](https://github.com/Sherlockwz/T-Mem), not a reproduction of its full pipeline.
+
+```json
+{
+  "memory": {
+    "triggers": {"enabled": true, "recall_enabled": true}
+  }
+}
+```
+
+Enable this only with a configured rerank provider. The feature is off by default.
+After a normal memory write, a separate model call generates source-anchored cues;
+the original extraction schema, visible evidence and primary embedding are unchanged.
+Concept/bridge cues apply to Events, Entities and Preferences; Event files may also
+have descriptive scene and hypothetical horizon cues. Generation validates an exact
+source quote per cue, which establishes provenance but does not prove an association
+is useful or factually implied. Hypothetical cues are never answer evidence.
+
+Accepted cues are cached in the file's hidden `MEMORY_FIELDS.retrieval_triggers`
+metadata and individually embedded in `<collection>_memory_triggers`, pointing to
+the original URI. A body hash invalidates stale cues. No new memory files or types
+are created. Existing unmodified files are not automatically backfilled.
+
+Both `find` and `search` retain their ordinary memory candidates and add trigger
+candidates. The union is deduplicated by canonical URI and reranked on current
+visible evidence, with the caller's `limit` applied afterwards. There are no fixed
+Scene/Item quotas. A matching trigger enables this rerank even for QUICK `find`.
+Trigger text is not sent to the reranker or returned as evidence. Different dated
+files are not merged merely because their summaries are similar.
+
+The auxiliary collection uses the same account, user, directory, tag and ACL scope;
+current file permissions and body hashes are rechecked at retrieval. Deletes and
+moves maintain the auxiliary records. A generation failure is logged and retains
+the normal memory; a fusion reranker failure is surfaced rather than mixing vector
+scores with rerank scores. Set `recall_enabled` to false to retain cached/indexed
+cues while using ordinary retrieval. Generation adds model/embedding cost at write
+time; recall adds an auxiliary vector lookup, evidence reads and unified reranking.

@@ -24,7 +24,6 @@ from openviking.retrieve.retrieval_stats import get_stats_collector
 from openviking.server.identity import RequestContext
 from openviking.storage.abstract_overview import AbstractOverviewFormatError, body_for_preview
 from openviking.storage.expr import FilterExpr
-from openviking.storage.scene_cue_index import SceneCueIndex
 from openviking.storage.vikingdb_manager import VikingDBManager, VikingDBManagerProxy
 from openviking.telemetry import get_current_telemetry
 from openviking.utils.tags import normalize_search_tags
@@ -173,89 +172,32 @@ class HierarchicalRetriever:
         if image_query and context_type is None:
             context_type = ContextType.RESOURCE.value
 
-        from openviking.storage.associative_index import AssociativeIndex
+        from openviking.storage.memory_trigger_index import MemoryTriggerIndex
 
-        associative = getattr(self.vector_store, "associative_index", None)
-        if (
-            isinstance(associative, AssociativeIndex)
-            and associative.settings.enabled
+        trigger_index = getattr(self.vector_store, "trigger_index", None)
+        use_triggers = (
+            isinstance(trigger_index, MemoryTriggerIndex)
+            and trigger_index.recall_enabled
             and not image_query
-            and context_type in (None, ContextType.MEMORY.value)
+            and query_vector is not None
             and (level is None or 2 in level)
             and (
                 context_type == ContextType.MEMORY.value
-                or (target_dirs and all("/memories" in uri for uri in target_dirs))
+                or (
+                    context_type is None
+                    and target_dirs
+                    and all("/memories" in uri for uri in target_dirs)
+                )
             )
-        ):
-            from openviking.retrieve.associative_retriever import AssociativeRetriever
-            from openviking.storage.viking_fs import get_viking_fs
-
-            if associative.settings.rerank_required and not self._rerank_client:
-                raise ValueError("Associative retrieval requires the configured reranker")
-
-            async def rerank_evidence(text, documents, fallback_scores):
-                return await self._rerank_scores(
-                    text, documents, fallback_scores, strict=associative.settings.rerank_required
-                )
-
-            evidence = await AssociativeRetriever(
-                associative, get_viking_fs(), rerank_evidence
-            ).retrieve(
-                query.query,
-                query_vector,
-                ctx,
-                targets=target_dirs,
-                extra_filter=scope_dsl,
-                limit=limit,
-                threshold=effective_threshold,
-                score_gte=score_gte,
-            )
-            if evidence is not None:
-                matched = await self._convert_to_matched_contexts(
-                    evidence, ctx=ctx, apply_hotness=False
-                )
-                get_stats_collector().record_query(
-                    context_type="memory",
-                    result_count=len(matched),
-                    scores=[m.score for m in matched],
-                    latency_ms=(time.monotonic() - t0) * 1000,
-                    rerank_used=self._rerank_client is not None,
-                )
-                return QueryResult(
-                    query=query, matched_contexts=matched, searched_directories=root_uris
-                )
-
-        scene_index = getattr(self.vector_store, "scene_index", None)
-        use_scenes = (
-            isinstance(scene_index, SceneCueIndex)
-            and scene_index.recall_enabled
-            and not image_query
-            and context_type in (None, ContextType.MEMORY.value)
-            and (level is None or 2 in level)
         )
-
-        async def scene_search():
-            hits = await scene_index.search(
-                ctx=ctx,
-                query_vector=query_vector,
-                sparse_query_vector=sparse_query_vector,
-                context_type=context_type,
-                target_directories=target_dirs,
-                extra_filter=scope_dsl,
-                level=level,
-                limit=max(limit, self.GLOBAL_SEARCH_TOPK),
-            )
-            telemetry.count("vector.searches", 1)
-            telemetry.count("vector.scored", len(hits))
-            telemetry.count("vector.scanned", len(hits))
-            return hits
-
+        candidate_limit = max(limit, trigger_index.settings.candidate_k) if use_triggers else limit
+        retrieval_threshold = float("-inf") if use_triggers else effective_threshold
         if mode == RetrieverMode.QUICK:
             search_limit = (
-                max(limit * 5, 50) if image_query else max(limit, self.GLOBAL_SEARCH_TOPK)
+                max(limit * 5, 50) if image_query else max(candidate_limit, self.GLOBAL_SEARCH_TOPK)
             )
             with telemetry.measure("search.vector_retrieval"):
-                primary_search = vector_proxy.search_in_tenant(
+                quick_results = await vector_proxy.search_in_tenant(
                     query_vector=query_vector,
                     sparse_query_vector=sparse_query_vector,
                     context_type=context_type,
@@ -264,19 +206,9 @@ class HierarchicalRetriever:
                     level=level,
                     limit=search_limit,
                 )
-                if use_scenes:
-                    quick_results, scene_results = await asyncio.gather(
-                        primary_search, scene_search()
-                    )
-                else:
-                    quick_results = await primary_search
             telemetry.count("vector.searches", 1)
             telemetry.count("vector.scored", len(quick_results))
             telemetry.count("vector.scanned", len(quick_results))
-            if use_scenes:
-                # Max-score fusion: views use the same embedding model/distance.
-                # Count the auxiliary candidates only once in telemetry.
-                quick_results = quick_results + scene_results
 
             collected_by_uri: Dict[str, Dict[str, Any]] = {}
             for result in quick_results:
@@ -285,7 +217,7 @@ class HierarchicalRetriever:
                     continue
 
                 score = self._finite_score(result.get("_score", 0.0))
-                if not self._passes_threshold(score, effective_threshold, score_gte):
+                if not self._passes_threshold(score, retrieval_threshold, score_gte):
                     continue
 
                 candidate = dict(result)
@@ -313,7 +245,7 @@ class HierarchicalRetriever:
                     target_directories=target_dirs,
                     extra_filter=scope_dsl,
                     level=[0, 1],
-                    limit=max(limit, self.GLOBAL_SEARCH_TOPK),
+                    limit=max(candidate_limit, self.GLOBAL_SEARCH_TOPK),
                 )
             telemetry.count("vector.searches", 1)
             telemetry.count("vector.scored", len(global_results))
@@ -328,7 +260,7 @@ class HierarchicalRetriever:
                     target_directories=target_dirs,
                     extra_filter=scope_dsl,
                     level=[2],
-                    limit=max(limit, self.GLOBAL_SEARCH_TOPK),
+                    limit=max(candidate_limit, self.GLOBAL_SEARCH_TOPK),
                 )
                 telemetry.count("vector.searches", 1)
                 telemetry.count("vector.scored", len(leaf_results))
@@ -402,9 +334,9 @@ class HierarchicalRetriever:
                     query_vector=query_vector,
                     sparse_query_vector=sparse_query_vector,
                     starting_points=starting_points,
-                    limit=limit,
+                    limit=candidate_limit,
                     mode=mode,
-                    threshold=effective_threshold,
+                    threshold=retrieval_threshold,
                     score_gte=score_gte,
                     context_type=context_type,
                     target_dirs=target_dirs,
@@ -415,24 +347,44 @@ class HierarchicalRetriever:
             apply_hotness = True
             rerank_used = self._rerank_client is not None and mode == RetrieverMode.THINKING
 
-            if use_scenes:
-                scene_results = await scene_search()
-                scores = [self._finite_score(hit.get("_score", 0.0)) for hit in scene_results]
-                if rerank_used:
-                    # Score the original evidence, not the generated description.
-                    scores = await self._rerank_scores(
-                        query.query, [hit.get("abstract", "") for hit in scene_results], scores
-                    )
-                by_uri = {hit["uri"]: hit for hit in candidates}
-                for hit, score in zip(scene_results, scores, strict=True):
-                    if not self._passes_threshold(score, effective_threshold, score_gte):
-                        continue
-                    previous = by_uri.get(hit["uri"])
-                    if previous is None or score > previous.get(
-                        "_final_score", previous.get("_score", 0)
-                    ):
-                        by_uri[hit["uri"]] = {**hit, "_score": score, "_final_score": score}
-                candidates = list(by_uri.values())
+        if use_triggers:
+            from openviking.retrieve.memory_trigger_fusion import fuse_memory_candidates
+            from openviking.storage.viking_fs import get_viking_fs
+
+            fs = get_viking_fs()
+            triggered = await trigger_index.search(
+                ctx=ctx,
+                fs=fs,
+                query_vector=query_vector,
+                context_type="memory",
+                target_directories=target_dirs,
+                extra_filter=scope_dsl,
+                level=[2],
+                limit=candidate_limit,
+            )
+            telemetry.count("search.memory_triggers.native_candidates", len(candidates))
+            telemetry.count("search.memory_triggers.trigger_candidates", len(triggered))
+            if triggered:
+                if not self._rerank_client:
+                    raise ValueError("Memory trigger fusion requires a configured reranker")
+                candidates = await fuse_memory_candidates(
+                    candidates,
+                    triggered,
+                    fs=fs,
+                    ctx=ctx,
+                    query=query.query,
+                    rerank=self._rerank_scores,
+                )
+                apply_hotness = False
+                rerank_used = True
+                telemetry.count("search.memory_triggers.merged_candidates", len(candidates))
+            candidates = [
+                r
+                for r in candidates
+                if self._passes_threshold(
+                    r.get("_final_score", r.get("_score", 0)), effective_threshold, score_gte
+                )
+            ]
 
         # Step 6: Convert results
         matched = await self._convert_to_matched_contexts(
@@ -512,7 +464,7 @@ class HierarchicalRetriever:
             )
         except Exception as e:
             if strict:
-                raise RuntimeError("Associative evidence reranking failed") from e
+                raise RuntimeError("Memory trigger evidence reranking failed") from e
             logger.warning(
                 "[HierarchicalRetriever] Rerank failed, fallback to vector scores: %s", e
             )
@@ -520,7 +472,7 @@ class HierarchicalRetriever:
 
         if not scores or len(scores) != len(rerank_documents):
             if strict:
-                raise RuntimeError("Associative reranker returned invalid score count")
+                raise RuntimeError("Memory trigger reranker returned invalid score count")
             logger.warning(
                 "[HierarchicalRetriever] Invalid rerank result, fallback to vector scores"
             )
@@ -529,7 +481,7 @@ class HierarchicalRetriever:
         normalized_scores = list(fallback_scores)
         for score, (index, _) in zip(scores, rerank_documents, strict=True):
             if strict and not math.isfinite(float(score)):
-                raise RuntimeError("Associative reranker returned a non-finite score")
+                raise RuntimeError("Memory trigger reranker returned a non-finite score")
             normalized_scores[index] = self._finite_score(score, fallback_scores[index])
         return normalized_scores
 

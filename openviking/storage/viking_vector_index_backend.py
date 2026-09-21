@@ -2411,7 +2411,7 @@ class VikingVectorIndexBackend:
         return source_records, batches, target_acl_fields
 
     def _rewrite_transfer_record(self, record, **kwargs):
-        """Allow auxiliary multi-view indexes to retain their record identities."""
+        """Allow auxiliary multi-view collections to retain per-view record identity."""
         return rewrite_vector_record(record, **kwargs)
 
     async def copy_uri_mapping(

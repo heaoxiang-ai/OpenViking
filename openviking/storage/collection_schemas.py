@@ -296,6 +296,7 @@ async def init_context_collection(storage, *, name: Optional[str] = None) -> boo
 
     Args:
         storage: Storage interface instance
+        name: Optional auxiliary collection name; the embedding schema is shared.
 
     Returns:
         True if collection was created, False if already exists
@@ -781,22 +782,17 @@ class TextEmbeddingHandler(DequeueHandlerBase):
                             embedding_msg.message,
                             is_query=False,
                         )
-                        scene_index = getattr(self._vikingdb, "scene_index", None)
-                        from openviking.storage.scene_cue_index import SceneCueIndex
+                        from openviking.storage.memory_trigger_index import MemoryTriggerIndex
 
-                        if isinstance(scene_index, SceneCueIndex) and scene_index.is_event(
+                        trigger_index = getattr(self._vikingdb, "trigger_index", None)
+                        if isinstance(trigger_index, MemoryTriggerIndex) and trigger_index.accepts(
                             inserted_data
                         ):
-                            inserted_data["_scene_cue_embedding"] = None
-                            cue = inserted_data.get("_scene_cue")
-                            if scene_index.settings.enabled and cue:
-                                cue_result = await embed_compat(self._embedder, cue, is_query=False)
-                                if len(cue_result.dense_vector or []) != self._vector_dim:
-                                    raise ValueError("Scene cue embedding dimension mismatch")
-                                inserted_data["_scene_cue_embedding"] = (
-                                    cue_result.dense_vector,
-                                    cue_result.sparse_vector,
-                                )
+                            inserted_data[
+                                "_memory_trigger_embeddings"
+                            ] = await trigger_index.embeddings(
+                                inserted_data.get("_memory_triggers"), self._embedder
+                            )
                         _embed_elapsed = _time.monotonic() - _embed_t0
                         try:
                             from openviking.metrics.datasources import EmbeddingEventDataSource
