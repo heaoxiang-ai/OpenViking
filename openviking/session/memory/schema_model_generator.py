@@ -76,6 +76,7 @@ class SchemaModelGenerator:
         self,
         schemas: List[MemoryTypeSchema],
         template_context: Optional[Dict[str, Any]] = None,
+        trigger_settings: Any = None,
         # include_decision_reasoning: bool = True,
     ):
         if hasattr(schemas, "list_all"):
@@ -85,6 +86,7 @@ class SchemaModelGenerator:
             self._all_schemas = list(schemas)
         self.schemas = list(schemas)
         self._template_context = dict(template_context or {})
+        self._trigger_settings = trigger_settings
         # self._include_decision_reasoning = include_decision_reasoning
         self._model_cache: Dict[str, Type[BaseModel]] = {}
         self._flat_data_models: Dict[str, Type[BaseModel]] = {}
@@ -183,6 +185,40 @@ class SchemaModelGenerator:
                     Optional[union_type],
                     Field(None, description=desc),
                 )
+        from openviking.session.memory.retrieval_triggers import (
+            FAMILIES,
+            MEMORY_TYPES,
+            TRIGGER_FIELD,
+            extraction_description,
+        )
+
+        if (
+            self._trigger_settings is not None
+            and self._trigger_settings.enabled
+            and memory_type.memory_type in MEMORY_TYPES
+        ):
+            # Describe the structured output but validate optional cues only
+            # after the final body is rendered. Bad cues must not drop a memory.
+            field_definitions[TRIGGER_FIELD] = (
+                Annotated[Any, WithJsonSchema({
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "family": {"type": "string", "enum": (
+                                sorted(FAMILIES) if memory_type.memory_type == "events" else ["bridge"]
+                            )},
+                            "subject": {"type": "string"},
+                            "text": {"type": "string"},
+                            "anchor": {"type": "string"},
+                            "confidence": {"type": "number"},
+                        },
+                        "required": ["family", "subject", "text", "anchor", "confidence"],
+                    },
+                })],
+                Field(None, description=extraction_description(self._trigger_settings)),
+            )
+
         # Create the model
         model = create_model(
             model_name,

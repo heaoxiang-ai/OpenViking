@@ -14,7 +14,7 @@ from openviking.retrieve.hierarchical_retriever import HierarchicalRetriever, Re
 from openviking.server.identity import RequestContext, Role
 from openviking.session.memory.dataclass import MemoryFile
 from openviking.session.memory.retrieval_triggers import (
-    generate,
+    attach_extracted,
     source_hash,
     valid_cached,
     validate_views,
@@ -29,7 +29,6 @@ from openviking.storage.viking_vector_index_backend import VikingVectorIndexBack
 from openviking.storage.vikingdb_manager import VikingDBManager
 from openviking_cli.retrieve.types import ContextType, TypedQuery
 from openviking_cli.session.user_id import UserIdentifier
-from openviking_cli.utils.config.memory_config import MemoryConfig
 from openviking_cli.utils.config.memory_trigger_config import MemoryTriggerConfig
 from openviking_cli.utils.config.rerank_config import RerankConfig
 from openviking_cli.utils.config.vectordb_config import VectorDBBackendConfig
@@ -40,8 +39,8 @@ ENTITY = "viking://user/alice/memories/entities/people/mei.md"
 BODY = "# Summary\nAlice is allergic to shrimp.\n# ChatLog\nAlice: I am allergic to shrimp."
 VIEWS = [
     {
-        "family": "entity",
-        "text": "shellfish allergy",
+        "family": "bridge",
+        "text": "Which seafood should Alice avoid?",
         "anchor": "allergic to shrimp",
         "confidence": 0.9,
     },
@@ -122,23 +121,106 @@ async def recall(store, fs=None, ctx=None, **kwargs):
 
 
 @pytest.mark.asyncio
-async def test_generation_is_cached_hidden_and_bound_to_current_body():
+async def test_removed_families_are_not_embedded_or_written_from_old_queue_payloads(store):
+    retired = [{**VIEWS[0], "family": family} for family in ("concept", "entity")]
+    embedder = SimpleNamespace(
+        prepare_embedding_input=lambda text: text,
+        embed_async=AsyncMock(return_value=EmbedResult(dense_vector=[1.0, 0.0, 0.0, 0.0])),
+    )
+    embedded = await store.trigger_index.embeddings(
+        {"source_sha256": source_hash(BODY), "views": [*retired, VIEWS[1]]}, embedder
+    )
+    embedder.embed_async.assert_awaited_once()
+    assert [x["view"]["family"] for x in embedded] == ["bridge"]
+    key = await add(store, triggers=False)
+    primary = (await store.get_strict([key], ctx=context()))[0]
+    old_payload = [{**embedded[0], "view": view} for view in retired]
+    await store.upsert(
+        {**primary, "_memory_trigger_embeddings": [*old_payload, *embedded]}, ctx=context()
+    )
+    assert await store.trigger_index.store.count(ctx=context()) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_concept_vectors_are_excluded_before_candidate_limit(store):
+    key = await add(store, triggers=False)
+    primary = (await store.get_strict([key], ctx=context()))[0]
+    for i in range(13):
+        # Simulate an index created before the removal, bypassing the new sync.
+        family = "concept" if i % 2 else "entity"
+        view = {**VIEWS[0], "family": family, "text": f"old cue {i}"}
+        await store.trigger_index.store.upsert(
+            {
+                **primary,
+                "id": f"retired-{i}",
+                "type": family,
+                "vector": [1.0, 0.0, 0.0, 0.0],
+                "description": json.dumps({"view": view, "source_sha256": source_hash(BODY)}),
+            },
+            ctx=context(),
+        )
+    assert not await recall(store)
+    await add(store, uri=PREFERENCE)
+    hits = await recall(store, fs=filesystem({EVENT: BODY, PREFERENCE: BODY}), limit=1)
+    assert [hit["uri"] for hit in hits] == [PREFERENCE]
+    assert (await store.get_strict([key], ctx=context()))[0]["abstract"] == BODY
+
+
+@pytest.mark.asyncio
+async def test_joint_owner_cues_embed_recall_and_clear_without_changing_primary(store):
+    body = "Cannot have dairy products."
+    memory = MemoryFile(uri=PREFERENCE, content=body, extra_fields={"user": "Alice"})
+    accepted = attach_extracted(
+        memory,
+        [
+            {
+                "family": "bridge",
+                "subject": "Alice",
+                "text": "What should I avoid cooking?",
+                "anchor": body,
+                "confidence": 0.9,
+            }
+        ],
+        settings=store.trigger_index.settings,
+    )
+    embedder = SimpleNamespace(
+        prepare_embedding_input=lambda text: text,
+        embed_async=AsyncMock(return_value=EmbedResult(dense_vector=[1.0, 0.0, 0.0, 0.0])),
+    )
+    embedded = await store.trigger_index.embeddings(
+        memory.extra_fields["retrieval_triggers"], embedder
+    )
+    assert "Alice" in accepted[0]["text"]
+    assert accepted[0]["text"] in str(embedder.embed_async.call_args)
+    key = await add(store, uri=PREFERENCE, body=body, triggers=False)
+    record = (await store.get_strict([key], ctx=context()))[0]
+    await store.upsert({**record, "_memory_trigger_embeddings": embedded}, ctx=context())
+    hits = await recall(store, fs=filesystem({PREFERENCE: MemoryFileUtils.write(memory)}))
+    assert [(h["uri"], h["abstract"]) for h in hits] == [(PREFERENCE, body)]
+    primary = (await store.get_strict([key], ctx=context()))[0]
+    assert primary["vector"] == [0.0, 1.0, 0.0, 0.0]
+    # A new body without fresh cues clears auxiliary vectors, keeping its native row.
+    memory.content = "Can now have dairy products."
+    assert attach_extracted(memory, None, settings=store.trigger_index.settings) == []
+    await store.upsert(
+        {**primary, "abstract": memory.content, "_memory_trigger_embeddings": []}, ctx=context()
+    )
+    assert await store.trigger_index.store.count(ctx=context()) == 0
+    assert (await store.get_strict([key], ctx=context()))[0]["abstract"] == memory.content
+
+
+def test_joint_cues_are_hidden_and_bound_to_current_body():
     memory = MemoryFile(uri=EVENT, content=BODY)
-    model = SimpleNamespace(
-        model="test", get_completion_async=AsyncMock(return_value=json.dumps({"views": VIEWS}))
-    )
-    config = SimpleNamespace(
-        memory=MemoryConfig(triggers=MemoryTriggerConfig(enabled=True)),
-        vlm=SimpleNamespace(get_vlm_instance=lambda: model),
-    )
-    assert await generate(memory, config=config) == VIEWS
-    assert await generate(memory, config=config) == VIEWS
-    assert model.get_completion_async.call_count == 1
+    settings = MemoryTriggerConfig(enabled=True)
+    views = [{**v, "subject": "Alice", "anchor": "Alice is allergic to shrimp."} for v in VIEWS]
+    accepted = attach_extracted(memory, views, settings=settings)
+    assert len(accepted) == 1
+    assert attach_extracted(memory, None, settings=settings) == accepted
     raw = MemoryFileUtils.write(memory)
     assert visible_content(raw, uri=EVENT).strip() == BODY
     assert "team dinner" not in visible_content(raw, uri=EVENT)
     memory.content = "Alice is no longer allergic."
-    assert valid_cached(memory, config.memory.triggers) is None
+    assert valid_cached(memory, settings) is None
 
 
 @pytest.mark.parametrize(
@@ -165,35 +247,14 @@ def test_event_only_views_do_not_reclassify_entities_or_preferences():
             validate_views([view], BODY, kind, MemoryTriggerConfig())
 
 
-@pytest.mark.asyncio
-async def test_invalid_generation_retries_only_invalid_outputs():
-    good = json.dumps({"views": VIEWS})
-    model = SimpleNamespace(
-        model="test", get_completion_async=AsyncMock(side_effect=["broken", good])
-    )
-    config = SimpleNamespace(
-        memory=MemoryConfig(), vlm=SimpleNamespace(get_vlm_instance=lambda: model)
-    )
-    memory = MemoryFile(uri=EVENT, content=BODY)
-    assert await generate(memory, config=config) == VIEWS
-    assert await generate(memory, config=config) == VIEWS
-    assert model.get_completion_async.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_invalid_anchor_does_not_discard_other_grounded_views():
+def test_invalid_anchor_does_not_discard_other_grounded_views():
     bad = {**VIEWS[0], "anchor": "Alice is allergic. I am allergic to shrimp."}
-    model = SimpleNamespace(
-        model="test",
-        get_completion_async=AsyncMock(return_value=json.dumps({"views": [*VIEWS, bad]})),
-    )
-    config = SimpleNamespace(
-        memory=MemoryConfig(), vlm=SimpleNamespace(get_vlm_instance=lambda: model)
-    )
     memory = MemoryFile(uri=EVENT, content=BODY)
-    assert await generate(memory, config=config) == VIEWS
-    assert valid_cached(memory, config.memory.triggers) == VIEWS
-    assert model.get_completion_async.call_count == 1
+    settings = MemoryTriggerConfig(enabled=True)
+    views = [{**v, "subject": "Alice", "anchor": "Alice is allergic to shrimp."} for v in VIEWS]
+    accepted = attach_extracted(memory, [*views, bad], settings=settings)
+    assert len(accepted) == 1
+    assert valid_cached(memory, settings) == accepted
 
 
 @pytest.mark.asyncio

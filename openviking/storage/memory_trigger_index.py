@@ -8,7 +8,7 @@ import json
 from openviking.concurrency import AsyncSemaphore
 from openviking.models.embedder.base import embed_compat
 from openviking.server.error_mapping import is_not_found_error
-from openviking.session.memory.retrieval_triggers import memory_type_for_uri, source_hash
+from openviking.session.memory.retrieval_triggers import FAMILIES, memory_type_for_uri, source_hash
 from openviking.session.memory.utils.memory_file_utils import MemoryFileUtils
 from openviking.storage.expr import In
 from openviking.storage.viking_vector_index_backend import VikingVectorIndexBackend
@@ -68,7 +68,8 @@ class MemoryTriggerIndex:
             }
 
         results = await asyncio.gather(
-            *(one(view) for view in state["views"]), return_exceptions=True
+            *(one(view) for view in state["views"] if view.get("family") in FAMILIES),
+            return_exceptions=True,
         )
         for result in results:
             if isinstance(result, BaseException):
@@ -87,6 +88,8 @@ class MemoryTriggerIndex:
         if refresh:
             for embedded in embeddings or []:
                 view = embedded["view"]
+                if view.get("family") not in FAMILIES:
+                    continue
                 key = self.record_id(ctx.account_id, record["uri"], view)
                 if len(embedded["vector"]) != len(record.get("vector") or []):
                     raise ValueError("Memory trigger vector dimension mismatch")
@@ -105,6 +108,8 @@ class MemoryTriggerIndex:
         else:
             # Tag/ACL metadata changes do not regenerate cues; changed evidence invalidates them.
             for view in old:
+                if view.get("type") not in FAMILIES:
+                    continue
                 if view.get("abstract") == record.get("abstract"):
                     payload = {
                         **record,
@@ -137,7 +142,7 @@ class MemoryTriggerIndex:
         hits = await self.store.search(
             ctx=ctx,
             query_vector=kwargs.get("query_vector"),
-            filter=scope,
+            filter=self.store._merge_filters(scope, In("type", sorted(FAMILIES))),
             limit=limit * self.settings.max_triggers,
             output_fields=["uri", "abstract", "description"],
         )
@@ -163,6 +168,8 @@ class MemoryTriggerIndex:
                     raw = await fs.read_file(uri, ctx=ctx)
                     validated[uri] = MemoryFileUtils.read(raw, uri=uri).content
                 metadata = json.loads(hit["description"])
+                if metadata["view"].get("family") not in FAMILIES:
+                    continue
                 if source_hash(validated[uri]) != metadata["source_sha256"]:
                     continue
                 if metadata["view"]["anchor"] not in validated[uri]:

@@ -1112,6 +1112,10 @@ class MemoryUpdater:
                 old_content = resolved_op.old_memory_file_content
 
             metadata: Dict[str, Any] = dict(resolved_op.memory_fields)
+            from openviking.session.memory.retrieval_triggers import TRIGGER_FIELD
+
+            # Never write unvalidated model output as trusted system metadata.
+            proposed_triggers = metadata.pop(TRIGGER_FIELD, None)
             source = getattr(resolved_op, "source", None)
             source_extraction_id = getattr(source, "extraction_id", None) if source else None
             if source_extraction_id:
@@ -1203,34 +1207,21 @@ class MemoryUpdater:
                 ),
                 extract_context=extract_context,
             )
-            # Generate retrieval-only metadata after the normal memory is rendered.
-            # The extraction schema, visible body, URI and primary embedding stay unchanged.
+            # Validate joint extraction output against the final merged/rendered
+            # body. No per-file Trigger LLM call; primary evidence stays unchanged.
             from openviking.storage.memory_trigger_index import MemoryTriggerIndex
 
             trigger_index = getattr(self._vikingdb, "trigger_index", None)
             if isinstance(trigger_index, MemoryTriggerIndex) and trigger_index.settings.enabled:
                 from openviking.session.memory.retrieval_triggers import (
-                    generate,
+                    attach_extracted,
                     memory_type_for_uri,
                 )
-                from openviking_cli.utils.config import get_openviking_config
 
                 if memory_type_for_uri(uri):
                     rendered = MemoryFileUtils.read(new_full_content, uri=uri)
-                    try:
-                        async with trigger_index.model_slots:
-                            await generate(rendered, config=get_openviking_config())
-                        with_triggers = MemoryFileUtils.write(rendered)
-                        assert (
-                            MemoryFileUtils.read(with_triggers, uri=uri).content == rendered.content
-                        )
-                        new_full_content = with_triggers
-                    except Exception as exc:
-                        logger.warning(
-                            "Trigger generation failed for %s; ordinary memory retained: %s",
-                            uri,
-                            type(exc).__name__,
-                        )
+                    attach_extracted(rendered, proposed_triggers, settings=trigger_index.settings)
+                    new_full_content = MemoryFileUtils.write(rendered)
             await viking_fs.write_file(
                 uri,
                 new_full_content,
@@ -1536,10 +1527,11 @@ class MemoryUpdater:
                             valid_cached,
                         )
 
-                        if valid_cached(mf, trigger_index.settings) is not None:
-                            embedding_msg.context_data["_memory_triggers"] = mf.extra_fields[
-                                TRIGGER_FIELD
-                            ]
+                        cached_views = valid_cached(mf, trigger_index.settings)
+                        if cached_views is not None:
+                            embedding_msg.context_data["_memory_triggers"] = {
+                                **mf.extra_fields[TRIGGER_FIELD], "views": cached_views,
+                            }
                     if getattr(ingest_options, "search_tags", None) is not None:
                         embedding_msg.context_data["search_tags"] = list(ingest_options.search_tags)
                         embedding_msg.context_data["_upsert_options"] = {

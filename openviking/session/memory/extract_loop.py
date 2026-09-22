@@ -208,9 +208,11 @@ class ExtractLoop:
 
         # 初始化 schema 生成器（使用 schemas 而非 registry）
         output_language = self.context_provider.get_output_language()
+        config = get_openviking_config()
         self.schema_model_generator = SchemaModelGenerator(
             schemas,
             template_context={"language": output_language},
+            trigger_settings=getattr(config.memory, "triggers", None),
             # include_decision_reasoning=(
             #     type(self.context_provider).__name__ != "PatchMergeContextProvider"
             # ),
@@ -226,7 +228,6 @@ class ExtractLoop:
         ]
 
         # Resolve global link support before generating the operations model.
-        config = get_openviking_config()
         self._link_enabled = config.memory.link_enabled if config.memory else False
 
         self._resolve_effective_max_output_tokens(config)

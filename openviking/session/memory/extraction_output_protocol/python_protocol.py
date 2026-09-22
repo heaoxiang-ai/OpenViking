@@ -35,6 +35,7 @@ from openviking.session.memory.utils.line_numbers import (
 _PYTHON_FENCE_RE = re.compile(r"```python[ \t]*\r?\n(?P<code>[\s\S]*?)```", re.IGNORECASE)
 _PYTHON_FENCE_START_RE = re.compile(r"```python[ \t]*\r?\n", re.IGNORECASE)
 _HIDDEN_MEMORY_FIELDS = {
+    "retrieval_triggers",
     "source_extraction_id",
     "source_extraction_ids",
     "last_update_trace_id",
@@ -1167,7 +1168,9 @@ class _PythonProgramCompiler:
         for name, value in changes.items():
             field_schema = fields.get(name)
             if name in dynamic_fields:
-                if not owner.existing:
+                # Routing fields remain immutable, but optional retrieval cues
+                # must be replaced when an existing memory body is edited.
+                if not owner.existing or name == "retrieval_triggers":
                     owner.fields[name] = value
                     owner.changed_fields[name] = value
                 continue
@@ -1548,7 +1551,13 @@ def _protocol_fields(
         extras.append(
             (name, _annotation_type_name(model_field.annotation), model_field.description or "")
         )
-    return [*extras, *static_fields]
+    # Routing metadata precedes the business fields; retrieval cues follow the
+    # body so the model can quote text it has already generated verbatim.
+    return [
+        *(field for field in extras if field[0] != "retrieval_triggers"),
+        *static_fields,
+        *(field for field in extras if field[0] == "retrieval_triggers"),
+    ]
 
 
 def _model_visible_identity_fields(
