@@ -381,3 +381,55 @@ the normal memory. Commit and embedding queue workers share a cross-event-loop
 asynchronous limiter. Set `recall_enabled` to false to retain cached/indexed
 cues while using ordinary retrieval. Generation adds model/embedding cost at write
 time; recall adds an auxiliary vector lookup, evidence reads and local rank fusion.
+
+### Optional query-only rewriting before search
+
+`search` can call an explicitly configured `query_planner` even without a session.
+Set `retrieval.query_rewrite_only` to use only its rewritten query text, ignoring
+the planner's context type, intent and priority. Caller-supplied user, target URI,
+metadata filters, level and access controls still constrain every retrieval.
+This avoids a model-selected `resource` type excluding results from a search
+that the caller already restricted to memories.
+
+For the repository-supported local Ollama planner, pull
+`guoxuter/ov_intent_analysis_sft:v7_q8` separately and configure:
+
+```json
+{
+  "query_planner": {
+    "provider": "litellm",
+    "model": "ollama/guoxuter/ov_intent_analysis_sft:v7_q8",
+    "api_base": "http://127.0.0.1:11434",
+    "api_key": "no-key",
+    "temperature": 0,
+    "extra_request_body": {"think": false}
+  },
+  "retrieval": {
+    "enable_intent": true,
+    "query_rewrite_only": true
+  }
+}
+```
+
+Call the SDK's `search`, not `find`, to invoke the planner:
+
+```python
+result = await client.search(
+    query="When did Caroline go to the LGBTQ support group?",
+    target_uri="viking://~/memories",
+    limit=100,
+    options={"context_type": ["memory"], "level": 2},
+)
+```
+
+Query-only rewriting is off by default and can be enabled independently of
+`memory.triggers`. When both are enabled, each rewritten query reaches ordinary
+retrieval and Trigger recall. Without an explicit planner or session context,
+search keeps using the original query; `enable_intent: false` disables planning
+entirely. `find` does not call the planner. Effective query plans serialize the
+unused `context_type` as `null`.
+
+Rewriting adds model latency and can change or lose query meaning; it does not
+guarantee better recall or accuracy. Multiple rewrites keep search's existing
+per-query limits and ordered result concatenation, without global fusion across
+queries. Truncating that combined list can discard later query groups.
