@@ -111,6 +111,13 @@ runner therefore creates one stable AML user for each unique
 history share that user, while different histories stay isolated. This is ID
 creation in the local runner; `server.py` forwards the resulting ID unchanged.
 
+For `locomo_refined`, prepared cases must include `extra.speaker_1_name` and
+`extra.speaker_2_name`. The caller preserves existing speaker prefixes, adds
+missing names, and rejects conflicting names before sending Add requests.
+Long messages retain the speaker prefix and any dialogue ID in every fragment.
+The original `user`/`assistant` roles remain unchanged; other datasets do not
+receive this name processing.
+
 Use repeated `--unit` arguments to select individual datasets. Add runs up to
 16 histories (AML users) concurrently by default, while Search runs up to 16 questions
 concurrently. Override them independently with `--add-concurrency` and
