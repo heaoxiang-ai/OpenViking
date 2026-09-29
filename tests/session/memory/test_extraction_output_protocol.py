@@ -1457,7 +1457,7 @@ def test_python_rejects_invalid_or_unsafe_programs(program: str, message: str):
     assert message in error
 
 
-def test_python_ignores_delete_for_add_only_schema(caplog):
+def test_python_ignores_delete_for_add_only_schema():
     memory_file = _existing_preference(
         "viking://user/alice/memories/preferences/editor.md", "editor", "Use Vim"
     )
@@ -1469,7 +1469,6 @@ def test_python_ignores_delete_for_add_only_schema(caplog):
 
     assert error is None
     assert operations.model_dump() == {"preferences": []}
-    assert "Ignoring delete() for add_only memory: memory_type=preferences page_id=1" in caplog.text
 
 
 def test_python_ignores_add_only_delete_and_keeps_other_operations():

@@ -32,9 +32,6 @@ from openviking.session.memory.utils.line_numbers import (
     every_line_has_line_numbers,
     strip_line_numbers,
 )
-from openviking_cli.utils import get_logger
-
-logger = get_logger(__name__)
 
 _PYTHON_FENCE_RE = re.compile(r"```python[ \t]*\r?\n(?P<code>[\s\S]*?)```", re.IGNORECASE)
 _PYTHON_FENCE_START_RE = re.compile(r"```python[ \t]*\r?\n", re.IGNORECASE)
@@ -1022,11 +1019,6 @@ class _PythonProgramCompiler:
                 self._error(node, "a memory cannot replace itself")
             if self.schemas[owner.memory_type].operation_mode == "add_only":
                 # Ignore only the forbidden delete, preserving other valid operations and links.
-                logger.warning(
-                    "Ignoring delete() for add_only memory: memory_type=%s page_id=%s",
-                    owner.memory_type,
-                    owner.page_id,
-                )
                 return None
             owner.deleted = True
             owner.replacement = replacement
