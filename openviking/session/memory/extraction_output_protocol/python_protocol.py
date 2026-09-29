@@ -32,6 +32,9 @@ from openviking.session.memory.utils.line_numbers import (
     every_line_has_line_numbers,
     strip_line_numbers,
 )
+from openviking_cli.utils import get_logger
+
+logger = get_logger(__name__)
 
 _PYTHON_FENCE_RE = re.compile(r"```python[ \t]*\r?\n(?P<code>[\s\S]*?)```", re.IGNORECASE)
 _PYTHON_FENCE_START_RE = re.compile(r"```python[ \t]*\r?\n", re.IGNORECASE)
@@ -1008,8 +1011,6 @@ class _PythonProgramCompiler:
                 self._error(node, "delete() accepts only replacement=")
             if not owner.existing:
                 self._error(node, "a memory created in this program cannot be deleted")
-            if self.schemas[owner.memory_type].operation_mode == "add_only":
-                self._error(node, "delete() is unavailable for the selected memory schemas")
             replacement = kwargs.get("replacement")
             if replacement is not None and not isinstance(replacement, _MemoryObject):
                 self._error(node, "delete replacement must be a memory object")
@@ -1019,6 +1020,14 @@ class _PythonProgramCompiler:
                 self._error(node, "delete replacement must have the same memory type")
             if replacement is owner:
                 self._error(node, "a memory cannot replace itself")
+            if self.schemas[owner.memory_type].operation_mode == "add_only":
+                # Ignore only the forbidden delete, preserving other valid operations and links.
+                logger.warning(
+                    "Ignoring delete() for add_only memory: memory_type=%s page_id=%s",
+                    owner.memory_type,
+                    owner.page_id,
+                )
+                return None
             owner.deleted = True
             owner.replacement = replacement
             return None
