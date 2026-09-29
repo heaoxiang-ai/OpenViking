@@ -3,6 +3,7 @@
 """Tests for JSON and restricted-Python memory extraction output protocols."""
 
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1457,7 +1458,7 @@ def test_python_rejects_invalid_or_unsafe_programs(program: str, message: str):
     assert message in error
 
 
-def test_python_ignores_delete_for_add_only_schema():
+def test_python_ignores_delete_for_add_only_schema(caplog, monkeypatch):
     memory_file = _existing_preference(
         "viking://user/alice/memories/preferences/editor.md", "editor", "Use Vim"
     )
@@ -1465,10 +1466,20 @@ def test_python_ignores_delete_for_add_only_schema():
     protocol = create_extraction_output_protocol("python")
     _bind(protocol, context)
 
-    operations, error = protocol.parse("preferences_1.delete()\nsdk.commit()", context)
+    logger = logging.getLogger(
+        "openviking.session.memory.extraction_output_protocol.python_protocol"
+    )
+    monkeypatch.setattr(logger, "handlers", [caplog.handler])
+    with caplog.at_level("WARNING", logger=logger.name):
+        operations, error = protocol.parse("preferences_1.delete()\nsdk.commit()", context)
 
     assert error is None
     assert operations.model_dump() == {"preferences": []}
+    assert any(
+        record.levelname == "WARNING"
+        and record.getMessage() == "Line 1: delete() is unavailable for the selected memory schemas"
+        for record in caplog.records
+    )
 
 
 def test_python_ignores_add_only_delete_and_keeps_other_operations():
