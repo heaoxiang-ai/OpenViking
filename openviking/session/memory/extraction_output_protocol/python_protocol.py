@@ -1020,7 +1020,11 @@ class _PythonProgramCompiler:
                 self._error(node, "a memory cannot replace itself")
             if self.schemas[owner.memory_type].operation_mode == "add_only":
                 # Ignore only the forbidden delete, preserving other valid operations and links.
-                self._warn(node, "delete() is unavailable for the selected memory schemas")
+                self._warn(
+                    node,
+                    f"Skipping delete() for add_only memory: memory_type={owner.memory_type}, "
+                    f"page_id={owner.page_id}, binding={owner.name}",
+                )
                 return None
             owner.deleted = True
             owner.replacement = replacement

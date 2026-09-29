@@ -1477,7 +1477,9 @@ def test_python_ignores_delete_for_add_only_schema(caplog, monkeypatch):
     assert operations.model_dump() == {"preferences": []}
     assert any(
         record.levelname == "WARNING"
-        and record.getMessage() == "Line 1: delete() is unavailable for the selected memory schemas"
+        and record.getMessage()
+        == "Line 1: Skipping delete() for add_only memory: "
+        "memory_type=preferences, page_id=1, binding=preferences_1"
         for record in caplog.records
     )
 
