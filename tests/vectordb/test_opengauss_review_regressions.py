@@ -151,3 +151,21 @@ def test_filter_delete_has_no_implicit_row_limit():
     )
     assert cursor.execute.call_args.args[1] == ["tenant", None]
     adapter._conn.commit.assert_called_once_with()
+
+
+def test_negative_scalar_membership_keeps_missing_legacy_record_type():
+    import sqlite3
+
+    from openviking.storage.vectordb_adapters.opengauss.sql import _build_where_clause
+
+    clause, params = _build_where_clause(
+        {"op": "must_not", "field": "type", "conds": ["entity_link"]}
+    )
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE records (id TEXT, type TEXT)")
+        conn.executemany(
+            "INSERT INTO records VALUES (?, ?)",
+            [("legacy", None), ("empty", ""), ("file", "file"), ("entity", "entity_link")],
+        )
+        rows = conn.execute("SELECT id FROM records WHERE " + clause.replace("%s", "?"), params)
+        assert {row[0] for row in rows} == {"legacy", "empty", "file"}

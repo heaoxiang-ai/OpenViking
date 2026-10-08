@@ -344,6 +344,58 @@ Run the open-source server in your own environment under [AGPLv3](LICENSE). It r
 
 The server supports [accounts and user isolation](https://docs.openviking.ai/en/concepts/11-multi-tenant) and opt-in [resource ACLs](https://docs.openviking.ai/en/concepts/15-acl). Configure [authentication](https://docs.openviking.ai/en/guides/04-authentication) before exposing it beyond localhost.
 
+### Optional entity retrieval
+
+Install the optional NLP dependency and an explicit spaCy model before starting the server:
+
+```bash
+pip install 'openviking[nlp]'
+python -m spacy download en_core_web_sm
+```
+
+Enable entity indexing in `ov.conf`:
+
+```json
+{
+  "retrieval": {
+    "entity_linking": {
+      "enabled": true,
+      "nlp_model": "en_core_web_sm",
+      "similarity_threshold": 0.5
+    }
+  }
+}
+```
+
+Newly embedded L2 memories receive entity vectors in the **existing context collection**,
+with the reserved scalar `type="entity_link"`. Ordinary Find/Search, context inventories,
+and counts exclude these rows and keep their original candidates, scores, and response
+format. No entity boost or automatic result fusion is applied.
+
+Call the separate authenticated endpoint `POST /api/v1/search/entities`:
+
+```json
+{"query": "What instruments does Melanie play?", "target_uri": "viking://~/memories", "limit": 20}
+```
+
+Its `result` contains `query_entities`, `entities`, and `total`. Each entity hit contains
+`name`, `entity_type`, cosine `score`, and the associated `memory_uri`. `limit` counts
+entity-memory associations, not unique entities. An optional `score_threshold` in
+`[0, 1]` overrides the configured threshold. No session, planner, rerank, or LLM is
+called; consumers can read the memory URIs or combine them with ordinary search.
+
+The endpoint authorizes **current parent memories** using the existing account/user/peer
+and ACL scope, then checks the parent ID and source fingerprint. Deleted, stale, or
+inaccessible associations are discarded. Updates, deletes, copies, and moves maintain
+entity rows without changing primary memory records. The feature is disabled by default;
+existing memories and earlier experimental auxiliary collections are not automatically
+backfilled or migrated. Cosine dense embeddings are required. At most eight query entities
+and 500 matches per query entity are considered by default. The separate endpoint has
+its own `timeout_s` budget (default 10 seconds); failures do not change ordinary retrieval.
+The default NLP model targets English; other languages require an installed suitable model.
+
+The entity extraction rules are adapted from [Mem0](https://github.com/mem0ai/mem0/tree/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd) under its included [Apache 2.0 license](openviking/retrieve/entity_linking/LICENSE.mem0). This adds entity mention lookup to OV's existing memory structure; it does not implement graph traversal or replace memory extraction.
+
 ## Commercial editions
 
 <table>
