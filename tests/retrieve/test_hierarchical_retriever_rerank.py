@@ -107,6 +107,42 @@ def test_rerank_max_input_tokens_accepts_zero_or_at_least_128():
 
 
 @pytest.mark.asyncio
+async def test_rerank_batches_over_provider_limit_and_globally_selects_last_batch(monkeypatch):
+    fake_client = FakeRerankClient([index / 200 for index in range(120)])
+    monkeypatch.setattr(
+        "openviking.retrieve.hierarchical_retriever.RerankClient.from_config",
+        lambda _config: fake_client,
+    )
+    storage = DummyStorage([_result(f"viking://resources/{i}", 1 - i / 200) for i in range(120)])
+    # A configured size above the provider's physical cap cannot bypass it.
+    config = RerankConfig(ak="test", sk="test", batch_size=500, threshold=0)
+    retriever = HierarchicalRetriever(storage, DummyEmbedder(), config)
+
+    result = await retriever.retrieve(_query(), _ctx(), limit=60)
+
+    assert [len(documents) for _, documents in fake_client.calls] == [100, 20]
+    assert result.matched_contexts[0].uri == "viking://resources/119"
+    assert len(result.matched_contexts) == 60
+
+
+@pytest.mark.asyncio
+async def test_rerank_invalid_later_batch_returns_original_fallbacks(monkeypatch):
+    fake_client = FakeRerankClient([0.9, 0.8])  # Second batch is incomplete.
+    monkeypatch.setattr(
+        "openviking.retrieve.hierarchical_retriever.RerankClient.from_config",
+        lambda _config: fake_client,
+    )
+    config = RerankConfig(ak="test", sk="test", batch_size=2)
+    retriever = HierarchicalRetriever(DummyStorage(), None, config)
+
+    assert await retriever._rerank_scores("hello", ["a", "b", "c"], [0.1, 0.2, 0.3]) == [
+        0.1,
+        0.2,
+        0.3,
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("mode", [None, RetrieverMode.THINKING])
 async def test_retrieve_reranks_global_candidates_once(monkeypatch, mode):
     fake_client = FakeRerankClient([0.1, 0.2, 0.95, 0.99])

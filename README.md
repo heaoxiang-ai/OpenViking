@@ -183,6 +183,41 @@ ov grep "openviking" --uri viking://resources/volcengine/OpenViking/docs/en
 
 Build your own integration with the [Python](sdk/python/README.md), [Go](sdk/go/README.md), or [TypeScript](sdk/typescript/README.md) SDK, or the [HTTP API](https://docs.openviking.ai/en/api/01-overview).
 
+### Search with memory links
+
+`POST /api/v1/search/search` supports two opt-in options in `mode="list"`:
+
+```json
+{
+  "query": "What did Melanie learn from the charity race?",
+  "target_uri": "viking://~/memories",
+  "context_type": "memory",
+  "mode": "list",
+  "limit": 10,
+  "include_links": true,
+  "expand_links": true,
+  "read_content": true
+}
+```
+
+`include_links` adds accessible `links` and `backlinks` metadata to matching L2
+memories. `expand_links` follows those native links one hop before reranking,
+deduplicates by URI, and ranks the original and linked memories together using
+their indexed abstracts. The final result still respects `limit`. Expansion
+requires a configured text reranker. The initial vector recall uses `2 * limit`;
+all eligible one-hop linked targets are then added without a top-k truncation.
+Metadata lookups are batched and file reads use bounded concurrency.
+Both flags default to `false`; `find` does not expand links. Deleted, unreadable,
+out-of-scope, and filtered-out targets are excluded. No new association index or
+memory extraction is introduced. Existing memories need native links, generated
+on future commits by enabling `memory.link_enabled`.
+
+Reranking uses `rerank.batch_size` (default `100`, always capped at `100` for
+VikingDB). Each batch is scored in input order; all scores are globally sorted
+before selecting the final results. If a batch fails, the entire rerank falls
+back to the original vector candidates, discarding candidates found only through
+links rather than mixing partially reranked scores.
+
 ## Use it with your agent
 
 Connect your coding agent to OpenViking for cross-session memory. The memory plugin installer covers Claude Code, Codex, Cursor, TRAE, OpenCode and more, and detects which ones you have.

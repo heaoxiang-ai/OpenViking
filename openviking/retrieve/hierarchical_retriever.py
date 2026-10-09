@@ -44,6 +44,10 @@ from openviking_cli.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+class _RerankFailed(RuntimeError):
+    """A batch failed: do not mix model scores with unranked link candidates."""
+
+
 class RetrieverMode(str):
     THINKING = "thinking"
     QUICK = "quick"
@@ -60,6 +64,7 @@ class HierarchicalRetriever:
         storage: VikingDBManager,
         embedder: Optional[Any],
         rerank_config: Optional[RerankConfig] = None,
+        memory_fs: Optional[Any] = None,
     ):
         """Initialize retriever with rerank_config.
 
@@ -71,7 +76,11 @@ class HierarchicalRetriever:
         self.vector_store = storage
         self.embedder = embedder
         self.rerank_config = rerank_config
+        self.memory_fs = memory_fs
         self.rerank_max_input_tokens = rerank_config.max_input_tokens if rerank_config else 0
+        self.rerank_batch_size = rerank_config.batch_size if rerank_config else 100
+        if rerank_config and rerank_config._effective_provider() == "vikingdb":
+            self.rerank_batch_size = min(self.rerank_batch_size, 100)
 
         # Use rerank threshold if available, otherwise use a default
         self.threshold = rerank_config.threshold if rerank_config else 0
@@ -102,6 +111,8 @@ class HierarchicalRetriever:
         events_time_decay_protection: Optional[str] = None,
         request_now: Optional[datetime] = None,
         search_type: SearchType = "semantic",
+        include_links: bool = False,
+        expand_links: bool = False,
     ) -> QueryResult:
         """
         Run one global vector search, then optionally rerank its candidates.
@@ -124,6 +135,10 @@ class HierarchicalRetriever:
         use_rerank = (
             mode == RetrieverMode.THINKING and self._rerank_client is not None and not image_query
         )
+        if expand_links and not use_rerank:
+            raise InvalidArgumentError("expand_links requires a configured text reranker")
+        if (include_links or expand_links) and self.memory_fs is None:
+            raise InvalidArgumentError("Memory link retrieval requires a memory filesystem")
         decay_kwargs = {}
         if events_time_decay_protection is not None:
             parse_duration_ms(
@@ -221,14 +236,33 @@ class HierarchicalRetriever:
         candidates = sorted(
             collected_by_uri.values(), key=lambda candidate: candidate["_score"], reverse=True
         )
+        memory_links = None
+        if include_links or expand_links:
+            from openviking.retrieve.memory_links import MemoryLinks
+
+            memory_links = MemoryLinks(self.memory_fs, vector_proxy, ctx, target_dirs, scope_dsl)
+            if expand_links:
+                with telemetry.measure("search.link_expansion"):
+                    original_count = len(candidates)
+                    candidates = await memory_links.expand(candidates)
+                    telemetry.count("search.link_candidates", len(candidates) - original_count)
         scores = [candidate["_score"] for candidate in candidates]
         rerank_used = use_rerank and bool(candidates)
         if rerank_used:
-            scores = await self._rerank_scores(
-                query.query,
-                [str(candidate.get("abstract", "")) for candidate in candidates],
-                scores,
-            )
+            try:
+                scores = await self._rerank_scores(
+                    query.query,
+                    [str(candidate.get("abstract", "")) for candidate in candidates],
+                    scores,
+                    fail_on_error=expand_links,
+                )
+            except _RerankFailed:
+                # Linked memories have no vector score; never invent one or mix
+                # successful-batch model scores with failed-batch vector scores.
+                candidates = [c for c in candidates if not c.get("_link_expanded")]
+                scores = [c["_score"] for c in candidates]
+                rerank_used = False
+                telemetry.count("search.link_rerank_fallback", 1)
 
         # A low vector score can still rerank highly, so filter only after reranking.
         candidates = [
@@ -239,6 +273,8 @@ class HierarchicalRetriever:
         telemetry.count("vector.passed", len(candidates))
         matched = await self._convert_to_matched_contexts(candidates, ctx=ctx)
         final = matched[:limit]
+        if include_links and memory_links is not None:
+            await memory_links.attach(final)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         get_stats_collector().record_query(
@@ -278,6 +314,8 @@ class HierarchicalRetriever:
         query: str,
         documents: List[str],
         fallback_scores: List[float],
+        *,
+        fail_on_error: bool = False,
     ) -> List[float]:
         """Return rerank scores or fall back to vector scores."""
         if not self._rerank_client or not documents:
@@ -301,15 +339,25 @@ class HierarchicalRetriever:
             ]
 
         try:
-            scores = await asyncio.to_thread(
-                self._rerank_client.rerank_batch,
-                rerank_query,
-                [document for _, document in rerank_documents],
-            )
+            scores = []
+            for start in range(0, len(rerank_documents), self.rerank_batch_size):
+                batch = rerank_documents[start : start + self.rerank_batch_size]
+                batch_scores = await asyncio.to_thread(
+                    self._rerank_client.rerank_batch,
+                    rerank_query,
+                    [document for _, document in batch],
+                )
+                if batch_scores is None or len(batch_scores) != len(batch):
+                    raise _RerankFailed("Invalid rerank batch result")
+                if fail_on_error and any(not math.isfinite(float(score)) for score in batch_scores):
+                    raise _RerankFailed("Non-finite rerank score")
+                scores.extend(batch_scores)
         except Exception as e:
             logger.warning(
                 "[HierarchicalRetriever] Rerank failed, fallback to vector scores: %s", e
             )
+            if fail_on_error:
+                raise _RerankFailed("Rerank failed; discarding link-only candidates") from e
             return fallback_scores
 
         if not scores or len(scores) != len(rerank_documents):

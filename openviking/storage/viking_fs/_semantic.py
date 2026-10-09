@@ -404,6 +404,8 @@ class _SemanticMixin:
         events_time_decay_protection: Optional[str] = None,
         search_type: SearchType = "semantic",
         context_types: Optional[List[ContextType]] = None,
+        include_links: bool = False,
+        expand_links: bool = False,
     ):
         """Complex search with session context.
 
@@ -521,7 +523,14 @@ class _SemanticMixin:
             storage=storage,
             embedder=embedder,
             rerank_config=self.rerank_config,
+            memory_fs=self if include_links or expand_links else None,
         )
+
+        link_options = {}
+        if include_links:
+            link_options["include_links"] = True
+        if expand_links:
+            link_options["expand_links"] = True
 
         async def _execute(tq: TypedQuery):
             logger.debug(
@@ -538,6 +547,7 @@ class _SemanticMixin:
                 events_time_decay_protection=events_time_decay_protection,
                 request_now=request_now,
                 search_type=search_type,
+                **link_options,
             )
 
         query_results = await asyncio.gather(*[_execute(tq) for tq in typed_queries])
