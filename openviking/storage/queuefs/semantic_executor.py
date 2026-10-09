@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Mapping, Optional, Set
 from weakref import WeakKeyDictionary
 
+from openviking.core.memory_association import is_association_uri
 from openviking.core.namespace import classify_uri
 from openviking.parse.parsers.media import get_media_type
 from openviking.server.identity import RequestContext
@@ -855,6 +856,8 @@ class SemanticTreeExecutor:
                 continue
 
             item_uri = VikingURI(uri).join(name).uri
+            if is_association_uri(item_uri):
+                continue
             if entry.get("isDir", False):
                 children_dirs.append(item_uri)
             else:

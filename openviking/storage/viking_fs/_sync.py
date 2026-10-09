@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
+from openviking.core.memory_association import is_association_uri
 from openviking.storage.viking_fs._base import LS_ALL_NODES
 from openviking_cli.utils.uri import VikingURI
 
@@ -91,7 +92,9 @@ class _SyncMixin:
 
         diff = SyncDiff()
 
-        async def list_children(dir_uri: str) -> Tuple[Dict[str, str], Dict[str, str]]:
+        async def list_children(
+            dir_uri: str, destination_uri: str
+        ) -> Tuple[Dict[str, str], Dict[str, str]]:
             files: Dict[str, str] = {}
             dirs: Dict[str, str] = {}
             entries = await self.ls(dir_uri, show_all_hidden=True, node_limit=LS_ALL_NODES, ctx=ctx)
@@ -102,6 +105,10 @@ class _SyncMixin:
                 if name.startswith("."):
                     continue
                 item_uri = VikingURI(dir_uri).join(name).uri
+                if is_association_uri(item_uri) or is_association_uri(
+                    VikingURI(destination_uri).join(name).uri
+                ):
+                    continue
                 if entry.get("isDir", False):
                     dirs[name] = item_uri
                 else:
@@ -129,8 +136,8 @@ class _SyncMixin:
         check_changed = is_changed if is_changed is not None else default_is_changed
 
         async def sync_dir(root_dir: str, target_dir: str) -> None:
-            root_files, root_dirs = await list_children(root_dir)
-            target_files, target_dirs = await list_children(target_dir)
+            root_files, root_dirs = await list_children(root_dir, target_dir)
+            target_files, target_dirs = await list_children(target_dir, target_dir)
 
             file_names = set(root_files.keys()) | set(target_files.keys())
             for name in sorted(file_names):
