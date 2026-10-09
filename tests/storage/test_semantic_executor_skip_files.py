@@ -136,9 +136,9 @@ async def test_memory_associations_are_not_summarized_or_vectorized(monkeypatch)
     root = "viking://user/user1/memories"
     fake_fs = _FakeVikingFS(
         {
-            root: [{"name": "association", "isDir": True}, {"name": "note.md", "isDir": False}],
-            root + "/association": [{"name": "Caroline", "isDir": True}],
-            root + "/association/Caroline": [{"name": "meta.json", "isDir": False}],
+            root: [{"name": ".association", "isDir": True}, {"name": "note.md", "isDir": False}],
+            root + "/.association": [{"name": "Caroline", "isDir": True}],
+            root + "/.association/Caroline": [{"name": "meta.json", "isDir": False}],
         }
     )
     monkeypatch.setattr(
@@ -157,8 +157,8 @@ async def test_memory_associations_are_not_summarized_or_vectorized(monkeypatch)
     )
     await executor.run(root)
     assert processor.summarized_files == [root + "/note.md"]
-    assert not any("/association" in path for path in processor.vectorized_files)
-    assert not any("/association" in path for path, _ in fake_fs.writes)
+    assert not any("/.association" in path for path in processor.vectorized_files)
+    assert not any("/.association" in path for path, _ in fake_fs.writes)
 
 
 @pytest.mark.asyncio

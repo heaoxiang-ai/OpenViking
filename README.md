@@ -384,7 +384,7 @@ creating an association queue.
 Each Self or Peer memory root has its own readable directory tree:
 
 ```text
-memories/association/
+memories/.association/
   Caroline/meta.json
   classic rock/meta.json
   张三/meta.json
@@ -413,7 +413,7 @@ account/user/peer/ACL checks. ROOT callers must specify a target. Original
 Find/Search do not call this endpoint or fuse its results. Association subtrees
 are excluded from ordinary semantic scans, reindexing, and tree sync; filesystem
 `ls/read` remain available under normal filesystem permissions.
-`memories/association` is a reserved derived directory; the scan exclusion also
+`memories/.association` is a reserved derived directory; the scan exclusion also
 applies while disabled, so leftover metadata cannot enter ordinary retrieval.
 
 Successful memory writes, copies, moves, and deletes enqueue independent derived
@@ -424,7 +424,8 @@ derived operation; exhausted deliveries remain unacknowledged for diagnosis.
 Enqueue failures are logged without replaying the committed primary write.
 Operators can repair/backfill using
 `viking_fs.memory_association.refresh_tree(memory_uri, ctx)`; enabling does not
-automatically backfill historical memories or migrate legacy cue vectors.
+automatically backfill historical memories, migrate legacy cue vectors, or move
+earlier experimental `memories/association/` directories.
 
 ## Research
 

@@ -49,7 +49,7 @@ async def test_native_queue_and_shared_cue_lifecycle(tmp_path, monkeypatch):
     for job in jobs:
         await queue.process_dequeued(job)
         await queue.ack(job["id"], message=job)
-    meta = json.loads(await fs.read_file(root + "/association/Caroline/meta.json", ctx=ctx))
+    meta = json.loads(await fs.read_file(root + "/.association/Caroline/meta.json", ctx=ctx))
     assert {ref["uri"] for ref in meta["memories"]} == {a, b}
     assert any(
         hit["memory_uri"] == b
@@ -60,13 +60,13 @@ async def test_native_queue_and_shared_cue_lifecycle(tmp_path, monkeypatch):
     assert {
         ref["uri"]
         for ref in json.loads(
-            await fs.read_file(root + "/association/Caroline/meta.json", ctx=ctx)
+            await fs.read_file(root + "/.association/Caroline/meta.json", ctx=ctx)
         )["memories"]
     } == {b}
     await fs.rm(b, ctx=ctx)
     await queue.dequeue()
-    assert not await fs.exists(root + "/association/Caroline", ctx=ctx)
-    assert not await fs.exists(root + "/association/.pending.json", ctx=ctx)
+    assert not await fs.exists(root + "/.association/Caroline", ctx=ctx)
+    assert not await fs.exists(root + "/.association/.pending.json", ctx=ctx)
     c, d = root + "/events/c.md", root + "/events/d.md"
     await fs.cp(a, c, ctx=ctx)
     await queue.dequeue()

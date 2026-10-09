@@ -165,7 +165,7 @@ class FileAssociationStore:
         if not is_memory_source(uri):
             return
         ctx = self._internal_ctx(ctx)
-        root = memory_root(uri) + "/association"
+        root = memory_root(uri) + "/.association"
         raw = await self._source(uri, ctx)
         cues = {}
         if raw is not None:
@@ -231,7 +231,7 @@ class FileAssociationStore:
             await self.refresh(uri, ctx)
             return
         internal = self._internal_ctx(ctx)
-        association = root + "/association"
+        association = root + "/.association"
         previous = []
         async with self._locked(association, internal) as lease:
             if lease is not None:
@@ -294,7 +294,7 @@ class FileAssociationStore:
         source_cache = {}
         for root, scopes in roots.items():
             internal = self._internal_ctx(ctx)
-            association = root + "/association"
+            association = root + "/.association"
             candidates = []
             async with self._locked(association, internal) as lease:
                 if lease is None:

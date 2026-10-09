@@ -16,7 +16,7 @@ def memory_root(uri: str) -> str | None:
 
 def is_association_uri(uri: str) -> bool:
     root = memory_root(uri)
-    return bool(root and (uri == root + "/association" or uri.startswith(root + "/association/")))
+    return bool(root and (uri == root + "/.association" or uri.startswith(root + "/.association/")))
 
 
 def is_memory_source(uri: str) -> bool:

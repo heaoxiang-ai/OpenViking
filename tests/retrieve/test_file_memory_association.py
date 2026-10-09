@@ -57,13 +57,13 @@ async def test_parallel_same_cue_uses_one_meta_and_keeps_both_sources(fixture):
     await fs.write_file(A, "Caroline", ctx=ctx)
     await fs.write_file(B, "caroline", ctx=ctx)
     await asyncio.gather(store.refresh(A, ctx), store.refresh(B, ctx))
-    state = json.loads(await fs.read_file(ROOT + "/association/.index.json", ctx=ctx))
+    state = json.loads(await fs.read_file(ROOT + "/.association/.index.json", ctx=ctx))
     assert len(state["cues"]) == 1
     directory = state["cues"]["caroline"]
-    meta = json.loads(await fs.read_file(ROOT + f"/association/{directory}/meta.json", ctx=ctx))
+    meta = json.loads(await fs.read_file(ROOT + f"/.association/{directory}/meta.json", ctx=ctx))
     assert {ref["uri"] for ref in meta["memories"]} == {A, B}
     assert all(ref["source_version"] == 1 for ref in meta["memories"])
-    files = await fs.tree(ROOT + "/association", output="original", node_limit=None, ctx=ctx)
+    files = await fs.tree(ROOT + "/.association", output="original", node_limit=None, ctx=ctx)
     assert [e["name"] for e in files if e["name"].endswith(".json")] == ["meta.json"]
     assert len(await store.search("CAROLINE", [ROOT], ctx)) == 2
 
@@ -75,12 +75,12 @@ async def test_update_delete_and_stale_reference_filtering(fixture):
     await fs.write_file(A, "Melanie", ctx=ctx)
     assert await store.search("Caroline", [ROOT], ctx) == []
     await store.refresh(A, ctx)
-    assert not await fs.exists(ROOT + "/association/Caroline", ctx=ctx)
+    assert not await fs.exists(ROOT + "/.association/Caroline", ctx=ctx)
     assert (await store.search("Melanie", [ROOT], ctx))[0]["memory_uri"] == A
     await fs.remove_files(A, ctx=ctx)
     assert await store.search("Melanie", [ROOT], ctx) == []
     await store.refresh(A, ctx)
-    assert not await fs.exists(ROOT + "/association/Melanie", ctx=ctx)
+    assert not await fs.exists(ROOT + "/.association/Melanie", ctx=ctx)
 
 
 @pytest.mark.parametrize("name", ["张三", "classic rock", "a/b", "..", "C:"])
@@ -89,7 +89,7 @@ async def test_names_are_persisted_readably_without_traversal(fixture, name):
     await fs.write_file(A, name, ctx=ctx)
     await store.refresh(A, ctx)
     meta = json.loads(
-        await fs.read_file(ROOT + "/association/" + cue_directory(name) + "/meta.json", ctx=ctx)
+        await fs.read_file(ROOT + "/.association/" + cue_directory(name) + "/meta.json", ctx=ctx)
     )
     assert meta["cue"] == name
     assert meta["memories"][0]["uri"] == A
@@ -116,10 +116,10 @@ async def test_tree_sync_preserves_associations(fixture):
     source = "viking://temp/import"
     await fs.write_file(source + "/events/a.md", "Caroline", ctx=ctx)
     # A staged association subtree is also excluded at a memory destination.
-    await fs.write_file(source + "/association/injected/meta.json", "{}", ctx=ctx)
+    await fs.write_file(source + "/.association/injected/meta.json", "{}", ctx=ctx)
     await fs.sync_tree(source, ROOT, ctx=ctx)
     assert len(await store.search("Caroline", [ROOT], ctx)) == 1
-    assert not await fs.exists(ROOT + "/association/injected", ctx=ctx)
+    assert not await fs.exists(ROOT + "/.association/injected", ctx=ctx)
 
 
 async def test_native_reindex_only_vectorizes_primary_memories(fixture, monkeypatch):
@@ -137,7 +137,7 @@ async def test_native_reindex_only_vectorizes_primary_memories(fixture, monkeypa
     await executor._reindex_memory_vectors(uri=ROOT, ctx=ctx, counters=_ReindexCounters())
     uris = [call.kwargs["uri"] for call in upsert.await_args_list]
     assert A in uris
-    assert not any("/association" in uri for uri in uris)
+    assert not any("/.association" in uri for uri in uris)
 
 
 async def test_enqueue_error_preserves_primary_write(fixture, monkeypatch):
@@ -155,7 +155,7 @@ async def test_enqueue_error_preserves_primary_write(fixture, monkeypatch):
     await enabled.write_file(A, "Caroline", ctx=ctx)
     assert await enabled.read_file(A, ctx=ctx) == "Caroline"
     assert enqueue.await_count == 1
-    assert not await enabled.exists(ROOT + "/association", ctx=ctx)
+    assert not await enabled.exists(ROOT + "/.association", ctx=ctx)
 
 
 async def test_retry_only_requeues_derived_work_and_retains_exhausted_errors(monkeypatch):
@@ -193,17 +193,17 @@ async def test_journal_replays_interrupted_multi_file_update(fixture, monkeypatc
     monkeypatch.setattr(store, "_write_json", fail_manifest)
     with pytest.raises(OSError):
         await store.refresh(A, ctx)
-    assert await fs.exists(ROOT + "/association/.pending.json", ctx=ctx)
+    assert await fs.exists(ROOT + "/.association/.pending.json", ctx=ctx)
     monkeypatch.setattr(store, "_write_json", write)
     assert (await store.search("Melanie", [ROOT], ctx))[0]["memory_uri"] == A
-    assert not await fs.exists(ROOT + "/association/.pending.json", ctx=ctx)
+    assert not await fs.exists(ROOT + "/.association/.pending.json", ctx=ctx)
 
 
 async def test_bad_json_is_not_silently_replaced(fixture):
     fs, store, ctx = fixture
     await fs.write_file(A, "Caroline", ctx=ctx)
     await store.refresh(A, ctx)
-    uri = ROOT + "/association/.index.json"
+    uri = ROOT + "/.association/.index.json"
     await fs.write_file(uri, "{broken", ctx=ctx)
     with pytest.raises(json.JSONDecodeError):
         await store.refresh(A, ctx)
@@ -252,7 +252,7 @@ async def test_disabled_uses_original_class_and_does_not_load_optional_runtime(
     assert type(result) is VikingFS
     assert not hasattr(result, "memory_association")
     await result.write_file(A, "Caroline", ctx=ctx)
-    assert not await result.exists(ROOT + "/association", ctx=ctx)
+    assert not await result.exists(ROOT + "/.association", ctx=ctx)
 
 
 async def test_reindex_explicitly_rejects_and_filters_associations(fixture):
@@ -261,7 +261,7 @@ async def test_reindex_explicitly_rejects_and_filters_associations(fixture):
     await store.refresh(A, ctx)
     executor = ReindexExecutor()
     with pytest.raises(InvalidArgumentError, match="cannot be reindexed"):
-        executor._infer_target_type(ROOT + "/association/Caroline/meta.json")
+        executor._infer_target_type(ROOT + "/.association/Caroline/meta.json")
     entries = await executor._tree_all(fs, ROOT, show_all_hidden=True, ctx=ctx)
     assert any(entry["uri"] == A for entry in entries)
-    assert not any("/association" in entry["uri"] for entry in entries)
+    assert not any("/.association" in entry["uri"] for entry in entries)
