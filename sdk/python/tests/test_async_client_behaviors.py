@@ -937,11 +937,10 @@ async def test_search_forwards_link_options():
     client._request = AsyncMock(return_value=object())
     client._handle_response_data = lambda _response: {"result": {}}
 
-    await client.search("race", options={"include_links": True, "expand_links": True})
+    await client.search("race", options={"include_links": True})
 
     payload = client._request.await_args.kwargs["json"]
     assert payload["include_links"] is True
-    assert payload["expand_links"] is True
 
 
 @pytest.mark.asyncio

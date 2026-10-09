@@ -12,7 +12,7 @@ from openviking_cli.session.user_id import UserIdentifier
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("flags", [{}, {"include_links": True, "expand_links": True}])
+@pytest.mark.parametrize("flags", [{}, {"include_links": True}])
 async def test_search_service_preserves_link_options(flags):
     fs = SimpleNamespace(search=AsyncMock(return_value="result"))
     service = SearchService(fs)
@@ -20,5 +20,5 @@ async def test_search_service_preserves_link_options(flags):
 
     assert await service.search("race", ctx=ctx, **flags) == "result"
     kwargs = fs.search.await_args.kwargs
-    for key in ("include_links", "expand_links"):
+    for key in ("include_links",):
         assert kwargs.get(key) == flags.get(key)

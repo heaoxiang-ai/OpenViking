@@ -185,7 +185,7 @@ Build your own integration with the [Python](sdk/python/README.md), [Go](sdk/go/
 
 ### Search with memory links
 
-`POST /api/v1/search/search` supports two opt-in options in `mode="list"`:
+`POST /api/v1/search/search` supports an opt-in `include_links` option in `mode="list"`:
 
 ```json
 {
@@ -195,28 +195,32 @@ Build your own integration with the [Python](sdk/python/README.md), [Go](sdk/go/
   "mode": "list",
   "limit": 10,
   "include_links": true,
-  "expand_links": true,
   "read_content": true
 }
 ```
 
-`include_links` adds accessible `links` and `backlinks` metadata to matching L2
-memories. `expand_links` follows those native links one hop before reranking,
-deduplicates by URI, and ranks the original and linked memories together using
-their indexed abstracts. The final result still respects `limit`. Expansion
-requires a configured text reranker. The initial vector recall uses `2 * limit`;
-all eligible one-hop linked targets are then added without a top-k truncation.
-Metadata lookups are batched and file reads use bounded concurrency.
-Both flags default to `false`; `find` does not expand links. Deleted, unreadable,
-out-of-scope, and filtered-out targets are excluded. No new association index or
+When a text reranker is configured, `include_links=true` follows native
+`links` and `backlinks` one hop, deduplicates by URI, and ranks all original and
+linked memories together using their indexed abstracts. It also adds accessible
+link metadata to the returned L2 memories. **Without a text reranker, the option
+is ignored:** no link files are read, metadata is not added, and ordinary Search
+results are unchanged. Image search also ignores this text-rerank option.
+
+The option defaults to `false`. The existing Find and default Search retrieval
+paths are unchanged. Each planned query recalls `2 * limit` vector candidates; all eligible
+one-hop targets are then added without a top-k truncation. Deleted, unreadable,
+unindexed, out-of-scope, and filtered-out targets are excluded. Metadata lookups
+are batched and file reads use bounded concurrency. No new association index or
 memory extraction is introduced. Existing memories need native links, generated
 on future commits by enabling `memory.link_enabled`.
 
-Reranking uses `rerank.batch_size` (default `100`, always capped at `100` for
-VikingDB). Each batch is scored in input order; all scores are globally sorted
-before selecting the final results. If a batch fails, the entire rerank falls
-back to the original vector candidates, discarding candidates found only through
-links rather than mixing partially reranked scores.
+The Search link pipeline uses `rerank.batch_size` (default `100`, always capped
+at `100` for VikingDB). Every batch is scored, then all scores are globally sorted
+before selecting `limit` results for that query. Existing multi-query aggregation
+is unchanged. If a batch fails, all partial scores and
+link-only candidates are discarded and original recall candidates are used.
+The link pipeline is implemented in a Search-only helper; the common retriever
+is unchanged.
 
 ## Use it with your agent
 

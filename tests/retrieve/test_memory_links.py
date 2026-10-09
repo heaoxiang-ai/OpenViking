@@ -7,11 +7,11 @@ from collections import Counter
 import pytest
 
 from openviking.retrieve.hierarchical_retriever import HierarchicalRetriever
-from openviking.retrieve.memory_links import MemoryLinks
+from openviking.retrieve.memory_links import MemoryLinks, _rerank_all, search_with_memory_links
 from openviking.server.identity import RequestContext, Role
 from openviking.storage.expr import And, In, RawDSL
 from openviking.storage.vikingdb_manager import VikingDBManagerProxy
-from openviking_cli.exceptions import InvalidArgumentError
+from openviking.utils.token_estimation import estimate_text_tokens
 from openviking_cli.retrieve.types import ContextType, FindResult, TypedQuery
 from openviking_cli.session.user_id import UserIdentifier
 from openviking_cli.utils.config import RerankConfig
@@ -72,6 +72,7 @@ class Storage:
         self.seeds = list(seeds)
         self.targets = list(targets)
         self.lookups = []
+        self.recall_calls = []
 
     async def get_account_backend(self, _account_id):
         return self
@@ -80,7 +81,11 @@ class Storage:
         return True
 
     async def search_in_tenant(self, _ctx, **kwargs):
+        self.recall_calls.append(kwargs)
         return self.seeds[: kwargs["limit"]]
+
+    async def search_by_keywords_in_tenant(self, request_ctx, **kwargs):
+        return await self.search_in_tenant(request_ctx, **kwargs)
 
     async def filter_in_tenant(self, request_ctx, **kwargs):
         self.lookups.append({"ctx": request_ctx, **kwargs})
@@ -109,7 +114,7 @@ def retriever(monkeypatch, storage, fs, *, fail_batch=None):
         lambda _config: reranker,
     )
     config = RerankConfig(ak="test", sk="test", threshold=0, batch_size=1)
-    return HierarchicalRetriever(storage, None, config, memory_fs=fs), reranker
+    return HierarchicalRetriever(storage, None, config), reranker
 
 
 @pytest.mark.asyncio
@@ -125,11 +130,11 @@ async def test_backlink_expansion_can_win_global_rerank_without_following_second
     search, model = retriever(monkeypatch, storage, fs)
     query = TypedQuery("charity race", ContextType.MEMORY, "", target_directories=[ROOT])
 
-    result = await search.retrieve(query, ctx(), limit=1, expand_links=True)
+    result = await search_with_memory_links(search, fs, query, ctx(), limit=1)
 
     assert [r.uri for r in result.matched_contexts] == [RACE]
     assert model.calls == [("charity race", ["melanie.md"]), ("charity race", ["race evidence"])]
-    assert THIRD not in fs.reads
+    assert all("third.md" not in documents for _, documents in model.calls)
     assert storage.lookups[0]["ctx"] == ctx()
     assert storage.lookups[0]["target_directories"] == [ROOT]
     assert storage.lookups[0]["context_type"] == "memory"
@@ -194,11 +199,12 @@ async def test_failed_later_batch_discards_all_model_scores_and_link_only_candid
     storage = Storage([row(PERSON, 0.75)], [row(RACE, abstract="race evidence")])
     search, model = retriever(monkeypatch, storage, fs, fail_batch=2)
 
-    result = await search.retrieve(
+    result = await search_with_memory_links(
+        search,
+        fs,
         TypedQuery("race", ContextType.MEMORY, ""),
         ctx(),
         limit=2,
-        expand_links=True,
         score_threshold=-1,
     )
 
@@ -222,17 +228,19 @@ async def test_default_search_never_reads_link_files(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_expand_requires_reranker_but_metadata_only_does_not():
+async def test_links_are_ignored_without_reranker():
     storage = Storage([row(PERSON)])
-    search = HierarchicalRetriever(storage, None, memory_fs=Files({PERSON: memory()}))
+    fs = Files({PERSON: memory(links=[relation(PERSON, RACE)])})
+    search = HierarchicalRetriever(storage, None)
     query = TypedQuery("race", ContextType.MEMORY, "")
 
-    with pytest.raises(InvalidArgumentError, match="configured text reranker"):
-        await search.retrieve(query, ctx(), expand_links=True)
-    result = await search.retrieve(query, ctx(), include_links=True)
+    result = await search_with_memory_links(search, fs, query, ctx())
+
     payload = FindResult(memories=result.matched_contexts, resources=[], skills=[]).to_dict()
-    assert payload["memories"][0]["links"] == []
-    assert FindResult.from_dict(payload).memories[0].backlinks == []
+    assert fs.reads == {}
+    assert storage.lookups == []
+    assert "links" not in payload["memories"][0]
+    assert "backlinks" not in payload["memories"][0]
 
 
 @pytest.mark.asyncio
@@ -268,10 +276,11 @@ async def test_nonfinite_model_score_discards_link_only_candidates(monkeypatch):
     search, model = retriever(monkeypatch, storage, fs)
     model.rerank_batch = lambda _query, _documents: [float("nan")]
 
-    result = await search.retrieve(
+    result = await search_with_memory_links(
+        search,
+        fs,
         TypedQuery("race", ContextType.MEMORY, ""),
         ctx(),
-        expand_links=True,
         score_threshold=-1,
     )
     assert [(r.uri, r.score) for r in result.matched_contexts] == [(PERSON, 0.75)]
@@ -291,13 +300,14 @@ async def test_all_513_linked_targets_are_reranked_before_global_top_one(monkeyp
         [row(u, abstract="race evidence" if u == targets[-1] else "other event") for u in targets],
     )
     search, model = retriever(monkeypatch, storage, fs)
-    search.rerank_batch_size = 100
+    search.rerank_config.batch_size = 500  # VikingDB must still cap batches at 100.
 
-    result = await search.retrieve(
+    result = await search_with_memory_links(
+        search,
+        fs,
         TypedQuery("race", ContextType.MEMORY, "", target_directories=[ROOT]),
         ctx(),
         limit=1,
-        expand_links=True,
     )
 
     assert [r.uri for r in result.matched_contexts] == [targets[-1]]
@@ -318,11 +328,11 @@ async def test_filesystem_denied_target_never_reaches_reranker(monkeypatch):
     storage.filter_in_tenant = lookup
     search, model = retriever(monkeypatch, storage, fs)
 
-    result = await search.retrieve(
+    result = await search_with_memory_links(
+        search,
+        fs,
         TypedQuery("race", ContextType.MEMORY, ""),
         ctx(),
-        expand_links=True,
-        include_links=True,
     )
     assert result.matched_contexts[0].links == []
     assert all("private evidence" not in documents for _, documents in model.calls)
@@ -344,3 +354,65 @@ async def test_duplicate_index_rows_do_not_crowd_out_other_link_targets():
 
     assert {row["uri"] for row in expanded} == {PERSON, RACE, OTHER}
     assert [lookup["offset"] for lookup in storage.lookups] == [0, 2]
+
+
+@pytest.mark.asyncio
+async def test_low_vector_score_link_seed_is_not_filtered_before_rerank(monkeypatch):
+    fs = Files({PERSON: memory(links=[relation(PERSON, RACE)]), RACE: memory()})
+    storage = Storage([row(PERSON, -0.3)], [row(RACE, abstract="race evidence")])
+    search, _model = retriever(monkeypatch, storage, fs)
+
+    result = await search_with_memory_links(
+        search,
+        fs,
+        TypedQuery("race", ContextType.MEMORY, ""),
+        ctx(),
+        limit=1,
+        score_threshold=0.5,
+    )
+    assert [match.uri for match in result.matched_contexts] == [RACE]
+
+
+@pytest.mark.asyncio
+async def test_link_rerank_preserves_per_pair_token_budget(monkeypatch):
+    search, model = retriever(monkeypatch, Storage(), Files({}))
+    search.rerank_config.max_input_tokens = 128
+
+    await _rerank_all(search, "question " * 500, [row(PERSON, abstract="answer " * 500)])
+
+    query, documents = model.calls[0]
+    assert estimate_text_tokens(query) <= 96
+    assert estimate_text_tokens(query) + estimate_text_tokens(documents[0]) <= 128
+
+
+@pytest.mark.asyncio
+async def test_link_pipeline_preserves_keyword_recall_and_scope(monkeypatch):
+    fs = Files({PERSON: memory(links=[relation(PERSON, RACE)]), RACE: memory()})
+    storage = Storage([row(PERSON)], [row(RACE, abstract="race evidence")])
+    search, _model = retriever(monkeypatch, storage, fs)
+    scope = {"op": "must", "field": "search_tags", "conds": ["source=allowed"]}
+
+    result = await search_with_memory_links(
+        search,
+        fs,
+        TypedQuery("race", ContextType.MEMORY, "", target_directories=[ROOT]),
+        ctx(),
+        limit=1,
+        search_type="keywords",
+        scope_dsl=scope,
+        level=[2],
+    )
+
+    assert [match.uri for match in result.matched_contexts] == [RACE]
+    assert storage.recall_calls == [
+        {
+            "query": "race",
+            "context_type": "memory",
+            "target_directories": [ROOT],
+            "extra_filter": scope,
+            "level": [2],
+            "limit": 2,
+            "offset": 0,
+        }
+    ]
+    assert storage.lookups[0]["extra_filter"] == And([In("uri", [RACE]), RawDSL(scope)])

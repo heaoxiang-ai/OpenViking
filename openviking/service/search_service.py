@@ -120,7 +120,6 @@ class SearchService:
         search_type: SearchType = "semantic",
         context_types: Optional[List[ContextType]] = None,
         include_links: bool = False,
-        expand_links: bool = False,
     ) -> Any:
         """Search with session context.
 
@@ -152,8 +151,6 @@ class SearchService:
         link_options = {}
         if include_links:
             link_options["include_links"] = True
-        if expand_links:
-            link_options["expand_links"] = True
         result = await viking_fs.search(
             query=query,
             ctx=ctx,

@@ -65,7 +65,7 @@ class RerankConfig(BaseModel):
         ge=1,
         le=1000,
         description=(
-            "Maximum documents per rerank request. Scores from all batches are "
+            "Maximum documents per request in Search include_links reranking. All batches are "
             "combined before selecting results. VikingDB is always capped at 100."
         ),
     )

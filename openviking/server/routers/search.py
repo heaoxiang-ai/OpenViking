@@ -237,7 +237,6 @@ class SearchRequest(BaseModel):
     level: Optional[Union[int, str, List[int]]] = None
     read_content: bool = False
     include_links: bool = False
-    expand_links: bool = False
     telemetry: TelemetryRequest = False
     events_time_decay_protection: Optional[str] = None
 
@@ -269,8 +268,8 @@ class SearchRequest(BaseModel):
                 raise ValueError(error)
             return self
 
-        if self.include_links or self.expand_links:
-            raise ValueError("include_links and expand_links are only supported in mode='list'")
+        if self.include_links:
+            raise ValueError("include_links is only supported in mode='list'")
         if self.read_content:
             raise ValueError("read_content is only supported in mode='list'")
         if self.target_uri:
@@ -511,8 +510,6 @@ async def search(
         link_options = {}
         if request.include_links:
             link_options["include_links"] = True
-        if request.expand_links:
-            link_options["expand_links"] = True
         session = None
         # Intent off: skip session.load — SearchService will not scan session either.
         if request.session_id and service.search.is_intent_enabled():
