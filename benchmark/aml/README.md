@@ -196,6 +196,118 @@ Subprocesses default to `PYTHONHASHSEED=0` to keep option mappings stable across
 shard counts. These are OV retrieval-based evaluations, not reproductions of
 the authors' trained MemAgent implementation.
 
+## LoCoMo-Refined query-only planner experiment
+
+This optional benchmark path packages the Search + RL V7 query-only planner +
+URI deduplication + rerank + Top20 + person-header experiment. It does not
+modify the deployed AML adapter, native Search, or memory extraction. The
+existing adapter still uses native Find. The experiment calls native Search
+directly, in list mode, within each imported user's memories at level 2.
+
+Implementation entry points:
+
+- `eval/run_public.py`: ordered Add/commit, with optional `--add-only`;
+- `eval/query_planner.py`: render the exact training template and consume only
+  query strings, ignoring `context_type`, `intent`, and `priority`;
+- `eval/search_planner.py`: Search each query, deduplicate by exact URI, score
+  every candidate's abstract against the original question in batches of at
+  most 100, align provider document IDs, globally sort and keep Top20;
+- `eval/owner_labels.py`: read the selected full bodies and prepend
+  `[记忆归属人: 姓名]`. Event headers list source participants, not the owner
+  of every fact. Unknown people remain `未明确`;
+- `eval/locomo_mini.py`: independent mini Answer48/Judge48 pools, using the
+  pinned public AML Answer/Judge prompts and original Refined gold;
+- `eval/cached_http.py`: first-valid durable caches and shared HTTP429 cooldown.
+  Correct and incorrect valid judgments are both retained. This retry helper
+  is never used for Add.
+
+Run from this source checkout. Use a dedicated OV instance and the same account
+for the adapter and native Search. Its config must have **no `rerank` block**,
+because reranking occurs after merging all Search lanes. Do not alter a shared
+running OV instance for this experiment. Links expansion, association and
+Trigger are off. `--ov-config` checks the dedicated config; the caller must
+ensure it is the config actually loaded by `--ov-base-url`.
+
+First import prepared LoCoMo-Refined data through the adapter. Preserve its
+speaker-name prefixes and original user/assistant protocol roles. Different
+namespaces generate isolated user IDs; sessions within a user remain ordered.
+If reusing existing memories, use their original scoped questions instead of
+executing Add again.
+
+```bash
+python -m benchmark.aml.eval.run_public \
+  --prepared '<prepared-locomo-refined.json>' --unit locomo_refined \
+  --namespace '<new-isolated-run>' --base-url '<AML adapter URL>' \
+  --output-dir result/aml-planner/import --add-concurrency 32 --add-only
+```
+
+An interrupted or ambiguous Add requires checking original native tasks,
+archives and receipts; do not simply rerun this import command. `--add-only`
+writes `locomo_refined/questions.jsonl`, including the actual imported user IDs.
+
+Download the model provider's exact training prompt to an ignored result
+directory. Its revision and SHA256 are pinned in `eval/query_planner.py`.
+The planner model is `guoxuter/Qwen3.5-2B-Intent-RL-V7`; no session context is
+provided. Empty valid plans fall back to the original question.
+
+```bash
+mkdir -p result/aml-planner
+curl --fail --location \
+  'https://huggingface.co/guoxuter/Qwen3.5-2B-Intent-RL-V7/resolve/220433d4a234142638cfcc4ab1ee8dcfc4b4d142/prompts/retrieval/intent_analysis_v7_rl.yaml' \
+  -o result/aml-planner/intent_analysis_v7_rl.yaml
+
+export OV_API_KEY='<dedicated OV trusted-mode root key>'
+export PLANNER_API_BASE='<OpenAI-compatible planner API base ending in /v1>'
+export PLANNER_API_KEY='<planner key>'
+export RERANK_AK='<VikingDB AK>'
+export RERANK_SK='<VikingDB SK>'
+
+python -m benchmark.aml.eval.search_planner \
+  --questions result/aml-planner/import/locomo_refined/questions.jsonl \
+  --ov-base-url '<dedicated native OV URL>' --ov-config '<dedicated ov.conf>' \
+  --account '<same account as adapter>' --memory-revision '<immutable snapshot ID>' \
+  --planner-prompt result/aml-planner/intent_analysis_v7_rl.yaml \
+  --lane-limit 200 --topk 20 --concurrency 4 \
+  --output-dir result/aml-planner/search
+```
+
+The memory snapshot must remain unchanged during retrieval and cache reuse;
+`--memory-revision` scopes the native cache, but is not a remote snapshot lock.
+Search caches retain all candidates and raw rerank IDs for audit. Only selected
+memory bodies are read. Fewer than 20 valid positive-score hits yield fewer
+contexts; an empty recall remains empty and is never filled from gold.
+
+For Answer/Judge, check out the public AML repository at the exact revision.
+Both stages use `gpt-4o-mini-2024-07-18`, temperature 0, max_tokens 16384.
+Answer receives only the question, speaker names and retrieved content; gold
+is supplied solely to Judge. No tools are passed to either model.
+
+```bash
+git clone https://github.com/AML-memory/agent-memory-leaderboard.git result/aml-planner/aml
+git -C result/aml-planner/aml checkout 1b8142bfe0f20f1c5218d6b554aa0012de34e504
+export ANSWER_API_BASE='<model API base>'
+export ANSWER_API_KEY='<model key>'
+export JUDGE_API_BASE="$ANSWER_API_BASE"
+export JUDGE_API_KEY="$ANSWER_API_KEY"
+# Azure gateways additionally require ANSWER_API_VERSION/JUDGE_API_VERSION;
+# with an API version the client uses api-key, otherwise Bearer authentication.
+
+python -m benchmark.aml.eval.locomo_mini \
+  --retrieval result/aml-planner/search/retrieval.jsonl \
+  --aml-repo result/aml-planner/aml --output-dir result/aml-planner/eval \
+  --answer-concurrency 48 --judge-concurrency 48
+```
+
+Rerunning Search or Answer/Judge with identical inputs resumes accepted caches;
+changed experiment conditions require a different output directory. Neither
+stage retries Add or starts/restarts OV. Credentials come only from the
+environment and are excluded from manifests and request logs. Keep outputs
+and private configuration under ignored `result/` paths.
+
+This is a reusable packaging of the experiment, not a rerun on today's main.
+The historical 739/861 result used a frozen older OV revision; current main,
+fresh rerank scores and model sampling can change results.
+
 ## Static checks
 
 ```bash

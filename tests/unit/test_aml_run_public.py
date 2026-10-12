@@ -10,6 +10,47 @@ from benchmark.aml.eval import run_public as runner
 
 
 class PublicRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_add_only_exports_scoped_questions_without_search(self):
+        case = {
+            "unit": "locomo_refined",
+            "case_id": "q",
+            "history_key": "conv",
+            "histories": [
+                {
+                    "session_id": "s",
+                    "messages": [
+                        {"role": "user", "content": "Caroline: Hello"},
+                        {"role": "assistant", "content": "Melanie: Hi"},
+                    ],
+                }
+            ],
+            "question": "Who?",
+            "gold_answer": "Caroline",
+        }
+        seen = []
+
+        async def handle(request):
+            self.assertEqual(request.url.path, "/add")
+            seen.append(json.loads(request.content))
+            return httpx.Response(200, json={"success": True})
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = root / "prepared.json"
+            prepared.write_text(json.dumps({"cases": [case]}))
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+                summary = await runner.run_public(
+                    [prepared],
+                    output_dir=root / "out",
+                    namespace="isolated",
+                    client=client,
+                    add_only=True,
+                )
+            row = json.loads(Path(summary["units"][0]["questions"]).read_text())
+            self.assertEqual(row["user_id"], seen[0]["user_id"])
+            self.assertEqual(seen[0]["messages"], case["histories"][0]["messages"])
+            self.assertNotIn("retrieved_context", row)
+
     async def test_histories_overlap_but_each_users_sessions_and_chunks_stay_ordered(self):
         cases = []
         for history in range(2):

@@ -391,6 +391,7 @@ async def run_public(
     search_concurrency: int | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     client: httpx.AsyncClient | None = None,
+    add_only: bool = False,
 ) -> dict[str, Any]:
     """Add histories concurrently, preserving session order, then Search."""
     _text(namespace, "namespace")
@@ -436,6 +437,23 @@ async def run_public(
                     await _add_session(active_client, base_url, headers, group)
 
             await _bounded_map(list(history_groups.values()), resolved_add_concurrency, add_history)
+            if add_only:
+                unit_dir = destination / unit
+                unit_dir.mkdir()
+                questions_path = unit_dir / "questions.jsonl"
+                _write_jsonl(
+                    questions_path,
+                    [{**case.output, "user_id": case.user_id} for case in searches],
+                )
+                summaries.append(
+                    {
+                        "unit": unit,
+                        "cases": len(searches),
+                        "add_requests": add_count,
+                        "questions": str(questions_path.resolve()),
+                    }
+                )
+                continue
             print(f"[{unit}] Search {len(searches)} questions", flush=True)
 
             async def search_case(case: SearchCase) -> dict[str, Any]:
@@ -471,6 +489,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument(
+        "--add-only", action="store_true", help="write scoped questions without Search"
+    )
+    parser.add_argument(
         "--add-concurrency",
         type=_positive_int,
         help=f"parallel Add histories/users (default: {DEFAULT_ADD_CONCURRENCY})",
@@ -500,6 +521,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 add_concurrency=args.add_concurrency,
                 search_concurrency=args.search_concurrency,
                 timeout_seconds=args.timeout_seconds,
+                add_only=args.add_only,
             )
         )
     except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
