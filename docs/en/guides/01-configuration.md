@@ -388,6 +388,8 @@ When the embedding provider experiences consecutive transient failures (e.g. `42
 
 With `input: "multimodal"`, OpenViking can embed text, images (PNG, JPG, etc.), and mixed content. Image-to-image search requires this mode; text-only embedding models continue to index image summaries but cannot accept image queries.
 
+Hybrid image support depends on the dense channel. The complete mixed input goes to dense, while sparse receives only text; image-only inputs skip sparse. Volcengine hybrid keeps one combined request for text-only input and uses separate multimodal dense and text-only sparse requests for mixed input. Keep the dense model and dimension compatible with the vectors already stored in the index.
+
 **Supported providers:**
 - `openai`: OpenAI Embedding API
 - `azure`: Azure OpenAI Embedding API

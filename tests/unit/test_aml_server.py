@@ -343,3 +343,115 @@ async def test_search_retries_transient_native_find_failure(adapter_client):
     assert all(request.url.path == "/api/v1/search/find" for request in requests)
     assert requests[0].content == requests[1].content
     assert requests[0].headers == requests[1].headers
+
+
+@pytest.mark.parametrize(
+    ("query", "text", "images"),
+    [
+        ([IMAGE_PART], "", IMAGE_URL),
+        ([{"type": "text", "text": "Which receipt?"}, IMAGE_PART], "Which receipt?", IMAGE_URL),
+        (
+            [IMAGE_PART, {"type": "text", "text": "Compare both"}, IMAGE_PART],
+            "Compare both",
+            [IMAGE_URL, IMAGE_URL],
+        ),
+        (
+            [{"type": "text", "text": "First"}, {"type": "text", "text": "Second"}],
+            "First\nSecond",
+            None,
+        ),
+    ],
+    ids=["image-only", "mixed", "multiple-images", "text-array"],
+)
+async def test_search_forwards_images_to_native_find(adapter_client, query, text, images):
+    seen = []
+
+    def handle(request):
+        assert request.url.path == "/api/v1/search/find"
+        assert request.headers["X-OpenViking-User"] == "alice"
+        body = json.loads(request.content)
+        assert body["query"] == text + "\n\nAnswer options:\n1. A\n2. B"
+        assert body.get("image_url") == images
+        assert body["target_uri"] == "viking://~/memories"
+        assert body["context_type"] == ["memory"]
+        assert body["level"] == 2
+        seen.append(body)
+        return httpx.Response(
+            200,
+            json={
+                "status": "ok",
+                "result": {
+                    "memories": [{"uri": "viking://user/alice/memories/a", "content": "Evidence"}]
+                },
+            },
+        )
+
+    async with adapter_client(handle) as client:
+        response = await client.post(
+            "/search", json={"user_id": "alice", "query": query, "options": ["A", "B"], "top_k": 2}
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "data": [{"id": "viking://user/alice/memories/a", "content": "Evidence"}]
+    }
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        [],
+        " ",
+        [{"type": "text", "text": " "}],
+        [{"type": "image_url", "image_url": {"url": "https://example.com/a.png"}}],
+        [{"type": "image_url", "image_url": {"url": "data:image/png;base64,%%%"}}],
+    ],
+)
+async def test_search_rejects_invalid_queries_before_native_find(adapter_client, query):
+    def handle(request):
+        raise AssertionError("Invalid query must not reach the backend")
+
+    async with adapter_client(handle) as client:
+        response = await client.post(
+            "/search", json={"user_id": "alice", "query": query, "top_k": 2}
+        )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("limit", "maximum", "count", "status"),
+    [
+        ("MAX_IMAGE_BYTES", IMAGE_SIZE - 1, 1, 422),
+        ("MAX_QUERY_IMAGE_BYTES", 2 * IMAGE_SIZE - 1, 2, 422),
+        ("MAX_QUERY_IMAGE_BYTES", 2 * IMAGE_SIZE, 2, 200),
+    ],
+)
+async def test_search_validates_per_image_and_aggregate_size(
+    adapter_client, monkeypatch, limit, maximum, count, status
+):
+    monkeypatch.setattr(server, limit, maximum)
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        return httpx.Response(200, json={"status": "ok", "result": {"memories": []}})
+
+    async with adapter_client(handle) as client:
+        response = await client.post(
+            "/search", json={"user_id": "alice", "query": [IMAGE_PART] * count, "top_k": 2}
+        )
+    assert response.status_code == status
+    assert len(seen) == (status == 200)
+
+
+async def test_image_search_requires_existing_authentication(adapter_client):
+    def handle(request):
+        raise AssertionError("Unauthorized query must not reach the backend")
+
+    async with adapter_client(handle) as client:
+        response = await client.post(
+            "/search",
+            headers={"Authorization": "Token wrong-key"},
+            json={"user_id": "alice", "query": [IMAGE_PART], "top_k": 2},
+        )
+    assert response.status_code == 401

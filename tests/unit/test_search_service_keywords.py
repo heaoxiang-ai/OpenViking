@@ -31,3 +31,12 @@ async def test_keywords_capability_check_propagates_metadata_failures():
         supported_modes=("volcengine", "vikingdb"),
         raise_on_error=True,
     )
+
+
+async def test_multiple_query_images_are_resolved_under_same_request_context():
+    read = AsyncMock(return_value=b"png")
+    service = SearchService(SimpleNamespace(read_file_bytes=read))
+    ctx = _ctx()
+    urls = ["data:image/png;base64,YQ==", "viking://resources/photo.png"]
+    assert await service._resolve_image_url(urls, ctx) == [urls[0], "data:image/png;base64,cG5n"]
+    read.assert_awaited_once_with(urls[1], ctx=ctx)

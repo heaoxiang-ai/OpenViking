@@ -28,6 +28,7 @@ DEFAULT_OPENVIKING_URL = "http://127.0.0.1:1933"
 MEMORY_ROOT_URI = "viking://~/memories"
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_ADD_IMAGE_BYTES = 30 * 1024 * 1024
+MAX_QUERY_IMAGE_BYTES = 30 * 1024 * 1024
 RETRYABLE_OPENVIKING_CODES = {
     "ABORTED",
     "DEADLINE_EXCEEDED",
@@ -217,13 +218,22 @@ class AMLAddRequest(BaseModel):
 class AMLSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(min_length=1)
+    query: str | list[AMLContentPart] = Field(min_length=1)
     options: list[str] | None = None
     user_id: str = Field(min_length=1)
     top_k: int = Field(ge=1, strict=True)
 
-    _query_not_blank = field_validator("query")(_not_blank)
     _user_id_not_blank = field_validator("user_id")(_not_blank)
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str | list[AMLContentPart]) -> str | list[AMLContentPart]:
+        if isinstance(value, str):
+            return _not_blank(value)
+        size = sum(part.image_url.decoded_size for part in value if isinstance(part, AMLImagePart))
+        if size > MAX_QUERY_IMAGE_BYTES:
+            raise ValueError("images exceed the 30 MiB decoded size limit per Search request")
+        return value
 
 
 class OpenVikingBackendError(RuntimeError):
@@ -322,7 +332,9 @@ class OpenVikingBackend:
                     raise OpenVikingBackendError("OpenViking commit timed out")
                 await asyncio.sleep(min(self.settings.task_poll_seconds, remaining))
 
-    async def find(self, *, user_id: str, query: str, limit: int) -> list[dict[str, Any]]:
+    async def find(
+        self, *, user_id: str, query: str, limit: int, image: str | list[str] | None = None
+    ) -> list[dict[str, Any]]:
         async with self._client(user_id) as client:
             result = await self._retry(
                 "find",
@@ -330,6 +342,7 @@ class OpenVikingBackend:
                     query=query,
                     target_uri=MEMORY_ROOT_URI,
                     limit=limit,
+                    **({"image": image} if image else {}),
                     options={
                         "context_type": ["memory"],
                         "level": 2,
@@ -401,6 +414,10 @@ class AMLAdapter:
 
     async def search(self, request: AMLSearchRequest) -> dict[str, list[dict[str, Any]]]:
         query = request.query
+        images = []
+        if isinstance(query, list):
+            images = [part.image_url.url for part in query if isinstance(part, AMLImagePart)]
+            query = "\n".join(part.text for part in query if isinstance(part, AMLTextPart))
         if request.options:
             options = "\n".join(
                 f"{index}. {option}" for index, option in enumerate(request.options, start=1)
@@ -411,6 +428,7 @@ class AMLAdapter:
                 user_id=request.user_id,
                 query=query,
                 limit=request.top_k,
+                **({"image": images[0] if len(images) == 1 else images} if images else {}),
             )
         except OpenVikingBackendError as exc:
             raise HTTPException(

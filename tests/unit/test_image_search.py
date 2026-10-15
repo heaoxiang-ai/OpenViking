@@ -45,6 +45,26 @@ def test_image_helpers_accept_base64_bytes_and_image_uris(tmp_path):
     assert normalize_client_image_input(image_path).startswith("data:image/jpeg;base64,")
 
 
+def test_multiple_images_keep_their_order_in_embedding_input_and_sdk():
+    from openviking_sdk.client import _normalize_image_input
+
+    images = ["data:image/png;base64,YQ==", "viking://resources/images/b.png"]
+    assert build_multimodal_embedding_input("compare", images) == [
+        {"type": "text", "text": "compare"},
+        *[{"type": "image_url", "image_url": {"url": url}} for url in images],
+    ]
+    assert normalize_client_image_input(images) == images
+    assert _normalize_image_input(images) == images
+
+
+def test_find_and_search_request_models_accept_multiple_images():
+    from openviking.server.routers.search import FindRequest, SearchRequest
+
+    images = ["data:image/png;base64,YQ==", "data:image/png;base64,Yg=="]
+    assert FindRequest(image_url=images).image_url == images
+    assert SearchRequest(image_url=images).image_url == images
+
+
 def test_model_image_input_downsamples_jpeg_incompatible_modes():
     buf = io.BytesIO()
     Image.new("LA", (80, 220), color=(255, 255)).save(buf, format="PNG")
