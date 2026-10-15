@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import binascii
 import hmac
 import math
 import os
@@ -12,7 +14,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Awaitable, Callable, Literal, TypeVar
+from typing import Annotated, Any, AsyncIterator, Awaitable, Callable, Literal, TypeVar
 
 import httpx
 import uvicorn
@@ -24,6 +26,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8088
 DEFAULT_OPENVIKING_URL = "http://127.0.0.1:1933"
 MEMORY_ROOT_URI = "viking://~/memories"
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+MAX_ADD_IMAGE_BYTES = 30 * 1024 * 1024
 RETRYABLE_OPENVIKING_CODES = {
     "ABORTED",
     "DEADLINE_EXCEEDED",
@@ -103,14 +107,72 @@ def _not_blank(value: str) -> str:
     return value
 
 
+class AMLTextPart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["text"]
+    text: str = Field(min_length=1)
+
+    _text_not_blank = field_validator("text")(_not_blank)
+
+
+class AMLImageURL(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    detail: Literal["auto", "low", "high"] | None = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_inline_image(cls, value: str) -> str:
+        header, _, encoded = value.partition(",")
+        if (
+            header
+            not in {
+                "data:image/jpeg;base64",
+                "data:image/png;base64",
+                "data:image/webp;base64",
+            }
+            or not encoded
+        ):
+            raise ValueError("image_url must be an inline Base64 JPEG, PNG, or WebP Data URI")
+        if len(encoded) > 4 * ((MAX_IMAGE_BYTES + 2) // 3):
+            raise ValueError("image exceeds the 10 MiB decoded size limit")
+        try:
+            size = len(base64.b64decode(encoded, validate=True))
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("image_url contains invalid Base64 data") from exc
+        if size > MAX_IMAGE_BYTES:
+            raise ValueError("image exceeds the 10 MiB decoded size limit")
+        return value
+
+    @property
+    def decoded_size(self) -> int:
+        # Base64 was validated above; count bytes without decoding images again.
+        return len(self.url.partition(",")[2].rstrip("=")) * 3 // 4
+
+
+class AMLImagePart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["image_url"]
+    image_url: AMLImageURL
+
+
+AMLContentPart = Annotated[AMLTextPart | AMLImagePart, Field(discriminator="type")]
+
+
 class AMLMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1)
+    content: str | list[AMLContentPart] = Field(min_length=1)
     timestamp: int | None = Field(default=None, ge=0, strict=True)
 
-    _content_not_blank = field_validator("content")(_not_blank)
+    @field_validator("content")
+    @classmethod
+    def content_not_blank(cls, value: str | list[AMLContentPart]) -> str | list[AMLContentPart]:
+        return _not_blank(value) if isinstance(value, str) else value
 
     @field_validator("timestamp")
     @classmethod
@@ -136,6 +198,20 @@ class AMLAddRequest(BaseModel):
     _request_id_not_blank = field_validator("request_id")(_not_blank)
     _user_id_not_blank = field_validator("user_id")(_not_blank)
     _session_id_not_blank = field_validator("session_id")(_not_blank)
+
+    @field_validator("messages")
+    @classmethod
+    def validate_image_budget(cls, messages: list[AMLMessage]) -> list[AMLMessage]:
+        size = sum(
+            part.image_url.decoded_size
+            for message in messages
+            if isinstance(message.content, list)
+            for part in message.content
+            if isinstance(part, AMLImagePart)
+        )
+        if size > MAX_ADD_IMAGE_BYTES:
+            raise ValueError("images exceed the 30 MiB decoded size limit per Add request")
+        return messages
 
 
 class AMLSearchRequest(BaseModel):
@@ -298,7 +374,11 @@ class AMLAdapter:
     async def add(self, request: AMLAddRequest) -> dict[str, Any]:
         messages: list[dict[str, Any]] = []
         for message in request.messages:
-            item: dict[str, Any] = {"role": message.role, "content": message.content}
+            item: dict[str, Any] = {"role": message.role}
+            if isinstance(message.content, str):
+                item["content"] = message.content
+            else:
+                item["parts"] = [part.model_dump(exclude_none=True) for part in message.content]
             if message.timestamp is not None:
                 item["created_at"] = _format_timestamp(message.timestamp)
             messages.append(item)

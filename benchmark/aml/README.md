@@ -62,6 +62,35 @@ default; use `AML_RETRY_ATTEMPTS` and `AML_RETRY_DELAY_SECONDS` to adjust that
 behavior. `Token`, `Bearer`, and `X-Api-Key` authentication are accepted when
 `AML_API_KEY` is set.
 
+`/add` accepts either a content string (Textual/Coding) or an ordered array of
+`text` and `image_url` parts in `messages[].content` (Multimodal). Strings are
+forwarded as native `content`; arrays are forwarded as native Session `parts`,
+preserving part order, message roles, and timestamps. Images must be inline
+Base64 JPEG, PNG, or WebP Data URIs, with at most 10 MiB decoded per image and
+30 MiB decoded across one Add request. For example:
+
+```json
+{
+  "request_id": "example:add:1",
+  "user_id": "example:user",
+  "session_id": "example:session",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "Remember this receipt."},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,<image-bytes>"}}
+    ]
+  }]
+}
+```
+
+The example's image payload is a placeholder; supply actual Base64 image bytes.
+Image understanding and memory extraction use OpenViking's existing Session
+commit pipeline and require a configured vision-capable VLM. The adapter does
+not perform separate image captioning. `/search` still accepts string queries
+and returns text evidence; image-query and image-evidence support are not
+included in this adapter yet.
+
 The native `find` call uses quick retrieval without reranking, even when the
 OpenViking server has a reranker configured. The adapter returns each hit's
 `content` when present, otherwise its `abstract`, without an additional
