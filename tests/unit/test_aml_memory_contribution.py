@@ -154,15 +154,14 @@ def parse_judge_label(text):
         aml_commit=commit,
         group_field=None,
         rounds=2,
-        answer_model="test-model",
-        judge_model="test-model",
         temperature=0,
         max_tokens=16384,
     )
-    manifest = contribution.prepare(args)
     for stage in ("ANSWER", "JUDGE"):
+        monkeypatch.setenv(stage + "_MODEL", "test-model")
         monkeypatch.setenv(stage + "_API_BASE", "https://model.test/v1")
         monkeypatch.setenv(stage + "_API_KEY", "test-secret-not-written")
+    manifest = contribution.prepare(args)
     return SimpleNamespace(
         repo=repo, root=root, manifest=manifest, args=args, source_bytes=retrieval.read_bytes()
     )
@@ -405,3 +404,30 @@ def test_lock_blocks_overlapping_runs_and_is_released_after_failure(tmp_path):
         with contribution._lock(tmp_path):
             pass
     assert not (tmp_path / ".running").exists()
+
+
+@pytest.mark.parametrize("name", ["ANSWER_MODEL", "JUDGE_MODEL"])
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_model_environment_is_required_without_a_hardcoded_fallback(monkeypatch, name, value):
+    monkeypatch.setenv("ANSWER_MODEL", "chosen-answer")
+    monkeypatch.setenv("JUDGE_MODEL", "chosen-judge")
+    if value is None:
+        monkeypatch.delenv(name)
+    else:
+        monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name):
+        contribution._models_from_environment()
+
+
+@pytest.mark.asyncio
+async def test_model_changes_on_resume_are_rejected_before_any_request(prepared, monkeypatch):
+    monkeypatch.setenv("ANSWER_MODEL", "different-model")
+    calls = []
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_model_handler(calls))) as client:
+        with pytest.raises(ValueError, match="differ from the frozen plan"):
+            await contribution.run(prepared.root, prepared.repo, client=client)
+    assert calls == []
+
+
+def test_preparation_freezes_environment_models(prepared):
+    assert prepared.manifest["models"] == {"answer": "test-model", "judge": "test-model"}

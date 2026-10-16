@@ -233,6 +233,9 @@ memory as ordered `retrieved_context` entries with provenance.
 First prepare and inspect a model-call-free plan:
 
 ```bash
+export ANSWER_MODEL='<answer model ID>'
+export JUDGE_MODEL='<judge model ID>'
+
 python -m benchmark.aml.eval.memory_contribution prepare \
   --unit longmemeval_s \
   --retrieval result/aml-public/retrieval/longmemeval_s/retrieval.jsonl \
@@ -241,10 +244,13 @@ python -m benchmark.aml.eval.memory_contribution prepare \
 ```
 
 Repeat with `--unit locomo_refined` and its retrieval artifact in a separate
-output directory. The default is five rounds, GPT-4o mini
-(`gpt-4o-mini-2024-07-18`) for both stages, temperature 0, and max_tokens 16384.
-`--answer-model`/`--judge-model` (also defaulted from `ANSWER_MODEL`/`JUDGE_MODEL`),
-`--rounds`, `--temperature`, and `--max-tokens` are frozen at preparation.
+output directory. `ANSWER_MODEL` and `JUDGE_MODEL` are required environment
+variables; there is no built-in model or model CLI override. Model IDs are frozen
+at preparation and must still match those variables when running or resuming.
+To change models, prepare a new output directory. The default is five rounds,
+temperature 0, and max_tokens 16384. `--rounds`, `--temperature`, and
+`--max-tokens` are also frozen at preparation. Reporting is offline and does not
+require model environment variables or credentials.
 The pinned public pipeline owns prompt rendering and Judge-label parsing;
 this runner sends the explicitly frozen model/temperature/output limit rather
 than inheriting the public pipeline's request defaults. Its default AML commit

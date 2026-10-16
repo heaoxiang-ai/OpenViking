@@ -35,7 +35,16 @@ ALIASES = {
     "preferences": "preference",
     "entities": "entity",
 }
-MODEL = "gpt-4o-mini-2024-07-18"
+
+
+def _models_from_environment() -> dict[str, str]:
+    models = {
+        stage: os.getenv(stage.upper() + "_MODEL", "").strip() for stage in ("answer", "judge")
+    }
+    missing = [stage.upper() + "_MODEL" for stage, model in models.items() if not model]
+    if missing:
+        raise ValueError(f"missing model environment: {', '.join(missing)}")
+    return models
 
 
 def _digest(value: Any) -> str:
@@ -186,6 +195,7 @@ def subset_row(case: dict, mask: int) -> dict:
 
 
 def prepare(args: argparse.Namespace) -> dict:
+    models = _models_from_environment()
     root = args.output_dir
     if any(path.name != ".running" for path in root.iterdir()):
         raise ValueError("prepare needs an empty output directory; use run to resume")
@@ -213,7 +223,7 @@ def prepare(args: argparse.Namespace) -> dict:
         "cases_sha256": _file_sha(snapshot),
         "script_sha256": _file_sha(Path(__file__)),
         "pipeline": pipeline_info,
-        "models": {"answer": args.answer_model, "judge": args.judge_model},
+        "models": models,
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
         "other_contexts_fixed": sum(case["types"].count("other") for case in cases),
@@ -387,6 +397,10 @@ async def run(
     client: httpx.AsyncClient | None = None,
 ) -> None:
     manifest, cases = _load_plan(root)
+    if _models_from_environment() != manifest["models"]:
+        raise ValueError(
+            "ANSWER_MODEL/JUDGE_MODEL differ from the frozen plan; prepare a new output directory to change models"
+        )
     pipeline, info = _load_pipeline(
         repo.resolve(), manifest["unit"], manifest["pipeline"]["commit"]
     )
@@ -655,8 +669,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--group-field", help="history-cluster field; defaults to user_id then history_key"
     )
     prepare_parser.add_argument("--rounds", type=public_eval._positive_int, default=5)
-    prepare_parser.add_argument("--answer-model", default=os.getenv("ANSWER_MODEL") or MODEL)
-    prepare_parser.add_argument("--judge-model", default=os.getenv("JUDGE_MODEL") or MODEL)
     prepare_parser.add_argument("--temperature", type=float, default=0)
     prepare_parser.add_argument("--max-tokens", type=public_eval._positive_int, default=16384)
     run_parser = commands.add_parser("run", help="run/resume the frozen 16 subsets")
