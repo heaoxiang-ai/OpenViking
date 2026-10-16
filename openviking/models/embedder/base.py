@@ -72,9 +72,9 @@ class QueryEmbeddingCache(dict[Any, _SharedQueryEmbedding]):
             self.pop(key, None)
 
     async def close(self) -> None:
-        pending = {entry.task for entry in self.values() if not entry.task.done()} | {
-            task for task in self._pending_tasks if not task.done()
-        }
+        pending = {
+            entry.task for entry in self.values() if not entry.task.done()
+        } | {task for task in self._pending_tasks if not task.done()}
         for task in pending:
             task.cancel()
         if pending:
