@@ -119,6 +119,7 @@ class HierarchicalRetriever:
         events_time_decay_protection: Optional[str] = None,
         request_now: Optional[datetime] = None,
         search_type: SearchType = "semantic",
+        has_explicit_target: Optional[bool] = None,
     ) -> QueryResult:
         """
         Run one global vector search, then optionally rerank its candidates.
@@ -131,6 +132,7 @@ class HierarchicalRetriever:
             score_gte: True uses >=, False uses >
             scope_dsl: Additional scope constraints passed from public find/search filter
             level: Optional result level filter (0=L0, 1=L1, 2=L2)
+            has_explicit_target: Whether target_uri was supplied before default expansion
         """
         t0 = time.monotonic()
         telemetry = get_current_telemetry()
@@ -157,6 +159,8 @@ class HierarchicalRetriever:
         vector_proxy = VikingDBManagerProxy(self.vector_store, ctx)
 
         target_dirs = [d for d in (query.target_directories or []) if d]
+        if has_explicit_target is None:
+            has_explicit_target = bool(target_dirs)
 
         if not await vector_proxy.collection_exists_bound():
             logger.warning(
@@ -197,7 +201,7 @@ class HierarchicalRetriever:
         if (
             image_query
             and context_type is None
-            and not target_dirs
+            and not has_explicit_target
             and not _has_context_type_filter(scope_dsl)
         ):
             context_type = ContextType.RESOURCE.value
