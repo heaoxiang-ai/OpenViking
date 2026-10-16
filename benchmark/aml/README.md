@@ -200,6 +200,114 @@ checks those hashes, writes both size-specific prepared files and backs up any
 replaced outputs. Optional `--smoke-file` refreshes existing 32K smoke cases.
 Preparation makes no Add/Search or model calls and covers text inputs only.
 
+## Memory-type contribution (LoCoMo-Refined and LongMemEval-S)
+
+`eval/memory_contribution.py` measures how Event, Preference, Entity, and Profile
+affect final Answer/Judge correctness. It uses one frozen retrieval artifact
+and all 16 subsets of those four types. Removing a type only deletes its entries
+from `retrieved_context`: there is no new Add, Search, rerank, link traversal,
+backfill, or change to the remaining memory text/order. Supply the context that
+Answer actually consumed, including any owner labels and original truncation.
+The all-types condition must reproduce that context, not a larger candidate pool.
+
+Each input JSONL row needs `id`, `unit`, `question`, a gold-answer field accepted
+by the public pipeline, and `retrieved_context` (a list of strings). It also
+needs `user_id` or `history_key` for history-cluster confidence intervals; use
+`--group-field` for a differently named history identifier. Preserve question
+types/categories and other original question metadata. Memory types require
+provenance, using aligned `retrieved_uris`, aligned `retrieved_memory_types`, or
+`MEMORY_FIELDS.memory_type` in the original text. Conflicting hints fail validation.
+The public retrieval runner now retains user/history IDs and returned memory URIs.
+For older text-only artifacts, attach aligned types/URIs from their frozen
+retrieval receipts; do not guess the type from what the prose discusses.
+
+Singular/plural Event, Preference, and Entity labels are normalized. Other
+declared memory types (for example Identity and Soul) remain in every subset
+and their entry count is disclosed. Thus subset 0 means **without these four
+types**, not necessarily without any memory. A story or ChatLog embedded in an
+Event belongs to Event; facts repeated in another type remain there. Inputs with
+`speaker_1_memories`, `speaker_2_memories`, `memories`, or `chat_history` are rejected
+because those fields could bypass the deletion; first represent the exact Answer
+memory as ordered `retrieved_context` entries with provenance.
+
+First prepare and inspect a model-call-free plan:
+
+```bash
+python -m benchmark.aml.eval.memory_contribution prepare \
+  --unit longmemeval_s \
+  --retrieval result/aml-public/retrieval/longmemeval_s/retrieval.jsonl \
+  --aml-repo result/aml-public-eval/agent-memory-leaderboard \
+  --output-dir result/aml-public/contribution/longmemeval_s
+```
+
+Repeat with `--unit locomo_refined` and its retrieval artifact in a separate
+output directory. The default is five rounds, GPT-4o mini
+(`gpt-4o-mini-2024-07-18`) for both stages, temperature 0, and max_tokens 16384.
+`--answer-model`/`--judge-model` (also defaulted from `ANSWER_MODEL`/`JUDGE_MODEL`),
+`--rounds`, `--temperature`, and `--max-tokens` are frozen at preparation.
+The pinned public pipeline owns prompt rendering and Judge-label parsing;
+this runner sends the explicitly frozen model/temperature/output limit rather
+than inheriting the public pipeline's request defaults. Its default AML commit
+matches `evaluate.py`; `--aml-commit` selects another verified clean checkout.
+Existing historical runs are comparable only when their complete conditions match.
+For N questions and R rounds, the plan requires 16 × N × R Answer requests
+and as many Judge requests, before technical retries. Five rounds for the
+861-question LoCoMo-R and 500-question LME-S sets total 217,760 requests.
+
+After setting `ANSWER_API_BASE`, `ANSWER_API_KEY`, `JUDGE_API_BASE`, and
+`JUDGE_API_KEY`, run or resume that exact plan:
+
+```bash
+python -m benchmark.aml.eval.memory_contribution run \
+  --aml-repo result/aml-public-eval/agent-memory-leaderboard \
+  --output-dir result/aml-public/contribution/longmemeval_s \
+  --answer-concurrency 48 --judge-concurrency 48
+```
+
+Each round/subset has separate receipts containing the complete request,
+provider response/usage, request SHA, and a checked artifact hash. API keys and
+Authorization headers are not written. No results are reused across rounds or
+subsets. Resume reuses the same job's first valid response; even a valid wrong
+answer is retained. HTTP 408/429/500/502/503/504 and transport failures have at
+most three attempts, counted across resumes, with shared stage cooldown and
+Retry-After handling. Every attempt is preserved. Empty, truncated, or malformed
+successful responses stop the run and are not resampled on resume. Missing or
+invalid judgments prevent reporting; they never become a WRONG score.
+The frozen input/script/pipeline hashes and runtime endpoints/settings must
+match on resume. A `.running` lock prevents overlapping commands; after a hard
+process kill, confirm the recorded PID has exited before removing that lock.
+
+The run automatically reports once every Answer/Judge cell exists. Reporting
+can also be repeated offline with a fixed bootstrap seed:
+
+```bash
+python -m benchmark.aml.eval.memory_contribution report \
+  --output-dir result/aml-public/contribution/longmemeval_s \
+  --bootstrap-samples 1000 --seed 0
+```
+
+Outputs are `summary.json`, `summary.md`, and `per-question.json`, in addition
+to `manifest.json`, the single frozen `cases.json` snapshot, runtime settings,
+and per-request receipts. Subset masks use bits 0–3 in the order Event,
+Preference, Entity, Profile. Reports retain all 16 correctness values per
+question/round and provide overall and question-type/category aggregates:
+
+- **Shapley contribution (pp):** average marginal accuracy gain over all 24
+  orders of adding the four types, calculated exactly from the 16 subsets.
+  Redundant and complementary evidence share credit; contributions may be
+  negative. Their sum equals all-types accuracy minus subset-0 accuracy.
+- **Removal loss (pp):** all-types accuracy minus accuracy without that type.
+- **Standalone gain (pp):** that type alone minus subset-0 accuracy.
+
+All three include paired history-cluster/round percentile bootstrap 95% intervals.
+Histories are sampled as groups while retaining their question counts; round
+indices are shared across conditions. Few independent histories or rounds limit
+the uncertainty estimate. LoCoMo-R and LME-S remain separate reports, using each
+dataset's original gold and public Judge rubric. These are contributions of the
+currently retrieved representations to Answer, including their context cost,
+not an assessment of unreturned stored memories or a causal test of extraction
+features such as prefetch. No contribution scores exist until the ablations run.
+
 ## Optional Answer/Eval
 
 The optional evaluator consumes one completed retrieval artifact and never
