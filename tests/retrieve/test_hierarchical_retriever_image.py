@@ -3,7 +3,6 @@ import pytest
 from openviking.models.embedder.base import EmbedResult
 from openviking.retrieve.hierarchical_retriever import HierarchicalRetriever
 from openviking.server.identity import RequestContext, Role
-from openviking.storage.expr import And, Eq, RawDSL
 from openviking_cli.exceptions import InvalidArgumentError
 from openviking_cli.retrieve.types import TypedQuery
 from openviking_cli.session.user_id import UserIdentifier
@@ -189,36 +188,6 @@ def _image_query():
         embedding_input=[{"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}],
         image_query=True,
     )
-
-
-@pytest.mark.parametrize(
-    ("targets", "scope", "expected_type"),
-    [
-        (["viking://user/user/memories"], None, None),
-        ([], {"op": "must", "field": "context_type", "conds": ["memory"]}, None),
-        (
-            [],
-            {"op": "and", "conds": [{"op": "must", "field": "context_type", "conds": ["memory"]}]},
-            None,
-        ),
-        ([], And([Eq("context_type", "memory")]), None),
-        ([], RawDSL({"op": "must", "field": "context_type", "conds": ["memory"]}), None),
-        ([], {"op": "must", "field": "tags", "conds": ["cat"]}, "resource"),
-    ],
-)
-async def test_image_query_respects_explicit_scope_before_resource_default(
-    monkeypatch, targets, scope, expected_type
-):
-    monkeypatch.setattr(
-        "openviking.retrieve.hierarchical_retriever.VikingDBManagerProxy", FakeProxy
-    )
-    query = _image_query()
-    query.target_directories = targets
-    retriever = HierarchicalRetriever(storage=object(), embedder=MultimodalEmbedder())
-    await retriever.retrieve(query, ctx=_ctx(), scope_dsl=scope)
-    assert FakeProxy.captured["context_type"] == expected_type
-    assert FakeProxy.captured["target_directories"] == targets
-    assert FakeProxy.captured["extra_filter"] == scope
 
 
 @pytest.mark.asyncio

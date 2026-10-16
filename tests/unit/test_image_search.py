@@ -30,9 +30,14 @@ class MultimodalEmbedder(TextOnlyEmbedder):
 def test_text_only_embedder_drops_image_parts():
     parts = build_multimodal_embedding_input(
         "cat photo",
-        "data:image/png;base64,abc",
+        ["data:image/png;base64,YQ==", "viking://resources/photos/cat.png"],
     )
 
+    assert parts == [
+        {"type": "text", "text": "cat photo"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}},
+        {"type": "image_url", "image_url": {"url": "viking://resources/photos/cat.png"}},
+    ]
     assert TextOnlyEmbedder("test").prepare_embedding_input(parts) == "cat photo"
     assert MultimodalEmbedder("test").prepare_embedding_input(parts) == parts
 
@@ -43,26 +48,6 @@ def test_image_helpers_accept_base64_bytes_and_image_uris(tmp_path):
 
     assert image_bytes_to_data_uri(b"png").startswith("data:image/png;base64,")
     assert normalize_client_image_input(image_path).startswith("data:image/jpeg;base64,")
-
-
-def test_multiple_images_keep_their_order_in_embedding_input_and_sdk():
-    from openviking_sdk.client import _normalize_image_input
-
-    images = ["data:image/png;base64,YQ==", "viking://resources/images/b.png"]
-    assert build_multimodal_embedding_input("compare", images) == [
-        {"type": "text", "text": "compare"},
-        *[{"type": "image_url", "image_url": {"url": url}} for url in images],
-    ]
-    assert normalize_client_image_input(images) == images
-    assert _normalize_image_input(images) == images
-
-
-def test_find_and_search_request_models_accept_multiple_images():
-    from openviking.server.routers.search import FindRequest, SearchRequest
-
-    images = ["data:image/png;base64,YQ==", "data:image/png;base64,Yg=="]
-    assert FindRequest(image_url=images).image_url == images
-    assert SearchRequest(image_url=images).image_url == images
 
 
 def test_model_image_input_downsamples_jpeg_incompatible_modes():

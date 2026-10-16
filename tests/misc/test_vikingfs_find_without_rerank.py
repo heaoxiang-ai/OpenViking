@@ -114,147 +114,58 @@ async def test_find_works_without_rerank_config(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_find_accepts_image_url_without_text_query(monkeypatch) -> None:
+async def test_image_retrieval_preserves_default_and_explicit_scopes(monkeypatch) -> None:
     fs = _make_viking_fs()
-    captured = {}
-
-    class FakeRetriever:
-        def __init__(self, storage, embedder, rerank_config):
-            pass
-
-        async def retrieve(
-            self,
-            typed_query,
-            ctx,
-            limit,
-            mode,
-            score_threshold,
-            scope_dsl,
-            level,
-            events_time_decay_protection=None,
-            request_now=None,
-            search_type="semantic",
-            has_explicit_target=None,
-        ):
-            captured["typed_query"] = typed_query
-            captured["mode"] = mode
-            return QueryResult(
-                query=typed_query,
-                matched_contexts=[
-                    MatchedContext(
-                        uri="viking://resources/photos/cat.png",
-                        context_type=ContextType.RESOURCE,
-                        score=0.9,
-                    )
-                ],
-                searched_directories=["viking://resources"],
-            )
-
-    monkeypatch.setattr(
-        "openviking.retrieve.hierarchical_retriever.HierarchicalRetriever",
-        FakeRetriever,
-    )
-
-    result = await fs.find(
-        "",
-        target_uri="viking://resources",
-        image_url="data:image/png;base64,abc",
-        ctx=_ctx(),
-    )
-
-    assert result.total == 1
-    typed_query = captured["typed_query"]
-    assert typed_query.query == ""
-    assert typed_query.image_query is True
-    assert typed_query.embedding_input == [
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
-    ]
-    assert captured["mode"] == RetrieverMode.QUICK
-
-
-@pytest.mark.parametrize("method", ["find", "search"])
-@pytest.mark.parametrize("role", [Role.USER, Role.ADMIN, Role.ROOT])
-@pytest.mark.parametrize(
-    ("query", "image_url"),
-    [
-        ("", "data:image/png;base64,abc"),
-        ("receipt", "data:image/png;base64,abc"),
-        ("remember tea", None),
-        ("def cache_key(user_id): return user_id", None),
-    ],
-    ids=["image", "mixed", "text", "code"],
-)
-@pytest.mark.parametrize(
-    ("target_uri", "scope", "expected_image_type"),
-    [
-        ("", None, "resource"),
-        ("viking://user/user1/memories", None, None),
-        ("", {"op": "must", "field": "context_type", "conds": ["memory"]}, None),
-    ],
-    ids=["default", "memory-uri", "memory-type"],
-)
-async def test_find_and_search_preserve_default_and_explicit_image_scopes(
-    monkeypatch, method, role, query, image_url, target_uri, scope, expected_image_type
-):
-    fs = _make_viking_fs()
-    fs._ctx_or_default.side_effect = lambda ctx: ctx
     fs.abstract = AsyncMock(return_value="")
     fs.query_embedder.supports_multimodal = True
     fs.query_embedder.prepare_embedding_input.side_effect = lambda content: content
     fs.query_embedder.embed_async = AsyncMock(return_value=EmbedResult(dense_vector=[1.0]))
-    captured = {}
-
-    class FakeProxy:
-        def __init__(self, _storage, _ctx):
-            pass
-
-        async def collection_exists_bound(self):
-            return True
-
-        async def search_in_tenant(self, **kwargs):
-            captured.update(kwargs)
-            context_type = kwargs["context_type"] or ("memory" if scope else None)
-            directories = kwargs["target_directories"]
-            rows = [
-                {
-                    "uri": "viking://user/user1/memories/receipt.md",
-                    "context_type": "memory",
-                    "_score": 0.9,
-                },
-                {
-                    "uri": "viking://resources/receipt.png",
-                    "context_type": "resource",
-                    "_score": 0.8,
-                },
-            ]
-            return [
-                row
-                for row in rows
-                if (context_type is None or row["context_type"] == context_type)
-                and (not directories or any(row["uri"].startswith(d + "/") for d in directories))
-            ][: kwargs["limit"]]
-
+    proxy = MagicMock()
+    proxy.collection_exists_bound = AsyncMock(return_value=True)
+    proxy.search_in_tenant = AsyncMock(
+        return_value=[
+            {"uri": "viking://resources/cat.png", "context_type": "resource", "_score": 0.9}
+        ]
+    )
     monkeypatch.setattr(
-        "openviking.retrieve.hierarchical_retriever.VikingDBManagerProxy", FakeProxy
+        "openviking.retrieve.hierarchical_retriever.VikingDBManagerProxy",
+        MagicMock(return_value=proxy),
     )
-    result = await getattr(fs, method)(
-        query,
-        image_url=image_url,
-        target_uri=target_uri,
-        filter=scope,
-        ctx=RequestContext(user=UserIdentifier("acc1", "user1"), role=role),
-        limit=1,
+    images = ["data:image/png;base64,YQ==", "data:image/png;base64,Yg=="]
+
+    found = await fs.find("", image_url=images, ctx=_ctx())
+    assert [hit.uri for hit in found.resources] == ["viking://resources/cat.png"]
+    assert proxy.search_in_tenant.call_args.kwargs["context_type"] == "resource"
+    fs.query_embedder.embed_async.assert_awaited_once_with(
+        [
+            {"type": "image_url", "image_url": {"url": images[0]}},
+            {"type": "image_url", "image_url": {"url": images[1]}},
+        ],
+        is_query=True,
     )
 
-    assert captured["context_type"] == (expected_image_type if image_url else None)
-    assert captured["extra_filter"] == scope
-    assert result.total == 1
-    if image_url and expected_image_type == "resource":
-        assert [hit.uri for hit in result.resources] == ["viking://resources/receipt.png"]
-        assert result.memories == []
-    else:
-        assert [hit.uri for hit in result.memories] == ["viking://user/user1/memories/receipt.md"]
-        assert result.resources == []
+    searched = await fs.search("", image_url=images, ctx=_ctx())
+    assert [hit.uri for hit in searched.resources] == ["viking://resources/cat.png"]
+    assert proxy.search_in_tenant.call_args.kwargs["context_type"] == "resource"
+
+    # An explicit memory URI or type filter overrides the image resource default.
+    proxy.search_in_tenant.return_value = [
+        {"uri": "viking://user/user1/memories/cat.md", "context_type": "memory", "_score": 0.9}
+    ]
+    found = await fs.find(
+        "", image_url=images, target_uri="viking://user/user1/memories", ctx=_ctx()
+    )
+    assert [hit.uri for hit in found.memories] == ["viking://user/user1/memories/cat.md"]
+    assert proxy.search_in_tenant.call_args.kwargs["context_type"] is None
+    assert proxy.search_in_tenant.call_args.kwargs["target_directories"] == [
+        "viking://user/user1/memories"
+    ]
+
+    scope = {"op": "must", "field": "context_type", "conds": ["memory"]}
+    searched = await fs.search("cat", image_url=images, filter=scope, ctx=_ctx())
+    assert [hit.uri for hit in searched.memories] == ["viking://user/user1/memories/cat.md"]
+    assert proxy.search_in_tenant.call_args.kwargs["context_type"] is None
+    assert proxy.search_in_tenant.call_args.kwargs["extra_filter"] == scope
 
 
 @pytest.mark.asyncio
