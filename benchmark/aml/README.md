@@ -203,65 +203,89 @@ Preparation makes no Add/Search or model calls and covers text inputs only.
 ## Memory-type contribution (LoCoMo-Refined and LongMemEval-S)
 
 `eval/memory_contribution.py` measures how Event, Preference, Entity, and Profile
-affect final Answer/Judge correctness. It uses one frozen retrieval artifact
-and all 16 subsets of those four types. Removing a type only deletes its entries
-from `retrieved_context`: there is no new Add, Search, rerank, link traversal,
-backfill, or change to the remaining memory text/order. Supply the context that
-Answer actually consumed, including any owner labels and original truncation.
-The all-types condition must reproduce that context, not a larger candidate pool.
+help or harm final answer correctness. Its primary mode runs **16 independent
+native Find searches**, one per allowed type combination, on the same frozen
+memory corpus. Type directories restrict candidates **before TopK**. Removing
+Event therefore allows other types to compete for its places; this is not
+filtering an old Top20/Top100. No Add or extraction is performed.
 
-Each input JSONL row needs `id`, `unit`, `question`, a gold-answer field accepted
-by the public pipeline, and `retrieved_context` (a list of strings). It also
-needs `user_id` or `history_key` for history-cluster confidence intervals; use
-`--group-field` for a differently named history identifier. Preserve question
-types/categories and other original question metadata. Memory types require
-provenance, using aligned `retrieved_uris`, aligned `retrieved_memory_types`, or
-`MEMORY_FIELDS.memory_type` in the original text. Conflicting hints fail validation.
-The public retrieval runner now retains user/history IDs and returned memory URIs.
-For older text-only artifacts, attach aligned types/URIs from their frozen
-retrieval receipts; do not guess the type from what the prose discusses.
+Use an isolated, immutable copy of the complete memory files **and vector index**.
+Keep source version, embedding model/index, query, TopK, threshold and account/user
+scope fixed. Native Find uses vector ranking without rerank, planner, link expansion
+or time reordering. This mode does not reproduce an experiment that used an
+external reranker or owner-label formatting; disclose that difference rather than
+comparing its score to a historical baseline as an isolated feature effect.
 
-Singular/plural Event, Preference, and Entity labels are normalized. Other
-declared memory types (for example Identity and Soul) remain in every subset
-and their entry count is disclosed. Thus subset 0 means **without these four
-types**, not necessarily without any memory. A story or ChatLog embedded in an
-Event belongs to Event; facts repeated in another type remain there. Inputs with
-`speaker_1_memories`, `speaker_2_memories`, `memories`, or `chat_history` are rejected
-because those fields could bypass the deletion; first represent the exact Answer
-memory as ordered `retrieved_context` entries with provenance.
+### Inputs and preparation
 
-First prepare and inspect a model-call-free plan:
+The question JSONL needs `id`, `unit`, `user_id`, `question`, a gold field accepted
+by the pinned public pipeline, and original question metadata/categories.
+`user_id` is the exact native user namespace. `history_key` or `--group-field`
+can identify bootstrap clusters, but retrieval still requires explicit `user_id`.
+Old `retrieved_context` and provenance arrays are ignored in retrieval mode.
+Fields that override the public renderer (`speaker_1_memories`, `speaker_2_memories`,
+`memories`, `chat_history`) are rejected to prevent evidence leaking into ablations.
+
+Supply a **complete** memory inventory JSONL for those users, not just past hits.
+Each row has `id` (the URI), `user_id`, canonical `uri`, `memory_type`, and `content`
+(the complete public read-visible body, with the reserved MEMORY_FIELDS trailer
+removed). Types must agree with their directory provenance. For example:
+
+```json
+{"id":"viking://user/u1/memories/entities/product/bike.md","user_id":"u1","uri":"viking://user/u1/memories/entities/product/bike.md","memory_type":"entities","content":"# Bike\nThe user's bicycle."}
+```
+
+Include every non-hidden memory `.md` file, including Identity and Soul. The runner
+checks the complete namespace through paginated native listings before searching,
+then compares every retrieved full body to the frozen inventory. The server must
+stay immutable while retrieving: the runner cannot prevent another process from
+changing its index. Freeze and verify the source/index independently as well.
 
 ```bash
 export ANSWER_MODEL='<answer model ID>'
 export JUDGE_MODEL='<judge model ID>'
 
 python -m benchmark.aml.eval.memory_contribution prepare \
-  --unit longmemeval_s \
-  --retrieval result/aml-public/retrieval/longmemeval_s/retrieval.jsonl \
+  --unit longmemeval_s --retrieval questions.jsonl \
+  --memory-inventory frozen-user-memories.jsonl \
+  --ov-api-base http://127.0.0.1:1984 --ov-account isolated-benchmark \
+  --top-k 100 --other-types exclude \
   --aml-repo result/aml-public-eval/agent-memory-leaderboard \
   --output-dir result/aml-public/contribution/longmemeval_s
 ```
 
-Repeat with `--unit locomo_refined` and its retrieval artifact in a separate
-output directory. `ANSWER_MODEL` and `JUDGE_MODEL` are required environment
-variables; there is no built-in model or model CLI override. Model IDs are frozen
-at preparation and must still match those variables when running or resuming.
-To change models, prepare a new output directory. The default is five rounds,
-temperature 0, and max_tokens 16384. `--rounds`, `--temperature`, and
-`--max-tokens` are also frozen at preparation. Reporting is offline and does not
-require model environment variables or credentials.
-The pinned public pipeline owns prompt rendering and Judge-label parsing;
-this runner sends the explicitly frozen model/temperature/output limit rather
-than inheriting the public pipeline's request defaults. Its default AML commit
-matches `evaluate.py`; `--aml-commit` selects another verified clean checkout.
-Existing historical runs are comparable only when their complete conditions match.
-For N questions and R rounds, the plan requires 16 × N × R Answer requests
-and as many Judge requests, before technical retries. Five rounds for the
-861-question LoCoMo-R and 500-question LME-S sets total 217,760 requests.
+Preparation makes no network/model calls and prints the planned counts. The
+models are required environment variables, frozen at preparation and checked on
+resume. No built-in model or model CLI override exists. Defaults are five rounds,
+temperature 0, max_tokens 16384, Search concurrency 4 and TopK 20 for LoCoMo-R /
+100 for LME-S. For reasoning endpoints, explicitly prepare with
+`--token-limit-parameter max_completion_tokens --temperature omit --reasoning-effort low`.
+The runner never guesses request compatibility or silently changes parameters.
 
-After setting `ANSWER_API_BASE`, `ANSWER_API_KEY`, `JUDGE_API_BASE`, and
-`JUDGE_API_KEY`, run or resume that exact plan:
+`--other-types exclude` (default) excludes types outside the four players in every
+condition; subset 0 is genuinely memory-free, while the full condition means all
+**four** types. With `--other-types fixed`, Identity/Soul/other types remain eligible
+in every Search and compete for TopK; subset 0 is then a background-memory baseline.
+Their available document count is disclosed as `other_contexts_fixed`.
+
+### Search, Answer/Judge and resume
+
+Set `OV_API_KEY` for the frozen native service. Freeze retrieval separately:
+
+```bash
+python -m benchmark.aml.eval.memory_contribution retrieve \
+  --output-dir result/aml-public/contribution/longmemeval_s
+```
+
+All combinations are searched once and frozen **before** any Answer/Judge calls.
+An empty allowed scope returns no memory without sending an unrestricted native
+query. Returned bodies/URIs must match the user, allowed types and inventory.
+Successful Search results are retained across interruption, including a malformed
+success that blocks validation. The runner does not repeatedly Search for a better
+answer. After retrieval is complete the temporary native service can be stopped.
+
+Set `ANSWER_API_BASE`, `ANSWER_API_KEY`, `JUDGE_API_BASE`, `JUDGE_API_KEY`, and the
+same frozen model variables. Run or resume:
 
 ```bash
 python -m benchmark.aml.eval.memory_contribution run \
@@ -270,21 +294,30 @@ python -m benchmark.aml.eval.memory_contribution run \
   --answer-concurrency 48 --judge-concurrency 48
 ```
 
-Each round/subset has separate receipts containing the complete request,
-provider response/usage, request SHA, and a checked artifact hash. API keys and
-Authorization headers are not written. No results are reused across rounds or
-subsets. Resume reuses the same job's first valid response; even a valid wrong
-answer is retained. HTTP 408/429/500/502/503/504 and transport failures have at
-most three attempts, counted across resumes, with shared stage cooldown and
-Retry-After handling. Every attempt is preserved. Empty, truncated, or malformed
-successful responses stop the run and are not resampled on resume. Missing or
-invalid judgments prevent reporting; they never become a WRONG score.
-The frozen input/script/pipeline hashes and runtime endpoints/settings must
-match on resume. A `.running` lock prevents overlapping commands; after a hard
-process kill, confirm the recorded PID has exited before removing that lock.
+`run` also completes retrieval first if needed. A fully cached retrieval needs no
+native key or live service. Exact public dataset prompts/gold and Judge parsing
+come from the verified clean AML checkout/commit (`--aml-commit`), independently
+of the explicitly frozen request settings. Original question metadata is retained;
+this does not repair fields omitted by the public prompt, such as question_date.
 
-The run automatically reports once every Answer/Judge cell exists. Reporting
-can also be repeated offline with a fixed bootstrap seed:
+Each round/subset uses independent Answer/Judge receipts, with complete request,
+response/usage, hashes and every technical attempt. Resume retains the first valid
+response, including wrong answers. Transport failures and HTTP 408/429/500/502/503/504
+have at most three attempts across resumes, with shared cooldown/Retry-After.
+Successful empty, truncated or invalid responses stop and are never resampled.
+Credentials/auth headers are not saved. Local receipts are independent; provider
+prompt caching, if any, remains visible in the original usage response.
+
+Input/inventory/script/pipeline hashes and runtime settings must match. A `.running`
+lock rejects overlapping commands; inspect the PID before removing a stale lock.
+For N questions and R rounds, Answer/Judge cost is **32 × N × R** requests before
+technical retries, plus 16 × N retrieval cells (empty scopes need no query).
+Five rounds on both full datasets would require 217,760 Answer/Judge requests;
+a small pilot is useful before committing that budget.
+
+### Reports and optimization cases
+
+The run reports automatically when complete; repeat it offline with:
 
 ```bash
 python -m benchmark.aml.eval.memory_contribution report \
@@ -292,27 +325,41 @@ python -m benchmark.aml.eval.memory_contribution report \
   --bootstrap-samples 1000 --seed 0
 ```
 
-Outputs are `summary.json`, `summary.md`, and `per-question.json`, in addition
-to `manifest.json`, the single frozen `cases.json` snapshot, runtime settings,
-and per-request receipts. Subset masks use bits 0–3 in the order Event,
-Preference, Entity, Profile. Reports retain all 16 correctness values per
-question/round and provide overall and question-type/category aggregates:
+`summary.json`/`summary.md` contain overall and category results. Missing or corrupt
+receipts block reporting, rather than becoming WRONG. Each type reports:
 
-- **Shapley contribution (pp):** average marginal accuracy gain over all 24
-  orders of adding the four types, calculated exactly from the 16 subsets.
-  Redundant and complementary evidence share credit; contributions may be
-  negative. Their sum equals all-types accuracy minus subset-0 accuracy.
-- **Removal loss (pp):** all-types accuracy minus accuracy without that type.
-- **Standalone gain (pp):** that type alone minus subset-0 accuracy.
+- **Helped / harmed:** paired question-round counts where full is correct and
+  removal is wrong, or the reverse. Unique question counts are also retained;
+  a question can have both transitions across rounds. Net effects do not hide these.
+- **Removal loss (pp):** all-four accuracy minus accuracy without this type.
+- **Standalone gain (pp):** this type alone minus subset-0 accuracy; standalone
+  correct question-round counts are also reported.
+- **Shapley (pp):** exact average marginal gain over all 24 addition orders,
+  calculated from 16 subsets. Redundant/complementary evidence shares credit;
+  values can be negative and sum to full minus subset 0. This is an allocation
+  convention, not a unique causal percentage.
 
-All three include paired history-cluster/round percentile bootstrap 95% intervals.
-Histories are sampled as groups while retaining their question counts; round
-indices are shared across conditions. Few independent histories or rounds limit
-the uncertainty estimate. LoCoMo-R and LME-S remain separate reports, using each
-dataset's original gold and public Judge rubric. These are contributions of the
-currently retrieved representations to Answer, including their context cost,
-not an assessment of unreturned stored memories or a causal test of extraction
-features such as prefetch. No contribution scores exist until the ablations run.
+The three effects have paired history-cluster/round bootstrap 95% intervals.
+Entire histories retain their unequal question counts; resampled round indices
+are shared across conditions. Few histories/rounds severely limit inference.
+
+`per-question.json` retains all 16 scores, grouping, question/gold and transitions.
+`opportunities.json` and the readable summary list changed cases with full/removed
+answers, URI changes and exact evidence paths. These are **review candidates**:
+inspect the source dialogue, stored memories, retrieval and actual Answer prompt
+to distinguish extraction gaps, retrieval misses, context omission and Answer
+errors. String matching or a score flip alone cannot identify that failure stage.
+Priority should reflect affected cases and evidence confidence, not just the
+largest aggregate score or most frequent type.
+
+### Optional fixed-context diagnostic
+
+`prepare --attribution-scope context` retains the original deletion diagnostic.
+It removes excluded entries from the exact original Answer context without new
+Search, refill, rewriting or reordering. Provide aligned `retrieved_uris`,
+`retrieved_memory_types` or original MEMORY_FIELDS provenance; other types remain
+fixed. This mode measures dependence on already selected context, **not** stored
+memory/retrieval-system contribution. It is explicitly labeled in every report.
 
 ## Optional Answer/Eval
 

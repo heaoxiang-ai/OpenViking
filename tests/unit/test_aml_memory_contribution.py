@@ -113,7 +113,7 @@ def test_rejects_missing_or_conflicting_provenance_and_prompt_overrides(override
 
 
 @pytest.fixture
-def prepared(tmp_path, monkeypatch):
+def prepared(tmp_path, monkeypatch, request):
     repo = tmp_path / "aml"
     repo.mkdir()
     code = """import json
@@ -156,7 +156,13 @@ def parse_judge_label(text):
         rounds=2,
         temperature=0,
         max_tokens=16384,
+        token_limit_parameter=getattr(request, "param", "max_tokens"),
+        reasoning_effort=None,
+        attribution_scope="context",
     )
+    if args.token_limit_parameter == "max_completion_tokens":
+        args.temperature = None
+        args.reasoning_effort = "low"
     for stage in ("ANSWER", "JUDGE"):
         monkeypatch.setenv(stage + "_MODEL", "test-model")
         monkeypatch.setenv(stage + "_API_BASE", "https://model.test/v1")
@@ -167,12 +173,17 @@ def parse_judge_label(text):
     )
 
 
-def _model_handler(calls):
+def _model_handler(calls, token_limit_parameter="max_tokens", temperature=0):
     def handle(request):
         payload = json.loads(request.content)
         calls.append(payload)
-        assert payload["temperature"] == 0
-        assert payload["max_tokens"] == 16384
+        if temperature is None:
+            assert "temperature" not in payload
+            assert payload["reasoning_effort"] == "low"
+        else:
+            assert payload["temperature"] == temperature
+        assert payload[token_limit_parameter] == 16384
+        assert len({"max_tokens", "max_completion_tokens"} & payload.keys()) == 1
         prompt = json.loads(payload["messages"][0]["content"])
         if "contexts" in prompt:
             assert "gold" not in prompt
@@ -198,9 +209,13 @@ def _model_handler(calls):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prepared", ["max_tokens", "max_completion_tokens"], indirect=True)
 async def test_end_to_end_all_subsets_rounds_and_resume_keep_first_responses(prepared):
     calls = []
-    async with httpx.AsyncClient(transport=httpx.MockTransport(_model_handler(calls))) as client:
+    handler = _model_handler(
+        calls, prepared.manifest["token_limit_parameter"], prepared.manifest["temperature"]
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         await contribution.run(prepared.root, prepared.repo, client=client)
         assert len(calls) == 2 * 16 * 2 * 2
         await contribution.run(prepared.root, prepared.repo, client=client)
@@ -431,3 +446,208 @@ async def test_model_changes_on_resume_are_rejected_before_any_request(prepared,
 
 def test_preparation_freezes_environment_models(prepared):
     assert prepared.manifest["models"] == {"answer": "test-model", "judge": "test-model"}
+
+
+def _retrieval_plan(prepared, monkeypatch):
+    root = prepared.root.parent / "retrieval-run"
+    root.mkdir()
+    documents = []
+    for user in ("history-q1", "history-q2"):
+        for kind, path, text in (
+            ("event", "events/a.md", "EVENT"),
+            ("preference", "preferences/a.md", "PREFERENCE"),
+            ("entity", "entities/a.md", "ENTITY"),
+            ("profile", "profile.md", "PROFILE"),
+        ):
+            uri = f"viking://user/{user}/memories/{path}"
+            documents.append(
+                {"id": uri, "uri": uri, "user_id": user, "memory_type": kind, "content": text}
+            )
+    inventory = root.parent / "inventory.jsonl"
+    inventory.write_text("".join(json.dumps(row) + "\n" for row in documents))
+    args = copy.copy(prepared.args)
+    args.output_dir = root
+    args.attribution_scope = "retrieval"
+    args.memory_inventory = inventory
+    args.ov_api_base = "http://native.test"
+    args.ov_account = "isolated-account"
+    args.top_k = 2
+    args.score_threshold = 0
+    args.search_concurrency = 4
+    args.other_types = "exclude"
+    # The old TopK contains no Entity. Fresh entity-only Search must find it.
+    rows = [
+        _row(
+            retrieved_context=["OLD EVENT"],
+            retrieved_uris=["viking://user/history-q1/memories/events/a.md"],
+        ),
+        _row("q2", retrieved_context=[], retrieved_uris=[]),
+    ]
+    args.retrieval = root.parent / "questions.jsonl"
+    args.retrieval.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    monkeypatch.setenv("OV_API_KEY", "native-secret-not-written")
+    manifest = contribution.prepare(args)
+    return root, manifest, documents
+
+
+def _native_handler(documents, calls, *, corrupt=None):
+    def handle(request):
+        calls.append(request)
+        user = request.headers["X-OpenViking-User"]
+        assert request.headers["X-OpenViking-Account"] == "isolated-account"
+        assert request.headers["X-API-Key"] == "native-secret-not-written"
+        if request.url.path.endswith("/ls"):
+            prefix = request.url.params["uri"] + "/"
+            entries = {}
+            for doc in documents:
+                if doc["user_id"] != user or not doc["uri"].startswith(prefix):
+                    continue
+                relative = doc["uri"][len(prefix) :]
+                uri = prefix + relative.split("/", 1)[0]
+                entries[uri] = {"uri": uri, "isDir": "/" in relative}
+            return httpx.Response(
+                200,
+                json={
+                    "status": "ok",
+                    "result": list(entries.values()),
+                    "has_more": False,
+                },
+            )
+        if request.url.path.endswith("/find"):
+            payload = json.loads(request.content)
+            assert payload["target_uri"]
+            assert payload["limit"] == 2
+            matching = [
+                doc
+                for doc in documents
+                if doc["user_id"] == user
+                and any(
+                    doc["uri"] == target or doc["uri"].startswith(target + "/")
+                    for target in payload["target_uri"]
+                )
+            ]
+            hits = [{"uri": doc["uri"], "level": 2} for doc in matching[:2]]
+            if corrupt == "scope":
+                hits = [{"uri": documents[-1]["uri"], "level": 2}]
+            return httpx.Response(200, json={"status": "ok", "result": {"memories": hits}})
+        uri = request.url.params["uri"]
+        content = next(doc["content"] for doc in documents if doc["uri"] == uri)
+        return httpx.Response(
+            200, json={"status": "ok", "result": "changed" if corrupt == "body" else content}
+        )
+
+    return handle
+
+
+@pytest.mark.asyncio
+async def test_fresh_scoped_search_recovers_outside_old_topk_and_freezes_before_answer(
+    prepared, monkeypatch
+):
+    root, manifest, documents = _retrieval_plan(prepared, monkeypatch)
+    calls, model_calls = [], []
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_native_handler(documents, calls))
+    ) as native:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(_model_handler(model_calls))
+        ) as model:
+            await contribution.run(root, prepared.repo, client=model, retrieval_client=native)
+            assert len(model_calls) == 128
+            assert len([r for r in calls if r.method == "POST"]) == 30
+            assert len([r for r in calls if r.method == "GET"]) == 16
+            before = len(calls)
+            monkeypatch.delenv("OV_API_KEY")
+            await contribution.run(root, prepared.repo, client=model, retrieval_client=native)
+            assert len(calls) == before and len(model_calls) == 128
+    _, cases = contribution._load_plan(root)
+    assert contribution._condition_rows(root, manifest, cases, 0)[0]["retrieved_context"] == []
+    assert contribution._condition_rows(root, manifest, cases, 4)[0]["retrieved_context"] == [
+        "ENTITY"
+    ]
+    assert contribution._condition_rows(root, manifest, cases, 15)[0]["retrieved_context"] == [
+        "EVENT",
+        "PREFERENCE",
+    ]
+    summary = contribution.report(root, bootstrap_samples=10)
+    assert summary["attribution_scope"] == "retrieval"
+    assert summary["overall"]["contributions"]["event"]["standalone_correct_question_rounds"] == 4
+    for path in root.rglob("*.json"):
+        assert "native-secret-not-written" not in path.read_text()
+    inventory = root / "inventory.json"
+    inventory.write_text(inventory.read_text() + " ")
+    with pytest.raises(ValueError, match="inventory SHA"):
+        contribution._load_plan(root)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corrupt,message", [("scope", "excluded-type"), ("body", "differs from frozen")]
+)
+async def test_native_scope_or_body_mismatch_stops_before_any_model_call(
+    prepared, monkeypatch, corrupt, message
+):
+    root, _, documents = _retrieval_plan(prepared, monkeypatch)
+    calls, model_calls = [], []
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_native_handler(documents, calls, corrupt=corrupt))
+    ) as native:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(_model_handler(model_calls))
+        ) as model:
+            with pytest.raises(ValueError, match=message):
+                await contribution.run(root, prepared.repo, client=model, retrieval_client=native)
+    assert model_calls == []
+
+
+def test_helped_and_harmed_counts_do_not_cancel_in_net_contribution():
+    positive = [int(bool(mask & 1)) for mask in range(16)]
+    negative = [int(not bool(mask & 1)) for mask in range(16)]
+    summary = contribution._aggregate(
+        [
+            {"group_id": "a", "round_values": [positive, positive]},
+            {"group_id": "b", "round_values": [negative, negative]},
+        ],
+        10,
+        0,
+    )
+    event = summary["contributions"]["event"]
+    assert event["removal_loss_pp"] == 0
+    assert event["helped_question_rounds"] == event["harmed_question_rounds"] == 2
+    assert event["helped_questions"] == event["harmed_questions"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("listing", ["incomplete", "paginated"])
+async def test_inventory_completeness_is_checked_across_native_listing_pages(
+    prepared, monkeypatch, listing
+):
+    root, manifest, documents = _retrieval_plan(prepared, monkeypatch)
+    calls = []
+    original = _native_handler(documents, calls)
+
+    def handle(request):
+        if not request.url.path.endswith("/ls"):
+            return original(request)
+        entries = original(request).json()["result"]
+        if listing == "incomplete":
+            entries = [entry for entry in entries if not entry["uri"].endswith("profile.md")]
+        offset = int(request.url.params["offset"])
+        return httpx.Response(
+            200,
+            json={
+                "status": "ok",
+                "result": entries[offset : offset + 2],
+                "has_more": offset + 2 < len(entries),
+            },
+        )
+
+    _, cases = contribution._load_plan(root)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        if listing == "incomplete":
+            with pytest.raises(ValueError, match="complete native user memory namespace"):
+                await contribution.retrieve(root, manifest, cases, client=client)
+            assert all(request.method == "GET" for request in calls)
+        else:
+            await contribution.retrieve(root, manifest, cases, client=client)
+            assert len(list((root / "inventory-listings").glob("*.attempt-001.json"))) == 10
+            assert len([request for request in calls if request.method == "POST"]) == 30
