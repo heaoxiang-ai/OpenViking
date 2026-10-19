@@ -40,6 +40,7 @@ def runtime_config(monkeypatch):
     )
     manager = PromptManager(templates_dir=PromptManager._get_bundled_templates_dir())
     monkeypatch.setattr("openviking.session.memory.prefetch_query.render_prompt", manager.render)
+    return config
 
 
 def _target(aspect="commute method and transportation", indices=None, *, subject="user", scope=""):
@@ -240,12 +241,14 @@ async def test_model_failure_falls_back_but_cancellation_propagates():
         await provider._build_prefetch_search_queries()
 
 
-async def test_valid_empty_plan_skips_retrieval_and_empty_text_skips_model():
+async def test_valid_empty_plan_keeps_original_query_and_empty_text_skips_model():
     vlm = _vlm([])
     provider = SessionExtractContextProvider(
         messages=[Message(id="m", role="user", parts=[TextPart("Hi!")])], vlm_config=vlm
     )
-    assert await provider._build_prefetch_search_queries() == []
+    assert await provider._build_prefetch_search_queries() == [
+        provider._build_prefetch_search_query()
+    ]
     assert await build_maintenance_queries([], vlm) == []
     vlm.get_completion_async.assert_awaited_once()
 
@@ -266,8 +269,11 @@ async def test_missing_or_disabled_model_preserves_original_query(available):
         vlm.get_completion_async.assert_not_awaited()
 
 
-def _provider(*, topn=None, targets=None, only_fixed=False):
-    messages = [Message(id="m", role="user", peer_id="p", parts=[TextPart("I read on the train.")])]
+def _provider(*, messages=None, targets=None, only_fixed=False):
+    if messages is None:
+        messages = [
+            Message(id="m", role="user", peer_id="p", parts=[TextPart("I read on the train.")])
+        ]
     registry = MemoryTypeRegistry(load_schemas=False)
     for name, filename, mode, stage in [
         ("profile", "profile.md", "upsert", "user"),
@@ -292,8 +298,6 @@ def _provider(*, topn=None, targets=None, only_fixed=False):
     provider = SessionExtractContextProvider(
         messages=messages, ctx=ctx, memory_registry=registry, vlm_config=_vlm(targets or [])
     )
-    if topn is not None:
-        provider._prefetch_search_topn = topn
     provider._isolation_handler = MemoryIsolationHandler(
         ctx,
         provider.get_extract_context(),
@@ -305,24 +309,28 @@ def _provider(*, topn=None, targets=None, only_fixed=False):
     return provider
 
 
-@pytest.mark.parametrize("topn, expected_count", [(3, 3), (5, 5), (10, 10), (20, 11)])
-async def test_prefetch_search_scope_interleaving_and_configured_read_budget(
-    topn, expected_count, caplog
+@pytest.mark.parametrize("legacy_topn", [1, 3, 5, 10, 20])
+async def test_both_routes_keep_their_full_union_in_the_same_scope(
+    legacy_topn, runtime_config, caplog
 ):
     caplog.set_level(
         logging.DEBUG, logger="openviking.session.memory.session_extract_context_provider"
     )
+    runtime_config.memory = MemoryConfig(prefetch_search_topn=legacy_topn)
     provider = _provider(
-        topn=topn,
         targets=[_target("commute method"), _target("commute reading"), _target("commute routine")],
     )
     root = "viking://user/u/peers/p/memories"
+    original = [f"{root}/entities/original/p{i}.md" for i in range(5)]
     a = [f"{root}/entities/person/p{i}.md" for i in range(5)]
     b = [a[1], *[f"{root}/preferences/p{i}.md" for i in range(4)]]
     c = [a[0], b[2], a[4], f"{root}/entities/person/p5.md", f"{root}/entities/person/p6.md"]
     provider._viking_fs = SimpleNamespace(
         search=AsyncMock(
             side_effect=[
+                SimpleNamespace(
+                    to_dict=lambda: {"memories": [{"uri": u, "score": 1} for u in original]}
+                ),
                 SimpleNamespace(to_dict=lambda: {"memories": [{"uri": u, "score": 1} for u in a]}),
                 SimpleNamespace(to_dict=lambda: {"memories": [{"uri": u, "score": 1} for u in b]}),
                 SimpleNamespace(to_dict=lambda: {"memories": [{"uri": u, "score": 1} for u in c]}),
@@ -333,11 +341,13 @@ async def test_prefetch_search_scope_interleaving_and_configured_read_budget(
     messages = await provider.prefetch()
 
     calls = provider._viking_fs.search.await_args_list
-    assert [call.args[0] for call in calls] == [
+    expected_queries = [
+        provider._build_prefetch_search_query(),
         "user commute method",
         "user commute reading",
         "user commute routine",
     ]
+    assert [call.args[0] for call in calls] == expected_queries
     for call in calls:
         assert call.kwargs["target_uri"] == [f"{root}/entities", f"{root}/preferences"]
         assert call.kwargs["limit"] == 15  # Existing tool overfetch remains unchanged.
@@ -345,44 +355,147 @@ async def test_prefetch_search_scope_interleaving_and_configured_read_budget(
     read_uris = [call.args[0] for call in provider.read_file.await_args_list]
     assert read_uris == [
         f"{root}/profile/profile.md",
-        *[a[0], a[1], b[1], b[2], a[2], a[4], a[3], b[3], c[3], b[4], c[4]][:expected_count],
+        original[0],
+        a[0],
+        a[1],
+        original[1],
+        b[1],
+        b[2],
+        original[2],
+        a[2],
+        a[4],
+        original[3],
+        a[3],
+        b[3],
+        c[3],
+        original[4],
+        b[4],
+        c[4],
     ]
+    assert set(read_uris[1:]) == set(original + a + b + c)
+    assert len(read_uris) == len(set(read_uris)) == 17
     traces = [json.loads(message["content"]) for message in messages[1:]]
-    assert [t["args"]["query"] for t in traces if t["tool_call_name"] == "search"] == [
-        "user commute method",
-        "user commute reading",
-        "user commute routine",
-    ]
+    searches = [t for t in traces if t["tool_call_name"] == "search"]
+    assert [t["args"]["query"] for t in searches] == expected_queries
+    assert [t["result"] for t in searches] == [original, a, b, c]
     assert provider.get_tools() == []
     assert "I read on the train." in messages[0]["content"]
-    assert (
-        f"candidate_count=15 unique_count=11 selected_count={expected_count} budget={topn}"
-        in caplog.text
-    )
-    assert "Memory prefetch selected URIs:" in caplog.text
+    provider._vlm_config.get_completion_async.assert_awaited_once()
+    assert "candidate_count=20 unique_count=16 eager=True" in caplog.text
+    assert "route=conversation query_index=0" in caplog.text
+    assert "route=maintenance query_index=1" in caplog.text
+    assert "Memory prefetch merged URIs:" in caplog.text
     assert "Memory prefetch search detail:" in caplog.text
 
 
-async def test_fixed_files_still_read_when_no_targets_and_no_planning_without_multi_file_schema():
+async def test_empty_plan_still_searches_original_and_fixed_only_schemas_skip_planning():
     for only_fixed in (False, True):
         provider = _provider(only_fixed=only_fixed)
-        provider.search_files = AsyncMock()
+        provider.search_files = AsyncMock(return_value=[])
         await provider.prefetch()
-        provider.search_files.assert_not_awaited()
+        if only_fixed:
+            provider.search_files.assert_not_awaited()
+        else:
+            provider.search_files.assert_awaited_once_with(
+                query=provider._build_prefetch_search_query(),
+                search_uris=[
+                    "viking://user/u/peers/p/memories/entities",
+                    "viking://user/u/peers/p/memories/preferences",
+                ],
+            )
         provider.read_file.assert_awaited_once_with(
             "viking://user/u/peers/p/memories/profile/profile.md"
         )
         assert provider._vlm_config.get_completion_async.await_count == (0 if only_fixed else 1)
 
 
+async def test_original_query_keeps_assistant_support_and_planned_queries_are_additive():
+    provider = _provider(
+        targets=[_target("commute reading")],
+        messages=[
+            Message(
+                id="a",
+                role="assistant",
+                peer_id="p",
+                parts=[TextPart("The train book club meets on Tuesday.")],
+            ),
+            Message(id="m", role="user", peer_id="p", parts=[TextPart("I read on the train.")]),
+        ],
+    )
+    original = provider._build_prefetch_search_query()
+
+    assert original == ("p: I read on the train. p: The train book club meets on Tuesday.")
+    assert await provider._build_prefetch_search_queries() == [original, "user commute reading"]
+    assert (
+        "The train book club meets on Tuesday." in provider._build_conversation_message()["content"]
+    )
+
+
+async def test_maintenance_query_matching_original_does_not_search_or_read_twice():
+    provider = _provider(targets=[_target("I READ on the train.", subject="P:")])
+    uri = "viking://user/u/peers/p/memories/entities/train.md"
+    provider.search_files = AsyncMock(return_value=[uri, uri])
+
+    await provider.prefetch()
+
+    provider.search_files.assert_awaited_once_with(
+        query=provider._build_prefetch_search_query(),
+        search_uris=[
+            "viking://user/u/peers/p/memories/entities",
+            "viking://user/u/peers/p/memories/preferences",
+        ],
+    )
+    assert [call.args[0] for call in provider.read_file.await_args_list] == [
+        "viking://user/u/peers/p/memories/profile/profile.md",
+        uri,
+    ]
+
+
+@pytest.mark.parametrize("response", ["not a plan", RuntimeError("model unavailable")])
+async def test_planning_failure_searches_original_once(response):
+    provider = _provider()
+    if isinstance(response, Exception):
+        provider._vlm_config.get_completion_async.side_effect = response
+    else:
+        provider._vlm_config.get_completion_async.return_value = response
+    uri = "viking://user/u/peers/p/memories/entities/train.md"
+    provider.search_files = AsyncMock(return_value=[uri])
+
+    messages = await provider.prefetch()
+
+    assert provider.search_files.await_count == 1
+    assert (
+        provider.search_files.await_args.kwargs["query"] == provider._build_prefetch_search_query()
+    )
+    assert json.loads(messages[1]["content"])["result"] == [uri]
+    assert provider.read_file.await_args.args == (uri,)
+
+
+async def test_search_result_already_read_as_fixed_file_is_not_read_twice():
+    provider = _provider(targets=[_target("commute reading")])
+    profile = "viking://user/u/peers/p/memories/profile/profile.md"
+    train = "viking://user/u/peers/p/memories/entities/train.md"
+    provider.search_files = AsyncMock(side_effect=[[profile, train], [train, profile]])
+
+    await provider.prefetch()
+
+    assert [call.args[0] for call in provider.read_file.await_args_list] == [profile, train]
+
+
 async def test_non_eager_mode_keeps_read_tools_and_does_not_preload_candidates():
     provider = _provider(targets=[_target("commute method"), _target("commute reading")])
     provider._eager_prefetch = False
-    provider.search_files = AsyncMock(
-        return_value=["viking://user/u/peers/p/memories/entities/train.md"]
-    )
-    await provider.prefetch()
-    assert provider.search_files.await_count == 2
+    root = "viking://user/u/peers/p/memories"
+    groups = [[f"{root}/entities/route{i}-{j}.md" for j in range(5)] for i in range(3)]
+    provider.search_files = AsyncMock(side_effect=groups)
+    messages = await provider.prefetch()
+    assert provider.search_files.await_count == 3
+    searches = [
+        json.loads(m["content"])
+        for m in messages[1:]
+        if json.loads(m["content"])["tool_call_name"] == "search"
+    ]
+    assert [s["result"] for s in searches] == groups
     provider.read_file.assert_awaited_once_with(
         "viking://user/u/peers/p/memories/profile/profile.md"
     )
@@ -399,27 +512,26 @@ def test_query_prompt_is_not_registered_as_a_memory_schema():
 
 def test_round_robin_handles_duplicates_empty_and_unequal_results():
     merge = SessionExtractContextProvider._merge_prefetch_search_results
-    assert merge([], 10) == []
-    assert merge([[], ["a", "b"]], 10) == ["a", "b"]
-    assert merge([["a", "a", "b", "c"], ["a", "d", "e"]], 10) == ["a", "d", "b", "e", "c"]
+    assert merge([]) == []
+    assert merge([[], ["a", "b"]]) == ["a", "b"]
+    assert merge([["a", "a", "b", "c"], ["a", "d", "e"]]) == ["a", "d", "b", "e", "c"]
 
 
-def test_default_merged_candidate_budget_is_ten():
-    provider = _provider()
-    assert provider._prefetch_search_topn == 10
+def test_merged_union_keeps_candidates_beyond_ten():
     groups = [[f"a{i}" for i in range(5)], [f"b{i}" for i in range(5)], ["a0", "c0"]]
-    merged = provider._merge_prefetch_search_results(groups, provider._prefetch_search_topn)
-    assert len(merged) == 10
-    assert len(set(merged)) == 10
+    merged = SessionExtractContextProvider._merge_prefetch_search_results(groups)
+    assert set(merged) == set(groups[0] + groups[1] + groups[2])
+    assert len(merged) == len(set(merged)) == 11
 
 
 async def test_prefetch_reads_unfiltered_results_without_an_extra_model_call():
     provider = _provider(targets=[_target("keys plan"), _target("art hobby")])
     root = "viking://user/u/peers/p/memories"
-    keys, weights, art, mystery = [
-        f"{root}/entities/{name}.md" for name in ["keys", "weights", "art", "unknown"]
+    original, keys, weights, art, mystery = [
+        f"{root}/entities/{name}.md" for name in ["original", "keys", "weights", "art", "unknown"]
     ]
     groups = [
+        [{"uri": original, "score": 0.9}],
         [
             {"uri": keys, "score": 0.9, "abstract": "The person frequently loses keys."},
             {"uri": weights, "score": 0.8, "abstract": "The person enjoys weight training."},
@@ -444,6 +556,7 @@ async def test_prefetch_reads_unfiltered_results_without_an_extra_model_call():
     provider._vlm_config.get_completion_async.assert_awaited_once()
     assert [call.args[0] for call in provider.read_file.await_args_list] == [
         f"{root}/profile/profile.md",
+        original,
         keys,
         art,
         weights,
@@ -454,7 +567,11 @@ async def test_prefetch_reads_unfiltered_results_without_an_extra_model_call():
         for m in messages[1:]
         if json.loads(m["content"]).get("tool_call_name") == "search"
     ]
-    assert [s["result"] for s in searches] == [[keys, weights, art], [art, keys, mystery]]
+    assert [s["result"] for s in searches] == [
+        [original],
+        [keys, weights, art],
+        [art, keys, mystery],
+    ]
     assert all(call.kwargs["limit"] == 15 for call in provider._viking_fs.search.await_args_list)
 
 
@@ -468,5 +585,5 @@ async def test_empty_search_results_keep_fixed_reads_without_an_extra_model_call
     provider.read_file.assert_awaited_once_with(
         "viking://user/u/peers/p/memories/profile/profile.md"
     )
-    provider.search_files.assert_awaited_once()
-    assert json.loads(messages[1]["content"])["result"] == []
+    assert provider.search_files.await_count == 2
+    assert all(json.loads(m["content"])["result"] == [] for m in messages[1:3])
