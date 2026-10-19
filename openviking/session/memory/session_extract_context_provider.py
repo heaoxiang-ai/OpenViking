@@ -15,6 +15,7 @@ from openviking.message.part import TextPart, ToolPart
 from openviking.server.identity import RequestContext, ToolContext
 from openviking.session.memory.core import ExtractContextProvider
 from openviking.session.memory.dataclass import MemoryFile
+from openviking.session.memory.fact_coverage import FACT_COVERAGE_POLICY
 from openviking.session.memory.memory_isolation_handler import (
     MemoryIsolationHandler,
     RoleScope,
@@ -256,6 +257,8 @@ maintenance and may be preserved, normalized, merged, split, or moved between en
 types when required by their schemas.
 
 {MEMORY_MERGE_POLICY}
+
+{FACT_COVERAGE_POLICY}
 """
 
         return goal
