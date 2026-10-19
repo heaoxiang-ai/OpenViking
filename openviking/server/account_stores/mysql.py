@@ -1147,16 +1147,7 @@ class MySQLAccountStore(AccountStore):
             )
             if group is None:
                 raise NotFoundError(group_id, "group")
-            if await session.scalar(
-                select(func.count())
-                .select_from(GroupMember)
-                .where(
-                    GroupMember.service_name == self._service_name,
-                    GroupMember.account_pk == account.account_pk,
-                    GroupMember.group_pk == group.group_pk,
-                )
-            ):
-                raise FailedPreconditionError("Group must be empty before deletion")
+            # The membership foreign key cascades deletion without removing users.
             await session.delete(group)
 
     async def replace_active_user_api_key(
