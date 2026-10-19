@@ -12,6 +12,11 @@ from openviking.session.memory.extraction_output_protocol.base import (
     ExtractionOutputContext,
     ExtractionOutputProtocol,
 )
+from openviking.session.memory.fact_audit import (
+    AUDIT_KEY,
+    FactDecision,
+    render_fact_audit_rules,
+)
 from openviking.session.memory.tools import add_tool_call_pair_to_messages
 from openviking.session.memory.utils import parse_json_with_stability
 
@@ -43,12 +48,19 @@ class JsonExtractionOutputProtocol(ExtractionOutputProtocol):
         return messages
 
     def render_contract(self, context: ExtractionOutputContext) -> str:
-        schema = json.dumps(context.operations_model.model_json_schema(), ensure_ascii=False)
+        schema_dict = context.operations_model.model_json_schema()
+        if context.fact_audit_enabled:
+            schema_dict.setdefault("properties", {})[AUDIT_KEY] = {
+                "type": "array",
+                "items": FactDecision.model_json_schema(),
+                "description": "Model-declared diagnostics only; never memory write fields.",
+            }
+        schema = json.dumps(schema_dict, ensure_ascii=False)
         return (
             "## Output Format\n"
             "The final output of the model must strictly follow the JSON Schema format shown below:\n"
             f"```json\n{schema}\n```"
-        )
+        ) + (render_fact_audit_rules(self.name) if context.fact_audit_enabled else "")
 
     def render_reference_rules(self, context: ExtractionOutputContext) -> str:
         link_rules = prompts.JSON_LINK_RULES if context.link_enabled else ""
@@ -79,13 +91,19 @@ class JsonExtractionOutputProtocol(ExtractionOutputProtocol):
             ensure_ascii=False,
             indent=2,
         )
+        no_change = (
+            "If there are no memory changes, keep all operation arrays empty as below "
+            f"and include the diagnostic {AUDIT_KEY} array:\n"
+            if context.fact_audit_enabled
+            else "If there are no memory changes, return this exact empty-shape JSON with all fields present:\n"
+        )
         return (
             "You have reached the maximum number of tool call iterations. "
             "Do not call any more tools. Return your final result now as ONLY a valid JSON object "
             "matching the required schema. Do not include explanations or markdown. "
-            "If there are no memory changes, return this exact empty-shape JSON with all fields present:\n"
+            f"{no_change}"
             f"{skeleton}"
-        )
+        ) + (render_fact_audit_rules(self.name) if context.fact_audit_enabled else "")
 
     def render_format_retry(self, error: str | None = None) -> str:
         del error

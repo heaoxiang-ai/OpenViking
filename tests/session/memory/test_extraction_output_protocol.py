@@ -169,6 +169,97 @@ def _bind(protocol, context: ExtractionOutputContext) -> str:
     return protocol.render_new_bindings(context, source="test read")
 
 
+@pytest.mark.parametrize("output_format", ["python", "json"])
+def test_fact_audit_is_scoped_and_does_not_change_noop_writes(output_format):
+    context = _context([_preference_schema()])
+    protocol = create_extraction_output_protocol(output_format)
+    assert "Fact Decision Audit" not in protocol.render_contract(context)
+    context.fact_audit_enabled = True
+    contract = protocol.render_contract(context)
+    assert "Fact Decision Audit" in contract
+    assert "Fact Decision Audit" in protocol.render_final_instruction(context)
+    record = {
+        "fact": "The proposed purchase is not confirmed",
+        "source_indexes": [12],
+        "decision": "omit",
+        "reason": "hypothetical suggestion only",
+    }
+    response = (
+        f"# memory_audit: {json.dumps(record)}\nsdk.commit()"
+        if output_format == "python"
+        else json.dumps({"preferences": [], "delete_ids": [], "_memory_audit": [record]})
+    )
+
+    operations, error = protocol.parse(response, context)
+
+    assert error is None
+    assert operations.model_dump() == {"preferences": [], "delete_ids": []}
+
+
+@pytest.mark.asyncio
+async def test_audited_local_patch_keeps_existing_title_and_amount():
+    old_content = "- Favorite film: Spirited Away.\n- Helmet price: 120 yuan.\n- Plays piano."
+    memory = _existing_preference(
+        "viking://user/test/memories/preferences/music.md", "music", old_content
+    )
+    context = _context([_preference_schema()], files=[memory])
+    context.fact_audit_enabled = True
+    protocol = create_extraction_output_protocol("python")
+    _bind(protocol, context)
+    binding = protocol.binding_name(memory.uri)
+    response = (
+        '# memory_audit: {"fact": "Also plays violin", "source_indexes": [4], '
+        f'"decision": "update", "destinations": ["{binding}"]}}\n'
+        f'{binding}.content.edit(search="""- Plays piano.""", '
+        'replace="""- Plays piano and violin.""")\nsdk.commit()'
+    )
+
+    operations, error = protocol.parse(response, context)
+
+    assert error is None
+    from openviking.session.memory.merge_op import MergeOpFactory
+
+    content_field = context.schemas[0].fields[1]
+    new_content = await MergeOpFactory.from_field(content_field).apply(
+        old_content, operations.preferences[0].content
+    )
+    assert new_content == old_content.replace("- Plays piano.", "- Plays piano and violin.")
+    assert "memory_audit" not in new_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audit_state", ["missing", "invalid", "collector_error"])
+async def test_audit_never_retries_or_discards_a_first_valid_response(audit_state):
+    context = _context([_preference_schema()])
+    context.fact_audit_enabled = True
+    response = "sdk.commit()"
+    if audit_state == "invalid":
+        response = '# memory_audit: {"decision": "omit"}\nsdk.commit()'
+    vlm = SimpleNamespace(model="test", get_completion_async=AsyncMock(return_value=response))
+    loop = ExtractLoop(vlm=vlm, viking_fs=MagicMock())
+    loop._output_context = context
+    loop._output_protocol = create_extraction_output_protocol("python")
+    patch_target = "openviking.session.memory.extract_loop.collect_fact_audit"
+    trace_target = "openviking.session.memory.extract_loop.tracer.info"
+    with patch(trace_target) as trace:
+        if audit_state == "collector_error":
+            with patch(patch_target, side_effect=RuntimeError("diagnostics unavailable")):
+                tool_calls, operations = await loop._call_llm([])
+        else:
+            tool_calls, operations = await loop._call_llm([])
+
+    assert tool_calls is None
+    assert operations.model_dump() == {"preferences": [], "delete_ids": []}
+    vlm.get_completion_async.assert_awaited_once()
+    assert loop._last_parse_error is None
+    audit_logs = [
+        args[0][0] for args in trace.call_args_list if args[0][0].startswith("memory_fact_audit=")
+    ]
+    assert len(audit_logs) == 1
+    audit = json.loads(audit_logs[0].removeprefix("memory_fact_audit="))
+    assert audit["status"] == audit_state
+
+
 def test_json_protocol_preserves_stable_parser_and_empty_contract():
     context = _context([_preference_schema()])
     protocol = create_extraction_output_protocol("json")
@@ -344,11 +435,15 @@ def test_output_contract_preserves_core_add_only_and_upsert_capabilities(output_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("language", ["en", "zh-CN"])
-async def test_default_python_extract_loop_passes_language_to_field_descriptions(language):
+@pytest.mark.parametrize("fact_audit_enabled", [False, True])
+async def test_default_python_extract_loop_passes_language_to_field_descriptions(
+    language, fact_audit_enabled
+):
     schema = _preference_schema()
     schema.description = "Preferences in {{ language }}."
     schema.fields[1].description = "Write content in {{ language }}."
     provider = MagicMock()
+    provider.fact_audit_enabled = fact_audit_enabled
     provider.get_memory_schemas.return_value = [schema]
     provider.get_output_language.return_value = language
     provider.get_tools.return_value = []
@@ -379,6 +474,8 @@ async def test_default_python_extract_loop_passes_language_to_field_descriptions
     assert "{{ language }}" not in prompt
     assert "## Read Format Rules" not in prompt
     assert "## Patch Context Rules" in prompt
+    assert ("Fact Decision Audit" in prompt) == fact_audit_enabled
+    assert loop._output_context.fact_audit_enabled == fact_audit_enabled
 
 
 def test_python_contract_omits_link_rules_when_disabled():
