@@ -62,7 +62,6 @@ class SessionExtractContextProvider(ExtractContextProvider):
 
     include_tool_parts_in_conversation: bool = False
     split_long_text_messages_for_extraction: bool = True
-    fact_audit_enabled = True
 
     def __init__(
         self,

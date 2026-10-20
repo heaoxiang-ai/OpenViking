@@ -17,8 +17,6 @@ from openviking.server.identity import RequestContext
 class ExtractContextProvider(ABC):
     """Extract Context Provider 接口"""
 
-    fact_audit_enabled = False
-
     @abstractmethod
     def instruction(self) -> str:
         """

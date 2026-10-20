@@ -21,7 +21,6 @@ from openviking.session.memory.extraction_output_protocol.base import (
     ExtractionOutputProtocol,
     ExtractionOutputProtocolError,
 )
-from openviking.session.memory.fact_audit import render_fact_audit_rules
 from openviking.session.memory.merge_op import (
     DeleteBlock,
     FieldType,
@@ -130,14 +129,7 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
         link_rules = (
             prompts.PYTHON_LINK_RULES if context.link_enabled else prompts.PYTHON_LINKS_DISABLED
         )
-        contract = "\n".join((*self._render_contract_preamble(context), *schema_rules, *link_rules))
-        if context.fact_audit_enabled:
-            contract = contract.replace(
-                "If there are no changes, return only sdk.commit().",
-                "If there are no changes, return audit comments followed by sdk.commit().",
-            )
-            contract += render_fact_audit_rules(self.name)
-        return contract
+        return "\n".join((*self._render_contract_preamble(context), *schema_rules, *link_rules))
 
     @staticmethod
     def _render_contract_preamble(context: ExtractionOutputContext) -> tuple[str, ...]:
@@ -282,16 +274,12 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
             return None, str(exc)
 
     def render_final_instruction(self, context: ExtractionOutputContext) -> str:
-        no_change = (
-            "If there are no changes, return audit comments followed by sdk.commit()."
-            if context.fact_audit_enabled
-            else "If there are no changes, return only sdk.commit()."
-        )
+        del context
         return (
             "You have reached the maximum number of tool call iterations. Do not call any more "
             "tools. Return the complete restricted Python memory SDK program now. Output only "
-            f"Python code. {no_change}"
-        ) + (render_fact_audit_rules(self.name) if context.fact_audit_enabled else "")
+            "Python code. If there are no changes, return only sdk.commit()."
+        )
 
     def render_format_retry(self, error: str | None = None) -> str:
         detail = f" Parser error: {error}" if error else ""

@@ -388,8 +388,6 @@ Provider 和密钥管理配置见[加密指南](../guides/08-encryption.md)。
 
 会话提取从完整对话考虑新事实，不把维护 query 的目标当成待保存事实的白名单。提示要求检查 Event 的原文选段，并在更新旧卡时保留未被更正的事实，支持局部 patch 时优先局部修改。Event 记录发生的事情，Entity 描述对象，Preference 记录可复用的偏好；仍遵守各启用 schema 的角色和 peer 规则。一条事实不要求每种类型都新建卡，Event 的 add-only 也不表示每批必须生成 Event。
 
-为便于定位漏写，会话提取要求模型附带简短事实决策：来源消息索引或已读卡引用、create/update/already_present/omit/remove、保存目标，以及 omit/remove 的原因。例如“花120元买了头盔”可以对应购买 Event 或装备卡更新；未经确认的购买建议不能写成已经购买。Python 协议用 `# memory_audit:` JSON 注释承载记录，JSON 协议使用顶层 `_memory_audit` 元数据。`memory_fact_audit` trace 事件收集这些记录，并明确标记缺失或格式错误；记录不会进入记忆正文或写操作。这是模型自报，不能证明事实完整或写入成功。收集记录不增加模型调用，不因审计问题重试有效提取，但会增加输出 token。内部 provider 标志 `fact_audit_enabled` 用于只在会话提取启用，不影响记忆整理等其他 provider；它不是 `ov.conf` 配置项。
-
 自动提交还需要单独设置策略：记忆抽取开关不会让会话自动提交。详见[配置指南](../guides/01-configuration.md)的 `memory.session_auto_commit` 和[会话 API](../api/05-sessions.md)。模板目录的加载顺序和生效方式见 [Prompt 指南](../guides/10-prompt-guide.md)。
 
 ## 解析器配置

@@ -35,7 +35,6 @@ class ExtractionOutputContext:
     role_scope: Any | None = None
     available_tools: tuple[str, ...] = ()
     template_context: dict[str, Any] = field(default_factory=dict)
-    fact_audit_enabled: bool = False
 
     @property
     def inspection_tools(self) -> tuple[str, ...]:
