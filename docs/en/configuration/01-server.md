@@ -380,10 +380,16 @@ See [Encryption](../guides/08-encryption.md) for provider and key-management set
 | `custom_templates_dir` | path | `""` | Custom memory template directory; a matching `memory_type` overrides the loaded template |
 | `experimental_memory_switch` | boolean | `false` | Enable experimental templates |
 | `eager_prefetch` | boolean | `true` | Search and read memories before extraction |
-| `prefetch_search_topn` | integer, `>= 1` | `5` | Results read during prefetch |
+| `prefetch_search_topn` | integer, `>= 1` | `5` | Deprecated and ignored; all unique results returned by prefetch queries are retained |
 | `extraction_enabled` | boolean | `true` | Extract long-term memories on session commit |
 | `session_skill_extraction_enabled` | boolean | `false` | Also extract reusable skills |
 | `link_enabled` | boolean | `false` | Generate and resolve memory links |
+
+Prefetch searches with the original conversation query and supplements it with planned maintenance queries in the same permitted memory directories. Each query returns at most five files. Results are deduplicated by URI without a shared top-N cutoff. With `eager_prefetch` enabled, all returned unique files are read before extraction; otherwise, their URIs remain available for on-demand reads. An empty or failed maintenance plan still keeps the original query.
+
+Session extraction considers new facts in the full conversation independently of maintenance-query targets. It checks Event source ranges and asks the model to preserve unaffected facts when updating existing cards, preferring local patches where supported. An Event records an occurrence, an Entity describes an object, and a Preference records a reusable choice; each enabled schema and its role/peer rules still apply. One fact does not require a card of every type, and add-only Events are not mandatory for every batch.
+
+For diagnosis, session extraction requests short, model-declared fact decisions: source message indexes or a read-card reference, create/update/already-present/omit/remove, destination references, and a reason for omit/remove. For example, “bought a helmet for 120 yuan” can point to a purchase Event or an equipment-card update; an unconfirmed purchase suggestion must not become a completed purchase. The Python protocol carries these records in `# memory_audit:` JSON comments; the JSON protocol uses top-level `_memory_audit` metadata. Trace events named `memory_fact_audit` collect them outside memory bodies and write operations, including a `missing` or `invalid` status when applicable. Records are model reports, not independent proof of completeness or successful writes. Audit collection does not make another model call or retry an otherwise-valid result; it adds output tokens. The internal provider flag `fact_audit_enabled` scopes this to session extraction rather than consolidation/other providers; it is not an `ov.conf` option.
 
 Automatic commits require a separate policy; enabling memory extraction does not make sessions commit automatically. See `memory.session_auto_commit` in [Configuration](../guides/01-configuration.md) and the [Sessions API](../api/05-sessions.md). For template loading order and when changes take effect, see the [Prompt Guide](../guides/10-prompt-guide.md).
 

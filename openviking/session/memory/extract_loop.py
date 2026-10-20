@@ -29,6 +29,7 @@ from openviking.session.memory.extraction_output_protocol import (
     ExtractionOutputProtocol,
     create_extraction_output_protocol,
 )
+from openviking.session.memory.fact_audit import collect_fact_audit
 from openviking.session.memory.memory_isolation_handler import MemoryIsolationHandler
 from openviking.session.memory.merge_op import (
     FieldType,
@@ -261,6 +262,9 @@ class ExtractLoop:
             role_scope=role_scope,
             available_tools=tuple(allowed_tools),
             template_context={"language": output_language},
+            fact_audit_enabled=(
+                getattr(self.context_provider, "fact_audit_enabled", False) is True
+            ),
         )
         tracer.set("memory.extraction.output_format", output_format)
 
@@ -1259,6 +1263,17 @@ class ExtractLoop:
                         f"response_preview={_preview_text(content)!r}"
                     )
                     return (None, None)
+
+                if self._output_context.fact_audit_enabled:
+                    # Diagnostic only: a missing or malformed model report must not
+                    # discard a valid write plan or cause semantic resampling.
+                    try:
+                        audit = collect_fact_audit(content, self._output_protocol.name)
+                    except Exception:
+                        # Telemetry must never turn a first valid response into
+                        # an extraction failure or a new model attempt.
+                        audit = {"status": "collector_error", "model_declared": True}
+                    tracer.info(f"memory_fact_audit={json.dumps(audit, ensure_ascii=False)}")
 
                 return (None, operations)
             except Exception as e:
