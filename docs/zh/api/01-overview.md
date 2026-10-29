@@ -509,7 +509,7 @@ JSON 输出 - 错误：
 | DELETE | `/api/v1/admin/accounts/{account_id}/memory-templates/{memory_type}` | 删除记忆模板覆盖，恢复部署默认值 |
 | POST | `/api/v1/admin/accounts` | 创建账号及首个管理员 |
 | GET | `/api/v1/admin/accounts` | 列出账号 |
-| POST | `/api/v1/admin/migrate` | 迁移旧版身份数据 |
+| POST | `/api/v1/admin/migrate` | 预留迁移入口；仅 ROOT 可调用，当前返回 400 INVALID_ARGUMENT |
 | GET | `/api/v1/admin/accounts/{account_id}` | 获取单个账号的无凭据元数据 |
 | DELETE | `/api/v1/admin/accounts/{account_id}` | 删除账号 |
 | POST | `/api/v1/admin/accounts/{account_id}/users` | 注册用户 |
@@ -518,7 +518,7 @@ JSON 输出 - 错误：
 | GET | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | 获取用户记忆策略 |
 | PATCH | `/api/v1/admin/accounts/{account_id}/users/{user_id}/settings` | 更新用户记忆策略 |
 | DELETE | `/api/v1/admin/accounts/{account_id}/users/{user_id}` | 移除用户 |
-| PUT | `/api/v1/admin/accounts/{account_id}/users/{user_id}/role` | 将用户提升为 ADMIN |
+| PUT | `/api/v1/admin/accounts/{account_id}/users/{user_id}/role` | 在 USER 与 ADMIN 之间变更用户角色 |
 | POST | `/api/v1/admin/accounts/{account_id}/users/{user_id}/key` | 重新生成用户 Key |
 | POST | `/api/v1/admin/accounts/{account_id}/groups` | 创建用户组 |
 | GET | `/api/v1/admin/accounts/{account_id}/groups` | 列出用户组 |

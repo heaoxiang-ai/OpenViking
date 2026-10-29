@@ -25,7 +25,7 @@ For `/api/v1/admin/*`, `trusted` mode permits requests with no explicit identity
 | Manage groups and membership | Y | Y (own account) | N |
 | List agents (deprecated, returns empty list) | Y | Y (own account) | N |
 | Regenerate user key (API Key mode only) | Y | Y (own account) | Y (own key) |
-| Promote user to ADMIN | Y | Y (own account) | N |
+| Change user role between USER and ADMIN | Y | Y (own account) | N |
 
 ## CLI `--sudo` Option
 
@@ -48,8 +48,7 @@ Configure `root_api_key` in `~/.openviking/ovcli.conf`:
 - `ov --sudo admin` - Account and user management
 - `ov --sudo system` - System utility commands
 - `ov --sudo reindex` - Rebuild indexes
-- `ov --sudo admin migrate` - Legacy session migration and cleanup
-- `ov --sudo task status/list` - Query root/system background tasks, such as migration tasks
+- `ov --sudo task status/list` - Query root/system background tasks, such as account deletion tasks
 
 ### Usage Limitations
 
@@ -904,7 +903,7 @@ cannot be combined with `dense` or `sparse`.
 | Path | Lifecycle | Type and constraints | Meaning |
 | --- | --- | --- | --- |
 | `embedding.dense` / `sparse` / `hybrid` | Mode existence is create-only | Object/null | Three model output modes; cannot be added, removed, or switched after creation |
-| `embedding.max_concurrent` | Dynamic | Integer, `>= 1` | Provider-call concurrency limit for this Account |
+| `embedding.max_concurrent` | Dynamic | Integer, `>= 1` | Document embedding concurrency limit for this Account; retrieval query embeddings bypass this limit |
 | `embedding.max_retries` | Dynamic | Integer, `>= 0` | Retry count for transient provider failures |
 | `embedding.circuit_breaker.failure_threshold` | Dynamic | Integer, `>= 1` | Consecutive failures before opening the circuit |
 | `embedding.circuit_breaker.reset_timeout` | Dynamic | Number, `> 0` | Base circuit recovery wait in seconds |
@@ -1064,7 +1063,7 @@ Create a new workspace with its first admin user.
 
 **Code Entry Points:**
 - `openviking/server/routers/admin.py:create_account` - HTTP route
-- `openviking/server/api_keys/new.py:APIKeyManager.create_account` - Core implementation
+- `openviking/server/api_keys/key_mgr.py:APIKeyManager.create_account` - Core implementation
 - `sdk/python/openviking_sdk/client.py:SyncHTTPClient.admin_create_account` - Python SDK
 
 #### 2. Interface and Parameters
@@ -1253,7 +1252,7 @@ List all workspaces (ROOT only).
 
 **Code Entry Points:**
 - `openviking/server/routers/admin.py:list_accounts` - HTTP route
-- `openviking/server/api_keys/new.py:APIKeyManager.get_accounts` - Core implementation
+- `openviking/server/api_keys/key_mgr.py:APIKeyManager.get_accounts` - Core implementation
 - `sdk/python/openviking_sdk/client.py:SyncHTTPClient.admin_list_accounts` - Python SDK
 
 #### 2. Interface and Parameters
@@ -1464,7 +1463,7 @@ Register a new user in a workspace.
 
 **Code Entry Points:**
 - `openviking/server/routers/admin.py:register_user` - HTTP route
-- `openviking/server/api_keys/new.py:APIKeyManager.register_user` - Core implementation
+- `openviking/server/api_keys/key_mgr.py:APIKeyManager.register_user` - Core implementation
 - `sdk/python/openviking_sdk/client.py:SyncHTTPClient.admin_register_user` - Python SDK
 
 #### 2. Interface and Parameters
@@ -1598,7 +1597,7 @@ List active users in a workspace. Users with deletion in progress are omitted.
 
 **Code Entry Points:**
 - `openviking/server/routers/admin.py:list_users` - HTTP route
-- `openviking/server/api_keys/new.py:APIKeyManager.get_users` - Core implementation
+- `openviking/server/api_keys/key_mgr.py:APIKeyManager.get_users` - Core implementation
 - `sdk/python/openviking_sdk/client.py:SyncHTTPClient.admin_list_users` - Python SDK
 
 #### 2. Interface and Parameters
@@ -1821,7 +1820,7 @@ ov --sudo admin remove-user acme bob
 
 #### 1. API Implementation Overview
 
-Promote an account user to ADMIN. ROOT may operate on any account; ADMIN is limited to its own account.
+Change an account user's role between USER and ADMIN, including promotion and demotion. This endpoint is only for identity management operations. ROOT may operate on any account; ADMIN is limited to its own account.
 
 **Processing Flow:**
 1. Verify the requester has ROOT or ADMIN privileges and keep ADMIN within its own account
@@ -1830,7 +1829,7 @@ Promote an account user to ADMIN. ROOT may operate on any account; ADMIN is limi
 
 **Code Entry Points:**
 - `openviking/server/routers/admin.py:set_user_role` - HTTP route
-- `openviking/server/api_keys/new.py:APIKeyManager.set_role` - Core implementation
+- `openviking/server/api_keys/key_mgr.py:APIKeyManager.set_role` - Core implementation
 - `sdk/python/openviking_sdk/client.py:SyncHTTPClient.admin_set_role` - Python SDK
 
 #### 2. Interface and Parameters
@@ -1841,11 +1840,12 @@ Promote an account user to ADMIN. ROOT may operate on any account; ADMIN is limi
 |-----------|------|----------|---------|-------------|
 | account_id | str | Yes | - | Workspace ID |
 | user_id | str | Yes | - | User ID |
-| role | str | Yes | - | Must be "admin" |
+| role | str | Yes | - | New role: "admin" or "user" (case-insensitive) |
 
 **Notes:**
-- ROOT and ADMIN can promote users to ADMIN; ADMIN is limited to its own account
-- This endpoint cannot set "user" or "root"; ROOT comes only from `server.root_api_key`
+- ROOT and ADMIN can promote users to ADMIN or demote them to USER; ADMIN is limited to its own account
+- This endpoint only accepts "user" and "admin"; ROOT comes only from `server.root_api_key`
+- Role input is case-insensitive: `user`/`User`/`USER` and `admin`/`Admin`/`ADMIN` are equivalent. Stored roles and response values are always lowercase.
 
 #### 3. Usage Examples
 
@@ -1895,6 +1895,9 @@ fmt.Println(result["role"])
 ```bash
 # ROOT example; an acme ADMIN can use `ov admin set-role` without --sudo
 ov --sudo admin set-role acme bob admin
+
+# Demote bob to USER
+ov --sudo admin set-role acme bob user
 ```
 
 **Response Example**
@@ -1926,7 +1929,7 @@ Generate and store a user API key. With the default random generation, the old k
 
 **Code Entry Points:**
 - `openviking/server/routers/admin.py:regenerate_key` - HTTP route
-- `openviking/server/api_keys/new.py:APIKeyManager.regenerate_key` - Core implementation
+- `openviking/server/api_keys/key_mgr.py:APIKeyManager.regenerate_key` - Core implementation
 - `sdk/python/openviking_sdk/client.py:SyncHTTPClient.admin_regenerate_key` - Python SDK
 
 #### 2. Interface and Parameters
@@ -2040,113 +2043,23 @@ the request is in progress, the command exits with an error and keeps the return
 
 ---
 
-### migrate_legacy_data
+### Reserved migration endpoint
 
-#### 1. API Implementation Overview
+`POST /api/v1/admin/migrate` is reserved for future migration operations. It requires
+ROOT authentication and currently returns `400 Bad Request` with error code
+`INVALID_ARGUMENT` and message `Data migration is not currently supported.`
 
-Migrate legacy `viking://session/...` data into `viking://user/<user_id>/sessions/...`, or clean up old session directories after verifying migration. This endpoint is ROOT-only and runs as a background task. The account-shared `agent` directory is excluded from migration and cleanup.
-
-**Processing Flow:**
-1. Verify requester has ROOT privileges
-2. For `action=migrate`, run preflight checks for account registry, session owner metadata, and other prerequisites
-3. Create a root-level background task
-4. During migration, copy session files; during cleanup, delete old session vector records before deleting old session AGFS directories
-
-Migration preserves files that already exist at the destination. Cleanup leaves shared `agent` directories and migrated user data intact.
-
-**Code Entry Points:**
-- `openviking/server/routers/admin.py:migrate_legacy_data` - HTTP route
-- `openviking/service/legacy_migration.py:LegacyDataMigration` - Migration implementation
-
-#### 2. Interface and Parameters
-
-**HTTP API**
-
-```
-POST /api/v1/admin/migrate
-```
-
-**Parameters**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| action | str | No | migrate | `migrate` runs migration; `cleanup` removes old namespaces |
-
-**Migration result fields**
-
-| Field | Description |
-|-------|-------------|
-| migrated.files / migrated.directories | Number of files and directories copied |
-| migrated.operations | Session migration operation count (`sessions`) |
-| skipped / created_users | Skipped files and users created automatically |
-
-**Cleanup result fields**
-
-| Field | Description |
-|-------|-------------|
-| cleanup.directories | Number of legacy directories deleted |
-| cleanup.vector_records | Number of old vector records deleted |
-| cleanup.targets | Legacy scopes that were cleaned |
-| skipped / warnings | Skipped items and warnings |
-
-#### 3. Usage Examples
-
-**HTTP API**
+No migration parameters are currently supported. Sending the previous
+`{"action":"migrate"}` or `{"action":"cleanup"}` body also returns this error.
+The endpoint does not create a task or modify migration data. Unauthenticated
+requests return `401`; authenticated ADMIN or USER requests return `403`.
 
 ```bash
-# Run migration
 curl -X POST http://localhost:1933/api/v1/admin/migrate \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: <root-key>" \
-  -d '{"action": "migrate"}'
-
-# Clean old namespaces after the migration task finishes and migrated data is verified
-curl -X POST http://localhost:1933/api/v1/admin/migrate \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: <root-key>" \
-  -d '{"action": "cleanup"}'
+  -H "X-API-Key: <root-key>"
 ```
 
-**Python SDK**
-
-```python
-print(client.admin_migrate(cleanup=False))
-```
-
-**TypeScript SDK**
-
-```typescript
-console.log(await client.adminMigrate(false));
-```
-
-**Go SDK**
-
-```go
-result, err := client.AdminMigrate(ctx, &openviking.AdminMigrateOptions{
-    Cleanup: false,
-})
-if err != nil {
-    return err
-}
-fmt.Println(result["task_id"])
-```
-
-**CLI**
-
-```bash
-ov --sudo admin migrate --output json
-# Check the returned task with ov --sudo task status <task_id>, then verify migrated data.
-ov --sudo admin migrate --cleanup --output json
-```
-
-**CLI Response Example (default compact output)**
-
-```json
-{
-  "ok": true,
-  "result": {"task_id": "6de05fc3-0334-40d6-ba9b-dd317eb4d351"}
-}
-```
+The old `ov admin migrate` command and corresponding SDK methods have been removed.
 
 ---
 
