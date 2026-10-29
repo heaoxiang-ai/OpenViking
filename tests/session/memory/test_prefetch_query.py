@@ -328,8 +328,12 @@ def _provider(
 
 @pytest.mark.parametrize("legacy_topn", [1, 3, 5, 10, 20])
 async def test_both_routes_keep_their_full_union_in_the_same_scope(
-    legacy_topn, runtime_config, caplog
+    legacy_topn, runtime_config, caplog, monkeypatch
 ):
+    # Managed application loggers stop propagation at the OpenViking root.
+    # Attach caplog directly without changing the runtime logging policy.
+    logger = logging.getLogger("openviking.session.memory.session_extract_context_provider")
+    monkeypatch.setattr(logger, "handlers", [*logger.handlers, caplog.handler])
     caplog.set_level(
         logging.DEBUG, logger="openviking.session.memory.session_extract_context_provider"
     )
