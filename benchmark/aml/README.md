@@ -73,6 +73,11 @@ behavior. These settings do not authorize repeating ambiguous writes.
 `Token`, `Bearer`, and `X-Api-Key` authentication are accepted when
 `AML_API_KEY` is set.
 
+Failed Commit tasks emit a metadata-only `commit_failed` audit event with the
+task ID, request trace, failure stage and a known failure category (or
+`commit_failure_unknown`). Task error text and message bodies are not added to
+the audit log. This classification does not replay Add or change task outcomes.
+
 Every response includes `X-AML-Trace-Id`. Set `AML_AUDIT_LOG_FILE` to persist
 metadata-only audit logs with private file permissions and rotation. Logs record
 request IDs, native task IDs, counts, status and timing; message/query bodies,
@@ -150,6 +155,13 @@ The private rerank JSON requires `ak` and `sk`. Supported settings include
 `model_name` (default `doubao-seed-rerank`), `model_version` (default `251028`),
 `batch_size` (at most 100), `threshold`, `max_concurrent` and `retry_attempts`.
 Keep credentials outside the repository.
+
+Rerank retries honor both delay-seconds and HTTP-date `Retry-After` values on
+HTTP 429 and 503. The cooldown is shared by requests using the same reranker
+instance, including when the triggering request exhausts its retry budget.
+HTTP 429 retains its minimum 65-second cooldown; invalid or missing headers on
+503 use the existing exponential backoff. Retry counts and concurrency are
+unchanged, and a valid longer server delay is not shortened by the backoff cap.
 
 The adapter deduplicates candidate URIs, verifies their user scope, reranks their
 abstracts, selects at most `min(request.top_k, AML_SEARCH_RESULT_LIMIT)` results,

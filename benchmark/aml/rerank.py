@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +19,24 @@ from benchmark.aml.audit import audit_event
 
 class RerankError(RuntimeError):
     pass
+
+
+def retry_after_seconds(value: str | None) -> float | None:
+    """Parse RFC 9110 delay-seconds or HTTP-date without trusting invalid values."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        if re.fullmatch(r"[0-9]+", value):
+            delay = float(value)
+        else:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            delay = date.timestamp() - time.time()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return max(0.0, delay) if math.isfinite(delay) else None
 
 
 def align_scores(body: dict[str, Any], count: int) -> list[float]:
@@ -99,12 +120,21 @@ class VikingDBReranker:
                     response = await client.post(
                         f"https://{self.host}/api/vikingdb/rerank", headers=headers, content=body
                     )
-                    if response.status_code == 429:
-                        try:
-                            delay = max(65.0, float(response.headers.get("retry-after", "65")))
-                        except ValueError:
-                            delay = 65.0
-                        self._cooldown_until = max(self._cooldown_until, time.monotonic() + delay)
+                    if response.status_code in {429, 503}:
+                        requested_delay = retry_after_seconds(response.headers.get("retry-after"))
+                        delay = max(
+                            65.0 if response.status_code == 429 else 0.0, requested_delay or 0.0
+                        )
+                        if delay:
+                            self._cooldown_until = max(
+                                self._cooldown_until, time.monotonic() + delay
+                            )
+                            audit_event(
+                                "rerank_cooldown",
+                                http_status=response.status_code,
+                                retry_after_seconds=requested_delay,
+                                cooldown_seconds=delay,
+                            )
                     response.raise_for_status()
                     scores = align_scores(response.json(), len(documents))
                     audit_event(

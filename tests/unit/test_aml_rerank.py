@@ -1,9 +1,10 @@
 import json
+from email.utils import formatdate
 
 import httpx
 import pytest
 
-from benchmark.aml.rerank import RerankError, VikingDBReranker, align_scores
+from benchmark.aml.rerank import RerankError, VikingDBReranker, align_scores, retry_after_seconds
 
 
 def test_provider_relevance_order_is_mapped_back_to_input_documents():
@@ -31,6 +32,69 @@ def make_ranker(tmp_path):
     config = tmp_path / "rerank.json"
     config.write_text(json.dumps({"ak": "test", "sk": "test"}))
     return VikingDBReranker(str(config))
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("", None),
+        (" 120 ", 120),
+        ("0", 0),
+        ("-1", None),
+        ("1.5", None),
+        ("NaN", None),
+        ("inf", None),
+        ("9" * 400, None),
+        ("not a date", None),
+        ("Fri, 30 Oct 2026 10:02:00 GMT", 120),
+        ("Fri, 30 Oct 2026 09:59:59 GMT", 0),
+    ],
+)
+def test_retry_after_seconds_and_dates(value, expected, monkeypatch):
+    monkeypatch.setattr("benchmark.aml.rerank.time.time", lambda: 1793354400)
+    assert retry_after_seconds(value) == expected
+
+
+@pytest.mark.parametrize("status_code", [429, 503])
+@pytest.mark.parametrize("header_kind", ["seconds", "date", "invalid", "absent"])
+async def test_retry_after_is_respected_without_changing_payload_or_retry_count(
+    tmp_path, monkeypatch, status_code, header_kind
+):
+    ranker = make_ranker(tmp_path)
+    clock = [1000.0]
+    epoch = 1793354400
+    attempts = []
+    real_client = httpx.AsyncClient
+    headers = {
+        "seconds": {"Retry-After": "120"},
+        "date": {"Retry-After": formatdate(epoch + 120, usegmt=True)},
+        "invalid": {"Retry-After": "NaN"},
+        "absent": {},
+    }[header_kind]
+
+    def handle(request):
+        attempts.append((clock[0], json.loads(request.content)))
+        if len(attempts) == 1:
+            return httpx.Response(status_code, headers=headers)
+        return httpx.Response(200, json={"result": {"data": [{"id": 0, "score": 0.7}]}})
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(ranker, "_signed_headers", lambda payload: ({}, json.dumps(payload)))
+    monkeypatch.setattr("benchmark.aml.rerank.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("benchmark.aml.rerank.time.time", lambda: epoch + clock[0] - 1000)
+    monkeypatch.setattr("benchmark.aml.rerank.asyncio.sleep", sleep)
+    monkeypatch.setattr(
+        "benchmark.aml.rerank.httpx.AsyncClient",
+        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handle)),
+    )
+    assert await ranker._batch("question", ["A"]) == [0.7]
+    minimum = 120 if header_kind in {"seconds", "date"} else (65 if status_code == 429 else 1)
+    assert attempts[1][0] - attempts[0][0] == minimum
+    assert len(attempts) == 2
+    assert attempts[0][1] == attempts[1][1]
 
 
 async def test_all_batches_are_scored_before_global_selection(tmp_path, monkeypatch):
@@ -81,3 +145,32 @@ async def test_throttle_retries_preserve_id_mapping_and_resign(tmp_path, monkeyp
     assert await ranker._batch("question", ["A", "B"]) == [0.2, 0.9]
     assert attempts[0] == attempts[1]
     assert len(signed) == 2 and signed[1] >= 65
+
+
+async def test_503_cooldown_applies_to_next_request_after_retry_exhaustion(tmp_path, monkeypatch):
+    ranker = make_ranker(tmp_path)
+    ranker.attempts = 1
+    clock = [0.0]
+    sent_at = []
+    real_client = httpx.AsyncClient
+
+    def handle(request):
+        sent_at.append(clock[0])
+        if len(sent_at) == 1:
+            return httpx.Response(503, headers={"Retry-After": "120"})
+        return httpx.Response(200, json={"result": {"data": [{"id": 0, "score": 0.7}]}})
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(ranker, "_signed_headers", lambda payload: ({}, json.dumps(payload)))
+    monkeypatch.setattr("benchmark.aml.rerank.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("benchmark.aml.rerank.asyncio.sleep", sleep)
+    monkeypatch.setattr(
+        "benchmark.aml.rerank.httpx.AsyncClient",
+        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(RerankError, match="retries exhausted"):
+        await ranker._batch("question", ["A"])
+    assert await ranker._batch("question", ["A"]) == [0.7]
+    assert sent_at == [0, 120]

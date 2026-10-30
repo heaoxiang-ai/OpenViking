@@ -290,6 +290,23 @@ class OpenVikingBackendError(RuntimeError):
     pass
 
 
+def _commit_failure_kind(error: Any) -> str:
+    """Classify known task failures without putting task error text in audit logs."""
+    if not isinstance(error, str):
+        return "commit_failure_unknown"
+    if "Conflicting add/update/delete" in error:
+        return "memory_operation_conflict"
+    if "MemoryUpdateError" in error:
+        return "memory_update_error"
+    if "failure_kind=empty_response" in error:
+        return "extraction_empty_response"
+    if "failure_kind=budget_exhausted" in error or "output-token budget" in error:
+        return "extraction_output_budget"
+    if "failure_kind=parse_error" in error:
+        return "extraction_parse_error"
+    return "commit_failure_unknown"
+
+
 class OpenVikingBackend:
     def __init__(
         self,
@@ -416,6 +433,11 @@ class OpenVikingBackend:
                         audit_event("commit_completed", archive_uri=task_result.get("archive_uri"))
                     return
                 if task_status in {"failed", "cancelled"}:
+                    audit_fields(
+                        failure_stage="commit_task",
+                        failure_kind=_commit_failure_kind(task.get("error")),
+                    )
+                    audit_event("commit_failed", task_status=task_status)
                     raise OpenVikingBackendError(
                         f"OpenViking commit {task_status}: {task.get('error') or 'unknown error'}"
                     )

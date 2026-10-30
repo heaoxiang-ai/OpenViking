@@ -1,12 +1,50 @@
 """Adapter behavior beyond the upstream Add/Search contract; no provider calls."""
 
 import json
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from benchmark.aml import audit, server
 from benchmark.aml.server import AMLAdapter, AMLAddRequest, AMLSearchRequest, AMLSettings
+
+
+@pytest.mark.parametrize(
+    ("error", "kind"),
+    [
+        ("RuntimeError: failure_kind=empty_response", "extraction_empty_response"),
+        ("MemoryUpdateError: Conflicting add/update/delete results", "memory_operation_conflict"),
+        ("MemoryUpdateError: Written 6, Edited 1, Errors 1", "memory_update_error"),
+        ("failure_kind=budget_exhausted", "extraction_output_budget"),
+        ("failure_kind=parse_error", "extraction_parse_error"),
+        ("unknown task failure secret-message-content", "commit_failure_unknown"),
+        (None, "commit_failure_unknown"),
+    ],
+)
+async def test_failed_commit_audit_preserves_reason_and_ids_without_error_text(error, kind, caplog):
+    client = AsyncMock()
+    client.batch_add_messages.return_value = {"added": 1}
+    client.commit_session.return_value = {"status": "accepted", "task_id": "task-a"}
+    client.get_task.return_value = {"status": "failed", "error": error}
+    backend = server.OpenVikingBackend(AMLSettings(), client_factory=lambda user: client)
+    with audit.request_audit(secrets=(), trace_id="trace-a", request_id="request-a"):
+        with pytest.raises(server.OpenVikingBackendError):
+            await backend.add_and_commit(
+                user_id="alice", session_id="session-a", messages=[{"content": "original"}]
+            )
+    records = [
+        json.loads(row.message) for row in caplog.records if row.name == "benchmark.aml.audit"
+    ]
+    failure = next(row for row in records if row["event"] == "commit_failed")
+    assert failure["failure_kind"] == kind
+    assert failure["failure_stage"] == "commit_task"
+    assert failure["native_task_id"] == "task-a"
+    assert failure["trace_id"] == "trace-a"
+    assert "error" not in failure
+    assert "secret-message-content" not in json.dumps(failure)
+    client.batch_add_messages.assert_awaited_once()
+    client.commit_session.assert_awaited_once()
 
 
 class Backend:
