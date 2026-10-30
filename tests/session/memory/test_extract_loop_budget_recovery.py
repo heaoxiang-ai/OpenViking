@@ -135,10 +135,7 @@ async def _run_loop(loop):
 
 
 def _async_return(value):
-    async def _call(*args, **kwargs):
-        return value
-
-    return _call
+    return AsyncMock(return_value=value)
 
 
 class TestThinkingPassthrough:

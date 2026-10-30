@@ -109,6 +109,17 @@ class VolcEngineVLM(OpenAIVLM):
                 tool_calls=self._parse_tool_calls(message),
                 finish_reason=choice.finish_reason or "stop",
                 usage=usage,
+                reasoning_content=getattr(message, "reasoning_content", None),
+                response_metadata={
+                    "raw_content_length": len(message.content or ""),
+                    "raw_content_has_text": bool((message.content or "").strip()),
+                    "inline_reasoning_present": "<think>" in (message.content or ""),
+                    # Preserve the provider's value independently of the legacy default.
+                    "finish_reason": choice.finish_reason,
+                    "finish_reason_present": choice.finish_reason is not None,
+                    "moderation_hit_type": getattr(choice, "moderation_hit_type", None),
+                    "response_id": getattr(response, "id", None),
+                },
             )
         return message.content or ""
 

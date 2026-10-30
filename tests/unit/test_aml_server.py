@@ -181,3 +181,100 @@ async def test_add_commits_native_parts_and_image_search_retries(adapter_client,
     assert json.loads(requests[-1].content)["image_url"] == IMAGES[0]
     assert requests[-2].content == requests[-1].content
     assert requests[-2].headers == requests[-1].headers
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "content_filter",
+        "reasoning_only",
+        "cleanup_empty",
+        "refusal_text",
+        "budget_exhausted",
+        "parse_error",
+    ],
+)
+async def test_non_retryable_extraction_returns_422_without_replaying_add(adapter_client, kind):
+    from openviking.session.memory.extraction_errors import MemoryExtractionError
+
+    requests = []
+    failure = MemoryExtractionError(kind, "Internal detail must not leak").task_failure()
+
+    def handle(request):
+        requests.append(request.url.path)
+        if request.url.path.endswith("/messages/batch"):
+            result = {"added": 1}
+        elif request.url.path.endswith("/commit"):
+            result = {"status": "accepted", "task_id": "task-1"}
+        else:
+            assert request.url.path == "/api/v1/tasks/task-1"
+            result = {
+                "status": "failed",
+                "error": "Internal detail must not leak",
+                "result": {"failure": failure},
+            }
+        return httpx.Response(200, json={"status": "ok", "result": result})
+
+    async with adapter_client(handle) as client:
+        response = await client.post(
+            "/add",
+            json={
+                "request_id": "request-1",
+                "user_id": "alice",
+                "session_id": "session-1",
+                "messages": [{"role": "user", "content": "original"}],
+            },
+        )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == f"ADD_EXTRACTION_{kind.upper()}"
+    assert detail["retryable"] is False
+    assert detail["task_id"] == "task-1"
+    assert "Internal detail" not in response.text
+    assert requests == [
+        "/api/v1/sessions/session-1/messages/batch",
+        "/api/v1/sessions/session-1/commit",
+        "/api/v1/tasks/task-1",
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        {"source": "memory_extraction", "kind": "empty_response", "retryable": True},
+        {"source": "memory_extraction", "kind": "unknown_failure", "retryable": False},
+        {"source": "memory_extraction", "kind": "content_filter", "retryable": "false"},
+        {"source": "other", "kind": "content_filter", "retryable": False},
+        {"source": "memory_extraction", "kind": [], "retryable": False},
+    ],
+)
+async def test_unknown_legacy_and_transient_failures_keep_503(adapter_client, failure):
+    requests = []
+
+    def handle(request):
+        requests.append(request.url.path)
+        if request.url.path.endswith("/messages/batch"):
+            result = {"added": 1}
+        elif request.url.path.endswith("/commit"):
+            result = {"status": "accepted", "task_id": "task-1"}
+        else:
+            result = {
+                "status": "failed",
+                "error": "failure_kind=empty_response",
+                "result": {"failure": failure},
+            }
+        return httpx.Response(200, json={"status": "ok", "result": result})
+
+    async with adapter_client(handle) as client:
+        response = await client.post(
+            "/add",
+            json={
+                "request_id": "request-1",
+                "user_id": "alice",
+                "session_id": "session-1",
+                "messages": [{"role": "user", "content": "original"}],
+            },
+        )
+    assert response.status_code == 503
+    assert len(requests) == 3

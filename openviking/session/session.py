@@ -62,6 +62,7 @@ from openviking.session.extraction_batch import (
     resolve_extraction_batch_limits,
 )
 from openviking.session.memory.constants import AGENT_EVOLUTION_MEMORY_TYPES
+from openviking.session.memory.extraction_errors import MemoryExtractionError
 from openviking.session.memory.memory_updater import MemoryUpdateError
 from openviking.session.memory.utils.language import resolve_output_language_from_conversation
 from openviking.session.memory_policy import MemoryPolicy
@@ -2341,7 +2342,7 @@ class Session:
                             base_delay=_MEMORY_EXTRACTION_RETRY_BASE_DELAY_SECONDS,
                             max_delay=_MEMORY_EXTRACTION_RETRY_MAX_DELAY_SECONDS,
                             is_retryable=lambda error: (
-                                not isinstance(error, MemoryUpdateError)
+                                not isinstance(error, (MemoryUpdateError, MemoryExtractionError))
                                 and is_retryable_api_error(error)
                             ),
                             logger=logger,
@@ -2670,8 +2671,17 @@ class Session:
                     completed_memory_steps
                 ),
             )
+            failure_metadata = (
+                {"result": {"failure": e.task_failure()}}
+                if isinstance(e, MemoryExtractionError)
+                else {}
+            )
             await tracker.fail(
-                task_id, str(e), account_id=self.ctx.account_id, user_id=self.ctx.user.user_id
+                task_id,
+                str(e),
+                account_id=self.ctx.account_id,
+                user_id=self.ctx.user.user_id,
+                **failure_metadata,
             )
             logger.exception(f"Memory extraction failed for session {self.session_id}")
 

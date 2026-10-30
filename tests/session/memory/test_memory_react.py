@@ -905,10 +905,8 @@ class TestExtractLoopFinalJsonRetry:
         system_prompt = vlm.seen_messages[0][0]["content"]
         assert "restricted Python memory SDK" in system_prompt
         assert "output ONLY a JSON object" not in system_prompt
-        assert any(
-            "not a valid restricted Python memory SDK program" in message.get("content", "")
-            for message in vlm.seen_messages[-1]
-        )
+        # Technical retry uses the identical input, without format-repair feedback.
+        assert vlm.seen_messages[-1] == vlm.seen_messages[0]
         assert tracer_error.call_count == 1
         assert logger_warning.call_count == 0
 

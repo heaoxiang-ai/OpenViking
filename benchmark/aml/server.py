@@ -283,7 +283,28 @@ class AMLSearchRequest(BaseModel):
 
 
 class OpenVikingBackendError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_kind: str | None = None,
+        retryable: bool = True,
+        task_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.retryable = retryable
+        self.task_id = task_id
+
+
+_NON_RETRYABLE_EXTRACTION_FAILURES = {
+    "content_filter": "The model provider blocked memory extraction.",
+    "reasoning_only": "The model returned reasoning without memory operations.",
+    "cleanup_empty": "No memory operations remained after response cleaning.",
+    "refusal_text": "The model declined to produce memory operations.",
+    "budget_exhausted": "Memory extraction exceeded the model output budget.",
+    "parse_error": "The model program remained invalid after bounded format repair.",
+}
 
 
 def _commit_failure_kind(error: Any) -> str:
@@ -429,11 +450,36 @@ class OpenVikingBackend:
                         audit_event("commit_completed", archive_uri=task_result.get("archive_uri"))
                     return
                 if task_status in {"failed", "cancelled"}:
+                    task_result = task.get("result")
+                    failure = task_result.get("failure") if isinstance(task_result, dict) else None
+                    # Only trust a native, structured and recognized extraction failure.
+                    # Legacy error text and unknown failures retain their 503 behavior.
+                    non_retryable_kind = None
+                    if (
+                        task_status == "failed"
+                        and isinstance(failure, dict)
+                        and failure.get("source") == "memory_extraction"
+                        and failure.get("retryable") is False
+                        and isinstance(failure.get("kind"), str)
+                        and failure["kind"] in _NON_RETRYABLE_EXTRACTION_FAILURES
+                    ):
+                        non_retryable_kind = failure["kind"]
                     audit_fields(
                         failure_stage="commit_task",
-                        failure_kind=_commit_failure_kind(task.get("error")),
+                        failure_kind=(
+                            f"extraction_{non_retryable_kind}"
+                            if non_retryable_kind
+                            else _commit_failure_kind(task.get("error"))
+                        ),
                     )
                     audit_event("commit_failed", task_status=task_status)
+                    if non_retryable_kind:
+                        raise OpenVikingBackendError(
+                            _NON_RETRYABLE_EXTRACTION_FAILURES[non_retryable_kind],
+                            failure_kind=non_retryable_kind,
+                            retryable=False,
+                            task_id=task_id,
+                        )
                     raise OpenVikingBackendError(
                         f"OpenViking commit {task_status}: {task.get('error') or 'unknown error'}"
                     )
@@ -538,6 +584,16 @@ class AMLAdapter:
             )
         except OpenVikingBackendError as exc:
             audit_event("add_failed", error_type=type(exc).__name__)
+            if not exc.retryable:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "code": f"ADD_EXTRACTION_{(exc.failure_kind or 'failure').upper()}",
+                        "message": str(exc),
+                        "retryable": False,
+                        "task_id": exc.task_id,
+                    },
+                ) from exc
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
             ) from exc

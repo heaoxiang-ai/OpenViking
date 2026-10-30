@@ -14,6 +14,7 @@ from openviking.message import Message, TextPart, ToolPart
 from openviking.pyagfs.exceptions import AGFSConnectionError
 from openviking.service.task_store import PersistentTaskStore
 from openviking.service.task_tracker import TaskStatus, TaskTracker, set_task_tracker
+from openviking.session.memory.extraction_errors import MemoryExtractionError
 from openviking.session.memory_policy import MemoryPolicy
 from openviking.session.session import Session, SessionMeta
 from openviking.storage.queuefs.session_commit_msg import SessionCommitMsg
@@ -226,6 +227,66 @@ async def test_phase2_cancellation_marks_archive_only_when_requested(
         )
 
     assert (f"{archive_uri}/.failed.json" in files) is cancellation_requested
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retryable", [False, True])
+async def test_phase2_persists_structured_extraction_failure_in_public_task(monkeypatch, retryable):
+    session_uri = "viking://user/default/sessions/session-1"
+    archive_uri = f"{session_uri}/history/archive_001"
+    tracker = TaskTracker(_TaskStore())
+    await tracker.create(
+        "session_commit", account_id="default", user_id="default", task_id="task-1"
+    )
+    monkeypatch.setattr("openviking.service.task_tracker.get_task_tracker", lambda: tracker)
+    files = {}
+    extract = AsyncMock()
+    session = Session(
+        viking_fs=_MemoryVikingFS(files),
+        session_id="session-1",
+        session_uri=session_uri,
+        session_compressor=SimpleNamespace(extract_long_term_memories=extract),
+    )
+    failure = MemoryExtractionError(
+        "empty_response" if retryable else "content_filter",
+        "Synthetic extraction failure",
+        retryable=retryable,
+        diagnostics={"raw_content_length": 0, "finish_reason": "content_filter"},
+    )
+    extract.side_effect = failure
+    messages = [Message(id="message-1", role="user", parts=[TextPart("Synthetic input")])]
+    prepare = AsyncMock(return_value=(messages, "archive_001", "archive_001", [], {}))
+    monkeypatch.setattr(
+        session._tool_outputs, "hydrate_for_extraction", AsyncMock(return_value=messages)
+    )
+    monkeypatch.setattr(session, "_run_usage_reporting", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        "openviking.session.session.get_openviking_config",
+        lambda: SimpleNamespace(
+            memory=SimpleNamespace(extraction_enabled=True, session_skill_extraction_enabled=False)
+        ),
+    )
+    monkeypatch.setattr(session, "_prepare_phase2_archive_messages", prepare)
+    try:
+        await session._run_memory_extraction(
+            task_id="task-1",
+            archive_uri=archive_uri,
+            messages=[],
+            first_message_id="",
+            last_message_id="",
+            memory_policy=MemoryPolicy(
+                memory_types={"profile"}, enable_working_memory=False
+            ).to_dict(),
+        )
+        task = await tracker.get("task-1", account_id="default", user_id="default")
+        assert task.status == TaskStatus.FAILED
+        assert task.to_dict()["result"] == {"failure": failure.task_failure()}
+        assert f"{archive_uri}/.failed.json" in files
+        assert f"{archive_uri}/.done" not in files
+        prepare.assert_awaited_once()
+        extract.assert_awaited_once()
+    finally:
+        await tracker.close()
 
 
 @pytest.mark.asyncio

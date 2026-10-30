@@ -50,6 +50,7 @@ class VLMResponse:
     reasoning_content: Optional[str] = (
         None  # For thinking process (doubao thinking, deepseek r1, etc.)
     )
+    response_metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def has_tool_calls(self) -> bool:

@@ -78,6 +78,17 @@ task ID, request trace, failure stage and a known failure category (or
 `commit_failure_unknown`). Task error text and message bodies are not added to
 the audit log. This classification does not replay Add or change task outcomes.
 
+Structured non-retryable extraction failures (content filtering, reasoning-only
+or cleaned-empty output, refusal, explicit output truncation, and an invalid
+program after bounded format repair) return HTTP 422. The `detail` object includes
+an `ADD_EXTRACTION_*` code, a safe message, `retryable: false`, and the existing
+native task ID. Empty technical responses get at most one same-input retry
+within the extraction loop budget; exhaustion, unknown backend failures, and
+legacy tasks without structured failure metadata retain HTTP 503. Failed tasks
+preserve metadata-only response diagnostics (lengths, actual usage, provider
+response ID and finish/moderation markers), without raw prompts or reasoning.
+This does not introduce request idempotency or replay a failed Add.
+
 Every response includes `X-AML-Trace-Id`. Set `AML_AUDIT_LOG_FILE` to persist
 metadata-only audit logs with private file permissions and rotation. Logs record
 request IDs, native task IDs, counts, status and timing; message/query bodies,

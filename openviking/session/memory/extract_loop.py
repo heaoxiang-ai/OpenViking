@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from openviking.models.model_error import ModelError, ModelErrorKind
 from openviking.models.vlm.base import ToolCall, VLMBase
 from openviking.server.identity import RequestContext
 from openviking.session.memory.dataclass import (
@@ -24,6 +25,7 @@ from openviking.session.memory.dataclass import (
     StoredLink,
     WikiLink,
 )
+from openviking.session.memory.extraction_errors import MemoryExtractionError
 from openviking.session.memory.extraction_output_protocol import (
     ExtractionOutputContext,
     ExtractionOutputProtocol,
@@ -56,6 +58,49 @@ logger = get_logger(__name__)
 # Models whose max output tokens is BELOW this value (e.g. gpt-4o-mini at 16384)
 # must set `vlm.max_tokens` in ov.conf to their own limit to override this default.
 _DEFAULT_EXTRACTION_MAX_OUTPUT_TOKENS = 32768
+
+
+def _response_diagnostics(response: Any) -> Dict[str, Any]:
+    """Keep bounded metadata before content cleaning; never persist response text."""
+    content = response if isinstance(response, str) else getattr(response, "content", None)
+    content = content or ""
+    metadata = getattr(response, "response_metadata", None) or {}
+    reasoning = getattr(response, "reasoning_content", None) or ""
+    finish = metadata.get("finish_reason", getattr(response, "finish_reason", None))
+    diagnostics = {
+        "raw_content_length": metadata.get("raw_content_length", len(content)),
+        "raw_content_has_text": metadata.get("raw_content_has_text", bool(content.strip())),
+        "cleaned_content_length": len(VLMBase._clean_response(content)),
+        "reasoning_content_length": len(reasoning),
+        "reasoning_content_has_text": bool(reasoning.strip()),
+        "inline_reasoning_present": metadata.get("inline_reasoning_present", "<think>" in content),
+        "finish_reason": finish[:64] if isinstance(finish, str) else None,
+        "finish_reason_present": metadata.get("finish_reason_present", finish is not None),
+    }
+    for key in ("response_id", "moderation_hit_type"):
+        value = metadata.get(key)
+        if isinstance(value, str):
+            diagnostics[key] = value[:256]
+    usage = getattr(response, "usage", None) or {}
+    actual_usage = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(key)
+        if type(value) is int and value >= 0:
+            actual_usage[key] = value
+    for key, detail, field_name in (
+        ("reasoning_tokens", "completion_tokens_details", "reasoning_tokens"),
+        ("cached_tokens", "prompt_tokens_details", "cached_tokens"),
+    ):
+        details = usage.get(detail)
+        value = (
+            details.get(field_name)
+            if isinstance(details, dict)
+            else getattr(details, field_name, None)
+        )
+        if type(value) is int and value >= 0:
+            actual_usage[key] = value
+    diagnostics["usage"] = actual_usage
+    return diagnostics
 
 
 @dataclass
@@ -177,6 +222,7 @@ class ExtractLoop:
         self._last_llm_failure_kind: Optional[str] = None
         self._last_llm_failure_content: str = ""
         self._last_parse_error: Optional[str] = None
+        self._last_response_diagnostics: Dict[str, Any] = {}
 
         # Schema 生成器（在 run() 中初始化）
         self.schema_model_generator = None
@@ -210,6 +256,8 @@ class ExtractLoop:
         self._format_retry_count = 0
         patch_repair_count = 0
         resolution_repair_count = 0
+        empty_response_retries = 0
+        repeat_empty_response = False
         pending_resolution_repair: Optional[Tuple[ResolvedOperations, List]] = None
 
         # 从 provider 获取 schemas（内部自动加载 registry）
@@ -304,7 +352,7 @@ class ExtractLoop:
             is_last_iteration = iteration >= max_iterations
 
             # If last iteration, add a message telling the model to return result directly
-            if is_last_iteration:
+            if is_last_iteration and not repeat_empty_response:
                 messages.append(
                     {
                         "role": "user",
@@ -315,6 +363,7 @@ class ExtractLoop:
             # Call LLM with tools - model decides: tool calls OR final operations.
             # The VLM backend traces the (human-readable) input and output, so we do
             # not re-dump them here (avoids duplicate, oversized span events).
+            repeat_empty_response = False
             tool_calls, operations = await self._call_llm(messages)
 
             if tool_calls:
@@ -409,8 +458,39 @@ class ExtractLoop:
                 # retry would only hit the budget again, and replaying the
                 # truncated output just grows the prompt. Fail fast with the
                 # dedicated error recorded by _call_llm().
-                raise RuntimeError(
-                    f"Memory extraction aborted: {parse_error or failure_kind}"
+                raise MemoryExtractionError(
+                    failure_kind,
+                    f"Memory extraction aborted: {parse_error or failure_kind}",
+                    diagnostics=self._last_response_diagnostics,
+                )
+
+            if failure_kind in {"content_filter", "reasoning_only", "cleanup_empty", "refusal_text"}:
+                raise MemoryExtractionError(
+                    failure_kind,
+                    f"Memory extraction stopped (failure_kind={failure_kind})",
+                    diagnostics=self._last_response_diagnostics,
+                )
+
+            if failure_kind == "empty_response":
+                # A transport-successful empty reply gets at most one same-input
+                # technical retry, sharing the existing iteration/extension budget.
+                if not empty_response_retries and (
+                    iteration < max_iterations or self._format_retry_count == 0
+                ):
+                    empty_response_retries += 1
+                    if iteration >= max_iterations:
+                        self._format_retry_count = 1
+                        max_iterations += 1
+                    repeat_empty_response = True
+                    tracer.info("Retrying empty response once within the extraction budget")
+                    continue
+                tracer.error("Memory extraction failed (failure_kind=empty_response)")
+                raise MemoryExtractionError(
+                    failure_kind,
+                    "Memory extraction failed after the bounded empty-response retry "
+                    "(failure_kind=empty_response)",
+                    retryable=True,
+                    diagnostics=self._last_response_diagnostics,
                 )
 
             if self._format_retry_count == 0:
@@ -450,10 +530,12 @@ class ExtractLoop:
                         console=True,
                     )
                     break
-                raise RuntimeError(
+                raise MemoryExtractionError(
+                    failure_kind,
                     "Final response could not be parsed as operations "
                     f"after {max_iterations} iterations "
-                    f"(failure_kind={failure_kind})"
+                    f"(failure_kind={failure_kind})",
+                    diagnostics=self._last_response_diagnostics,
                 )
 
             self._disable_tools_for_iteration = (
@@ -1231,16 +1313,33 @@ class ExtractLoop:
             tools = self._tool_schemas
             tool_choice = "auto"
         with bind_telemetry_stage("memory_extract"):
-            response = await self.vlm.get_completion_async(
-                messages=messages,
-                tools=tools,
-                tool_choice=tool_choice,
-                thinking=self.thinking,
-                max_tokens=self._effective_max_output_tokens,
-            )
+            try:
+                response = await self.vlm.get_completion_async(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    thinking=self.thinking,
+                    max_tokens=self._effective_max_output_tokens,
+                )
+            except ModelError as error:
+                if error.kind != ModelErrorKind.CONTENT_SAFETY:
+                    raise
+                raise MemoryExtractionError(
+                    "content_filter",
+                    "The model provider blocked memory extraction (failure_kind=content_filter)",
+                    diagnostics={
+                        "provider_error_kind": error.kind.value,
+                        "provider_status_code": error.status_code,
+                    },
+                ) from error
         self._last_llm_failure_kind = None
         self._last_llm_failure_content = ""
         self._last_parse_error = None
+        self._last_response_diagnostics = _response_diagnostics(response)
+        tracer.set(
+            "memory.extraction.response_diagnostics",
+            json.dumps(self._last_response_diagnostics, ensure_ascii=False),
+        )
         # print(f'response={response}')
         # Log cache hit info
         if hasattr(response, "usage") and response.usage:
@@ -1283,6 +1382,14 @@ class ExtractLoop:
                 "Response truncated by output-token budget "
                 f"failure_kind=budget_exhausted error={self._last_parse_error}"
             )
+            return (None, None)
+
+        if (
+            getattr(response, "finish_reason", None) == "content_filter"
+            or self._last_response_diagnostics.get("moderation_hit_type")
+        ):
+            self._last_llm_failure_kind = "content_filter"
+            self._last_parse_error = "The provider blocked the extraction response"
             return (None, None)
 
         # Case 0: Handle string response (when tools are not provided) or None
@@ -1343,6 +1450,14 @@ class ExtractLoop:
 
         # Case 3: No tool calls and no parsable operations
         self._last_llm_failure_kind = "empty_response" if not content else "parse_error"
+        if not content:
+            diagnostics = self._last_response_diagnostics
+            if diagnostics["reasoning_content_has_text"] or (
+                diagnostics["raw_content_has_text"] and diagnostics["inline_reasoning_present"]
+            ):
+                self._last_llm_failure_kind = "reasoning_only"
+            elif diagnostics["raw_content_has_text"]:
+                self._last_llm_failure_kind = "cleanup_empty"
         self._last_llm_failure_content = content or ""
         if not content:
             empty_error = self._output_protocol.describe_empty_response()
