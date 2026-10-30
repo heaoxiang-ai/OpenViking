@@ -188,7 +188,6 @@ async def test_add_commits_native_parts_and_image_search_retries(adapter_client,
     [
         "reasoning_only",
         "cleanup_empty",
-        "refusal_text",
         "budget_exhausted",
         "parse_error",
     ],
@@ -237,15 +236,18 @@ async def test_non_retryable_extraction_returns_422_without_replaying_add(adapte
     ]
 
 
-async def test_content_filter_is_accepted_as_skipped_without_replaying_add(
-    adapter_client, monkeypatch
+@pytest.mark.parametrize("kind", ["content_filter", "refusal_text"])
+async def test_moderation_or_refusal_is_accepted_as_skipped_without_replaying_add(
+    adapter_client, monkeypatch, kind
 ):
     from openviking.session.memory.extraction_errors import MemoryExtractionError
 
     requests = []
     events = []
-    failure = MemoryExtractionError("content_filter", "Private provider detail").task_failure()
-    monkeypatch.setattr(server, "audit_event", lambda event, **fields: events.append((event, fields)))
+    failure = MemoryExtractionError(kind, "Private provider detail").task_failure()
+    monkeypatch.setattr(
+        server, "audit_event", lambda event, **fields: events.append((event, fields))
+    )
 
     def handle(request):
         requests.append(request.url.path)
@@ -286,7 +288,7 @@ async def test_content_filter_is_accepted_as_skipped_without_replaying_add(
     ]
     assert (
         "add_extraction_skipped",
-        {"reason": "content_filter", "native_task_id": "filtered-task"},
+        {"reason": kind, "native_task_id": "filtered-task"},
     ) in events
     assert not any(event == "add_failed" for event, _ in events)
     assert "Private provider detail" not in response.text

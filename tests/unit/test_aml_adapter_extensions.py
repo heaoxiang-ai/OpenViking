@@ -96,8 +96,10 @@ async def test_rerank_deduplicates_and_reads_selected_full_bodies_in_rank_order(
     }
 
 
-@pytest.mark.parametrize("status_code", [503, 504, None])
-async def test_search_returns_native_order_when_a_later_rerank_batch_exhausts_retries(
+@pytest.mark.parametrize(
+    "status_code", [503, 504, None, 403, 422, "invalid_json", "invalid_mapping"]
+)
+async def test_search_returns_native_order_when_a_later_rerank_batch_fails(
     tmp_path, monkeypatch, caplog, status_code
 ):
     config = tmp_path / "rerank.json"
@@ -119,6 +121,10 @@ async def test_search_returns_native_order_when_a_later_rerank_batch_exhausts_re
             )
         if status_code is None:
             raise httpx.ReadTimeout("provider timeout", request=request)
+        if status_code == "invalid_json":
+            return httpx.Response(200, text="not JSON")
+        if status_code == "invalid_mapping":
+            return httpx.Response(200, json={"result": {"data": []}})
         return httpx.Response(status_code)
 
     async def sleep(seconds):
@@ -147,33 +153,75 @@ async def test_search_returns_native_order_when_a_later_rerank_batch_exhausts_re
     }
     assert len(backend.find_calls) == len(backend.read_calls) == 1
     assert backend.read_calls[0]["uris"] == [hit("a")["uri"], hit("b")["uri"]]
-    assert len(attempts) == 3 and attempts[1] == attempts[2]
+    technical = status_code in {503, 504, None}
+    assert len(attempts) == (3 if technical else 2)
+    if technical:
+        assert attempts[1] == attempts[2]
     records = [
         json.loads(row.message) for row in caplog.records if row.name == "benchmark.aml.audit"
     ]
     fallback = next(row for row in records if row["event"] == "search_rerank_fallback")
-    assert fallback["http_status"] == status_code
-    assert fallback["attempts"] == 2
+    assert fallback["http_status"] == (
+        status_code if status_code in {503, 504, None, 403, 422} else None
+    )
+    if technical:
+        assert fallback["attempts"] == 2
+        assert fallback["reason"] == "technical_retries_exhausted"
+    else:
+        assert (
+            fallback["reason"]
+            == {
+                403: "provider_rejected",
+                422: "provider_rejected",
+                "invalid_json": "invalid_json",
+                "invalid_mapping": "invalid_score_mapping",
+            }[status_code]
+        )
     assert fallback["candidate_count"] == 4 and fallback["selected_count"] == 2
     assert not any(row["event"] in {"search_reranked", "search_failed"} for row in records)
 
 
-async def test_invalid_rerank_response_still_fails_search():
-    backend = Backend([hit("a")])
+@pytest.mark.parametrize(
+    ("reason", "status_code"),
+    [
+        ("provider_rejected", 403),
+        ("provider_rejected", 422),
+        ("invalid_json", None),
+        ("invalid_score_mapping", None),
+        ("unusable_candidate_text", None),
+    ],
+)
+async def test_non_retryable_rerank_failure_keeps_native_order_and_full_reads(
+    reason, status_code, caplog
+):
+    backend = Backend([hit("a"), hit("a"), hit("b")])
     ranker = AsyncMock()
-    ranker.rank.side_effect = RerankError("Invalid rerank response")
+    ranker.rank.side_effect = RerankError(
+        "private provider detail", reason=reason, http_status=status_code
+    )
     adapter = AMLAdapter(AMLSettings(), backend, ranker)
-    with pytest.raises(server.HTTPException) as failure:
-        await adapter.search(AMLSearchRequest(user_id="alice", query="q", top_k=1))
-    assert failure.value.status_code == 503
-    assert backend.read_calls == []
+    with audit.request_audit(secrets=(), trace_id="fallback"):
+        result = await adapter.search(AMLSearchRequest(user_id="alice", query="q", top_k=1))
+    assert result == {"data": [{"id": hit("a")["uri"], "content": "full body a"}]}
+    assert backend.read_calls == [{"user_id": "alice", "uris": [hit("a")["uri"]]}]
+    records = [
+        json.loads(row.message) for row in caplog.records if row.name == "benchmark.aml.audit"
+    ]
+    fallback = next(row for row in records if row["event"] == "search_rerank_fallback")
+    assert fallback["reason"] == reason
+    assert fallback["http_status"] == status_code
+    assert "private provider detail" not in json.dumps(records)
 
 
-async def test_native_read_failure_after_rerank_fallback_still_fails_search():
+@pytest.mark.parametrize(
+    "error",
+    [RerankRetriesExhausted(attempts=2, http_status=504), RerankError("Invalid JSON")],
+)
+async def test_native_read_failure_after_rerank_fallback_still_fails_search(error):
     backend = Backend([hit("a")])
     backend.read_memories = AsyncMock(side_effect=server.OpenVikingBackendError("Read failed"))
     ranker = AsyncMock()
-    ranker.rank.side_effect = RerankRetriesExhausted(attempts=2, http_status=504)
+    ranker.rank.side_effect = error
     adapter = AMLAdapter(AMLSettings(), backend, ranker)
     with pytest.raises(server.HTTPException) as failure:
         await adapter.search(AMLSearchRequest(user_id="alice", query="q", top_k=1))

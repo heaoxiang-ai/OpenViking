@@ -18,14 +18,23 @@ from benchmark.aml.audit import audit_event
 
 
 class RerankError(RuntimeError):
-    pass
+    def __init__(
+        self, message: str, *, reason: str = "rerank_failure", http_status: int | None = None
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.http_status = http_status
 
 
 class RerankRetriesExhausted(RerankError):
     """Transient provider failures exhausted the configured attempt budget."""
 
     def __init__(self, *, attempts: int, http_status: int | None) -> None:
-        super().__init__("Rerank technical retries exhausted")
+        super().__init__(
+            "Rerank technical retries exhausted",
+            reason="technical_retries_exhausted",
+            http_status=http_status,
+        )
         self.attempts = attempts
         self.http_status = http_status
 
@@ -70,7 +79,10 @@ def align_scores(body: dict[str, Any], count: int) -> list[float]:
             raise ValueError("Missing rerank document ID")
         return [float(score) for score in scores if score is not None]
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
-        raise RerankError("Invalid rerank response; refusing to use unaligned scores") from exc
+        raise RerankError(
+            "Invalid rerank response; refusing to use unaligned scores",
+            reason="invalid_score_mapping",
+        ) from exc
 
 
 class VikingDBReranker:
@@ -165,14 +177,20 @@ class VikingDBReranker:
                         document_count=len(documents),
                     )
                     if code is not None and code not in {429, 500, 502, 503, 504}:
-                        raise RerankError(f"Rerank rejected the request (HTTP {code})") from exc
+                        raise RerankError(
+                            f"Rerank rejected the request (HTTP {code})",
+                            reason="provider_rejected",
+                            http_status=code,
+                        ) from exc
                     if attempt + 1 == self.attempts:
                         raise RerankRetriesExhausted(
                             attempts=self.attempts, http_status=code
                         ) from exc
                     await asyncio.sleep(min(2**attempt, 20))
                 except ValueError as exc:
-                    raise RerankError("Rerank returned invalid JSON") from exc
+                    raise RerankError(
+                        "Rerank returned invalid JSON", reason="invalid_json"
+                    ) from exc
         raise AssertionError("Rerank retry loop exited unexpectedly")
 
     async def rank(self, query: str, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -181,7 +199,9 @@ class VikingDBReranker:
             batch = hits[start : start + self.batch_size]
             documents = [hit.get("abstract") or hit.get("content") for hit in batch]
             if any(not isinstance(text, str) or not text.strip() for text in documents):
-                raise RerankError("A rerank candidate has no usable text")
+                raise RerankError(
+                    "A rerank candidate has no usable text", reason="unusable_candidate_text"
+                )
             scores = await self._batch(query, documents)
             for offset, (hit, score) in enumerate(zip(batch, scores, strict=True)):
                 if score > self.threshold:

@@ -78,14 +78,15 @@ task ID, request trace, failure stage and a known failure category (or
 `commit_failure_unknown`). Task error text and message bodies are not added to
 the audit log. This classification does not replay Add or change task outcomes.
 
-Provider content-filter failures are accepted as skipped extraction: Add returns
+Provider content-filter failures and explicit model refusals are accepted as
+skipped extraction: Add returns
 its normal HTTP 200 receipt so the remaining evaluation batches can continue.
 The native Task remains failed, its original evidence is preserved, and the
 adapter records `add_extraction_skipped` with the Task ID. This receipt does not
 mean that memory extraction succeeded; no Add or Commit is replayed.
 
 Other structured non-retryable extraction failures (reasoning-only
-or cleaned-empty output, refusal, explicit output truncation, and an invalid
+or cleaned-empty output, explicit output truncation, and an invalid
 program after bounded format repair) return HTTP 422. The `detail` object includes
 an `ADD_EXTRACTION_*` code, a safe message, `retryable: false`, and the existing
 native task ID. Empty technical responses get at most one same-input retry
@@ -183,7 +184,10 @@ The adapter deduplicates candidate URIs, verifies their user scope, reranks thei
 abstracts, selects at most `min(request.top_k, AML_SEARCH_RESULT_LIMIT)` results,
 and reads their complete bodies through the public Read API. Provider document
 IDs are aligned back to input order before global sorting. Empty/invalid rerank
-responses, non-retryable provider errors or failed reads still return an error.
+responses and non-retryable provider errors skip reranking and keep native
+retrieval order; their reason and HTTP status, when available, are recorded in
+`search_rerank_fallback`. Invalid scores are never used. Failed native reads and
+out-of-scope candidates still return an error.
 When retryable HTTP failures (429/500/502/503/504) or transport errors exhaust
 the configured rerank attempts, Search skips reranking for the entire candidate
 set, keeps deduplicated native retrieval order and reads the selected full

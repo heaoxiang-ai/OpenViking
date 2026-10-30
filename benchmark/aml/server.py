@@ -583,14 +583,14 @@ class AMLAdapter:
                 messages=messages,
             )
         except OpenVikingBackendError as exc:
-            if not exc.retryable and exc.failure_kind == "content_filter":
-                # A provider moderation decision is terminal for this extraction,
+            if not exc.retryable and exc.failure_kind in {"content_filter", "refusal_text"}:
+                # A moderation decision or refusal is terminal for this extraction,
                 # but must not stop AML from processing the remaining batches.
                 # Keep the native failed task and archive as evidence; only the
                 # competition receipt treats this batch as accepted and skipped.
                 audit_event(
                     "add_extraction_skipped",
-                    reason="content_filter",
+                    reason=exc.failure_kind,
                     native_task_id=exc.task_id,
                 )
             elif not exc.retryable:
@@ -665,6 +665,15 @@ class AMLAdapter:
                             "reason": "technical_retries_exhausted",
                             "http_status": exc.http_status,
                             "attempts": exc.attempts,
+                        }
+                    except RerankError as exc:
+                        # Discard all rerank results, including successful earlier
+                        # batches. Native ordering and full reads remain usable.
+                        search_event = "search_rerank_fallback"
+                        fallback_fields = {
+                            "reason": exc.reason,
+                            "http_status": exc.http_status,
+                            "error_type": type(exc).__name__,
                         }
                 hits = ranked[:result_limit]
                 uris = [hit["uri"] for hit in hits]
