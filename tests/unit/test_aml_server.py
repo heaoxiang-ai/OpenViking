@@ -189,13 +189,27 @@ async def test_add_commits_native_parts_and_image_search_retries(adapter_client,
         "reasoning_only",
         "cleanup_empty",
         "budget_exhausted",
+        "empty_response",
     ],
 )
-async def test_non_retryable_extraction_returns_422_without_replaying_add(adapter_client, kind):
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        None,
+        {"response_retries_exhausted": True, "response_retry_count": 1},
+        {"response_retries_exhausted": "true", "response_retry_count": 2},
+        {"response_retries_exhausted": True, "response_retry_count": 2.0},
+    ],
+)
+async def test_non_retryable_extraction_returns_422_without_replaying_add(
+    adapter_client, kind, diagnostics
+):
     from openviking.session.memory.extraction_errors import MemoryExtractionError
 
     requests = []
-    failure = MemoryExtractionError(kind, "Internal detail must not leak").task_failure()
+    failure = MemoryExtractionError(
+        kind, "Internal detail must not leak", diagnostics=diagnostics
+    ).task_failure()
 
     def handle(request):
         requests.append(request.url.path)
@@ -235,7 +249,18 @@ async def test_non_retryable_extraction_returns_422_without_replaying_add(adapte
     ]
 
 
-@pytest.mark.parametrize("kind", ["content_filter", "refusal_text", "parse_error"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "content_filter",
+        "refusal_text",
+        "parse_error",
+        "reasoning_only",
+        "cleanup_empty",
+        "budget_exhausted",
+        "empty_response",
+    ],
+)
 async def test_terminal_extraction_is_accepted_as_skipped_without_replaying_add(
     adapter_client, monkeypatch, kind
 ):
@@ -243,7 +268,11 @@ async def test_terminal_extraction_is_accepted_as_skipped_without_replaying_add(
 
     requests = []
     events = []
-    failure = MemoryExtractionError(kind, "Private provider detail").task_failure()
+    failure = MemoryExtractionError(
+        kind,
+        "Private provider detail",
+        diagnostics={"response_retries_exhausted": True, "response_retry_count": 2},
+    ).task_failure()
     monkeypatch.setattr(
         server, "audit_event", lambda event, **fields: events.append((event, fields))
     )

@@ -70,14 +70,15 @@ def backend(responses):
     ],
 )
 async def test_non_retryable_replies_stop_before_writes_and_keep_safe_diagnostics(raw, kind):
-    vlm, calls = backend([raw])
+    expected_calls = 1 if kind in {"content_filter", "refusal_text"} else 3
+    vlm, calls = backend([raw] * expected_calls)
     loop = _make_loop(vlm)
     with patch("openviking.session.memory.extract_loop.tracer.set") as trace:
         with pytest.raises(MemoryExtractionError) as error:
             await _run_loop(loop)
     assert error.value.kind == kind
     assert error.value.retryable is False
-    assert len(calls) == 1
+    assert len(calls) == expected_calls
     loop.finalize_operations.assert_not_awaited()
     failure = error.value.task_failure()
     diagnostics = failure["diagnostics"]
@@ -96,7 +97,7 @@ async def test_non_retryable_replies_stop_before_writes_and_keep_safe_diagnostic
         for call in trace.call_args_list
         if call.args[0] == "memory.extraction.response_diagnostics"
     ]
-    assert len(diagnostic_events) == 1
+    assert len(diagnostic_events) == expected_calls
     assert "PRIVATE_SYNTHETIC_THOUGHT" not in diagnostic_events[0]
 
 
@@ -104,8 +105,10 @@ async def test_non_retryable_replies_stop_before_writes_and_keep_safe_diagnostic
 @pytest.mark.parametrize("iterations", [1, 3])
 @pytest.mark.parametrize("recover", [False, True])
 @pytest.mark.parametrize("content", [None, " \n\t"])
-async def test_actual_empty_reply_retries_once_with_identical_input(iterations, recover, content):
-    vlm, calls = backend([response(content), response("sdk.commit()" if recover else content)])
+async def test_actual_empty_reply_retries_twice_with_identical_input(iterations, recover, content):
+    vlm, calls = backend(
+        [response(content), response(content), response("sdk.commit()" if recover else content)]
+    )
     loop = _make_loop(vlm)
     loop.max_iterations = iterations
     if recover:
@@ -116,20 +119,23 @@ async def test_actual_empty_reply_retries_once_with_identical_input(iterations, 
         with pytest.raises(MemoryExtractionError) as error:
             await _run_loop(loop)
         assert error.value.kind == "empty_response"
-        assert error.value.retryable is True
+        assert error.value.retryable is False
+        assert error.value.diagnostics["response_retries_exhausted"] is True
+        assert error.value.diagnostics["response_retry_count"] == 2
         loop.finalize_operations.assert_not_awaited()
-    assert len(calls) == 2
-    first, second = copy.deepcopy(calls)
+    assert len(calls) == 3
+    first, second, third = copy.deepcopy(calls)
     # Each transport attempt keeps its own diagnostic ID; model input/budget stay identical.
     assert first["extra_headers"].pop("X-Client-Request-Id") != second["extra_headers"].pop(
         "X-Client-Request-Id"
     )
-    assert first == second
+    third["extra_headers"].pop("X-Client-Request-Id")
+    assert first == second == third
 
 
 @pytest.mark.asyncio
 async def test_missing_provider_finish_reason_remains_unknown_in_diagnostics():
-    vlm, _ = backend([response(finish=None), response(finish=None)])
+    vlm, _ = backend([response(finish=None)] * 3)
     loop = _make_loop(vlm)
     with pytest.raises(MemoryExtractionError) as error:
         await _run_loop(loop)
@@ -150,17 +156,18 @@ async def test_parse_failure_after_repair_is_non_retryable():
 
 
 @pytest.mark.asyncio
-async def test_empty_retry_does_not_grant_extra_budget_after_format_repair():
-    vlm = ScriptedVLM(["missing.update(content='x')", VLMResponse(content="")])
+async def test_response_retry_budget_stays_bounded_after_format_repair():
+    vlm = ScriptedVLM(["missing.update(content='x')", *[VLMResponse(content="")] * 3])
     loop = _make_loop(vlm)
     with pytest.raises(MemoryExtractionError) as error:
         await _run_loop(loop)
     assert error.value.kind == "empty_response"
-    assert len(vlm.calls) == 2
+    assert len(vlm.calls) == 4
+    assert error.value.diagnostics["response_retry_count"] == 2
 
 
 @pytest.mark.asyncio
-async def test_unknown_cleanup_empty_stops_without_replay():
+async def test_cleanup_empty_retries_then_stops_without_writes():
     vlm = ScriptedVLM(
         [
             VLMResponse(
@@ -171,13 +178,14 @@ async def test_unknown_cleanup_empty_stops_without_replay():
                 },
             )
         ]
+        * 3
     )
     loop = _make_loop(vlm)
     with pytest.raises(MemoryExtractionError) as error:
         await _run_loop(loop)
     assert error.value.kind == "cleanup_empty"
     assert error.value.retryable is False
-    assert len(vlm.calls) == 1
+    assert len(vlm.calls) == 3
 
 
 @pytest.mark.asyncio
@@ -201,3 +209,58 @@ async def test_provider_safety_exception_is_terminal_and_has_no_raw_error_text()
     assert error.value.diagnostics["provider_status_code"] == 400
     assert "PRIVATE_PROVIDER_ERROR" not in str(error.value)
     assert "PRIVATE_PROVIDER_ERROR" not in json.dumps(error.value.task_failure())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw",
+    [
+        response(reasoning="PRIVATE_THOUGHT"),
+        response("sdk.commit()", finish="length"),
+    ],
+)
+async def test_unusable_response_recovers_on_third_same_input_call(raw):
+    vlm, calls = backend([raw, raw, response("sdk.commit()")])
+    loop = _make_loop(vlm)
+    operations, _ = await _run_loop(loop)
+    assert operations is not None
+    assert len(calls) == 3
+    for call in calls:
+        call["extra_headers"].pop("X-Client-Request-Id")
+    assert calls[0] == calls[1] == calls[2]
+    loop.finalize_operations.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_response_kind_changes_do_not_reset_shared_retry_budget():
+    vlm, calls = backend(
+        [
+            response(reasoning="PRIVATE_THOUGHT"),
+            response("sdk.commit()", finish="length"),
+            response(),
+        ]
+    )
+    loop = _make_loop(vlm)
+    with pytest.raises(MemoryExtractionError) as failure:
+        await _run_loop(loop)
+    assert len(calls) == 3
+    assert failure.value.kind == "empty_response"
+    assert failure.value.diagnostics["response_retry_count"] == 2
+    assert failure.value.diagnostics["response_retries_exhausted"] is True
+    loop.finalize_operations.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provider_fault_during_response_recovery_is_not_a_skipped_output():
+    from openviking.models.model_error import ModelError, ModelErrorKind
+
+    vlm = ScriptedVLM([])
+    error = ModelError(
+        ModelErrorKind.AUTHENTICATION_ERROR, "synthetic auth failure", status_code=401
+    )
+    vlm.get_completion_async = AsyncMock(side_effect=[VLMResponse(content=""), error])
+    loop = _make_loop(vlm)
+    with pytest.raises(ModelError):
+        await _run_loop(loop)
+    assert vlm.get_completion_async.await_count == 2
+    loop.finalize_operations.assert_not_awaited()

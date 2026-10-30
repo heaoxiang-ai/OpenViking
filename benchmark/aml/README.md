@@ -79,23 +79,28 @@ task ID, request trace, failure stage and a known failure category (or
 the audit log. This classification does not replay Add or change task outcomes.
 
 Provider content-filter failures, explicit model refusals, and invalid programs
-after bounded format repair are accepted as skipped extraction: Add returns
-its normal HTTP 200 receipt so the remaining evaluation batches can continue.
-The native Task remains failed, its original evidence is preserved, and the
-adapter records `add_extraction_skipped` with the Task ID. This receipt does not
-mean that memory extraction succeeded; no Add or Commit is replayed. Each format
-repair attempt receives the latest failed program and compiler diagnostic within
-the existing iteration budget; the one format extension is unchanged.
+after bounded format repair are accepted as skipped extraction: Add returns its
+normal HTTP 200 receipt so remaining batches can continue. Reasoning-only,
+cleaned-empty, explicitly truncated, and genuinely empty responses share at most
+two additional same-input recovery attempts. They do not reset the budget when
+the failure kind changes, increase the output cap, append partial output, or
+replay Add/Commit. After that budget is exhausted, these outcomes also return
+the normal HTTP 200 receipt, but only with trusted structured failure metadata
+proving both recovery attempts were exhausted.
 
-Other structured non-retryable extraction failures (reasoning-only
-or cleaned-empty output, and explicit output truncation) return HTTP 422. The `detail` object includes
-an `ADD_EXTRACTION_*` code, a safe message, `retryable: false`, and the existing
-native task ID. Empty technical responses get at most one same-input retry
-within the extraction loop budget; exhaustion, unknown backend failures, and
-legacy tasks without structured failure metadata retain HTTP 503. Failed tasks
-preserve metadata-only response diagnostics (lengths, actual usage, provider
-response ID and finish/moderation markers), without raw prompts or reasoning.
-This does not introduce request idempotency or replay a failed Add.
+The native Task remains failed, original evidence is preserved, and the adapter
+records `add_extraction_skipped` with its reason and Task ID. Acceptance is not
+proof of memory extraction; the skipped batch may contribute no new memories.
+Each remaining format attempt receives the latest failed program and compiler
+diagnostic; its one format-budget extension remains unchanged. The separate
+shared response-recovery budget is at most two calls for the whole run, even
+when combined with tool or format phases.
+
+Model/API transport, authentication, storage and native read/write failures are
+not covered by this skip policy. Unknown failures and legacy tasks without the
+required structured exhaustion proof retain their existing 422/503 behavior.
+Failed tasks preserve metadata-only diagnostics and retry counts, never raw
+prompts or reasoning. No request idempotency or failed-Add replay is introduced.
 
 Every response includes `X-AML-Trace-Id`. Set `AML_AUDIT_LOG_FILE` to persist
 metadata-only audit logs with private file permissions and rotation. Logs record

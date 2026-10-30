@@ -901,7 +901,7 @@ class TestExtractLoopFinalJsonRetry:
 
         extract_loop.finalize_operations.assert_not_awaited()
 
-        assert len(vlm.seen_messages) == 2
+        assert len(vlm.seen_messages) == 3
         system_prompt = vlm.seen_messages[0][0]["content"]
         assert "restricted Python memory SDK" in system_prompt
         assert "output ONLY a JSON object" not in system_prompt

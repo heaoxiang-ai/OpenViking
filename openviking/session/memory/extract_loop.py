@@ -256,8 +256,8 @@ class ExtractLoop:
         self._format_retry_count = 0
         patch_repair_count = 0
         resolution_repair_count = 0
-        empty_response_retries = 0
-        repeat_empty_response = False
+        response_retries = 0
+        repeat_response = False
         pending_resolution_repair: Optional[Tuple[ResolvedOperations, List]] = None
 
         # 从 provider 获取 schemas（内部自动加载 registry）
@@ -352,7 +352,7 @@ class ExtractLoop:
             is_last_iteration = iteration >= max_iterations
 
             # If last iteration, add a message telling the model to return result directly
-            if is_last_iteration and not repeat_empty_response:
+            if is_last_iteration and not repeat_response:
                 messages.append(
                     {
                         "role": "user",
@@ -363,7 +363,7 @@ class ExtractLoop:
             # Call LLM with tools - model decides: tool calls OR final operations.
             # The VLM backend traces the (human-readable) input and output, so we do
             # not re-dump them here (avoids duplicate, oversized span events).
-            repeat_empty_response = False
+            repeat_response = False
             tool_calls, operations = await self._call_llm(messages)
 
             if tool_calls:
@@ -453,49 +453,45 @@ class ExtractLoop:
             parse_error = self._last_parse_error
             # Add format error message if parse failed (max 1 retry). This may raise
             # max_iterations, granting one more attempt after this failure.
-            if failure_kind == "budget_exhausted":
-                # Truncation is not an ordinary format mistake: a same-cap format
-                # retry would only hit the budget again, and replaying the
-                # truncated output just grows the prompt. Fail fast with the
-                # dedicated error recorded by _call_llm().
-                raise MemoryExtractionError(
-                    failure_kind,
-                    f"Memory extraction aborted: {parse_error or failure_kind}",
-                    diagnostics=self._last_response_diagnostics,
-                )
-
-            if failure_kind in {
-                "content_filter",
-                "reasoning_only",
-                "cleanup_empty",
-                "refusal_text",
-            }:
+            if failure_kind in {"content_filter", "refusal_text"}:
                 raise MemoryExtractionError(
                     failure_kind,
                     f"Memory extraction stopped (failure_kind={failure_kind})",
                     diagnostics=self._last_response_diagnostics,
                 )
 
-            if failure_kind == "empty_response":
-                # A transport-successful empty reply gets at most one same-input
-                # technical retry, sharing the existing iteration/extension budget.
-                if not empty_response_retries and (
-                    iteration < max_iterations or self._format_retry_count == 0
-                ):
-                    empty_response_retries += 1
+            if failure_kind in {
+                "reasoning_only",
+                "cleanup_empty",
+                "budget_exhausted",
+                "empty_response",
+            }:
+                # Share two recovery attempts across all unusable-response kinds.
+                # Repeat the input without appending partial output, growing the
+                # output cap, or restarting Add/Commit. Changing kind cannot reset
+                # this budget, and the counter is retained across format/tool phases.
+                if response_retries < 2:
+                    response_retries += 1
                     if iteration >= max_iterations:
-                        self._format_retry_count = 1
                         max_iterations += 1
-                    repeat_empty_response = True
-                    tracer.info("Retrying empty response once within the extraction budget")
+                    repeat_response = True
+                    tracer.info(
+                        f"Retrying unusable response (failure_kind={failure_kind}, "
+                        f"response_retry={response_retries}/2)"
+                    )
                     continue
-                tracer.error("Memory extraction failed (failure_kind=empty_response)")
+                diagnostics = {
+                    **self._last_response_diagnostics,
+                    "response_retries_exhausted": True,
+                    "response_retry_count": response_retries,
+                }
+                tracer.error(f"Memory extraction failed (failure_kind={failure_kind})")
                 raise MemoryExtractionError(
                     failure_kind,
-                    "Memory extraction failed after the bounded empty-response retry "
-                    "(failure_kind=empty_response)",
-                    retryable=True,
-                    diagnostics=self._last_response_diagnostics,
+                    "Memory extraction failed after bounded response retries "
+                    f"(failure_kind={failure_kind}): {parse_error or failure_kind}",
+                    retryable=False,
+                    diagnostics=diagnostics,
                 )
 
             if self._format_retry_count == 0:
@@ -1375,7 +1371,7 @@ class ExtractLoop:
 
         # Reject explicit truncation before handling tool calls or parsing:
         # neither a partial tool call nor a parseable program is safe to use.
-        # run() treats budget_exhausted as terminal, without a format retry.
+        # run() may regenerate the original input, but never parses partial output.
         if getattr(response, "finish_reason", None) == "length":
             content = getattr(response, "content", None) or ""
             self._last_llm_failure_kind = "budget_exhausted"

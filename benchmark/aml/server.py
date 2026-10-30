@@ -290,11 +290,13 @@ class OpenVikingBackendError(RuntimeError):
         failure_kind: str | None = None,
         retryable: bool = True,
         task_id: str | None = None,
+        response_retries_exhausted: bool = False,
     ) -> None:
         super().__init__(message)
         self.failure_kind = failure_kind
         self.retryable = retryable
         self.task_id = task_id
+        self.response_retries_exhausted = response_retries_exhausted
 
 
 _NON_RETRYABLE_EXTRACTION_FAILURES = {
@@ -304,6 +306,15 @@ _NON_RETRYABLE_EXTRACTION_FAILURES = {
     "refusal_text": "The model declined to produce memory operations.",
     "budget_exhausted": "Memory extraction exceeded the model output budget.",
     "parse_error": "The model program remained invalid after bounded format repair.",
+    "empty_response": "The model returned no memory operations after bounded retries.",
+}
+
+
+_RETRIED_RESPONSE_FAILURES = {
+    "reasoning_only",
+    "cleanup_empty",
+    "budget_exhausted",
+    "empty_response",
 }
 
 
@@ -479,6 +490,12 @@ class OpenVikingBackend:
                             failure_kind=non_retryable_kind,
                             retryable=False,
                             task_id=task_id,
+                            response_retries_exhausted=(
+                                isinstance(failure.get("diagnostics"), dict)
+                                and failure["diagnostics"].get("response_retries_exhausted") is True
+                                and type(failure["diagnostics"].get("response_retry_count")) is int
+                                and failure["diagnostics"]["response_retry_count"] == 2
+                            ),
                         )
                     raise OpenVikingBackendError(
                         f"OpenViking commit {task_status}: {task.get('error') or 'unknown error'}"
@@ -583,13 +600,13 @@ class AMLAdapter:
                 messages=messages,
             )
         except OpenVikingBackendError as exc:
-            if not exc.retryable and exc.failure_kind in {
-                "content_filter",
-                "refusal_text",
-                "parse_error",
-            }:
-                # Moderation, refusal, or exhausted format repair is terminal for
-                # this extraction, but must not stop remaining evaluation batches.
+            accepted_skip = exc.failure_kind in {"content_filter", "refusal_text", "parse_error"}
+            exhausted_response = (
+                exc.failure_kind in _RETRIED_RESPONSE_FAILURES and exc.response_retries_exhausted
+            )
+            if not exc.retryable and (accepted_skip or exhausted_response):
+                # Only classified extraction failures with their required retry
+                # evidence may be accepted; transport/storage failures still fail.
                 # Keep the native failed task and archive as evidence; only the
                 # competition receipt treats this batch as accepted and skipped.
                 audit_event(

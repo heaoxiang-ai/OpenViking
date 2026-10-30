@@ -7,8 +7,8 @@ review of PR #6104: truncation is detected only from an explicit
 ``finish_reason == "length"``, checked before parsing; ``tools=[]`` is passed so
 real backends still return a ``VLMResponse`` with finish_reason and usage on the
 patch-merge path (where ``PatchMergeContextProvider.get_tools() == []``); and
-budget exhaustion is terminal — no cap doubling, no replay of the truncated
-output, and no completion_tokens-based truncation inference.
+budget exhaustion only permits bounded same-input regeneration — no cap doubling,
+no replay of truncated output, and no completion_tokens-based truncation inference.
 """
 
 from types import SimpleNamespace
@@ -215,19 +215,21 @@ class TestTruncationDetection:
     async def test_length_finish_reason_is_terminal_even_when_program_parses(self):
         """A truncated program that still parses must NOT be accepted as
         operations — trailing writes/deletes would be silently lost."""
-        vlm = ScriptedVLM([_length_response(content="sdk.commit()  # actually truncated upstream")])
+        vlm = ScriptedVLM(
+            [_length_response(content="sdk.commit()  # actually truncated upstream")] * 3
+        )
         loop = _make_loop(vlm)
 
         with pytest.raises(RuntimeError, match="output-token budget"):
             await _run_loop(loop)
 
-        # Fail fast: exactly one call, no same-cap format retry.
-        assert len(vlm.calls) == 1
+        # Regenerate twice, never accept a partial program or increase its cap.
+        assert len(vlm.calls) == 3
         assert vlm.calls[0]["max_tokens"] == _DEFAULT_CAP
 
     @pytest.mark.asyncio
     async def test_length_finish_reason_error_names_cap_usage_and_preview(self):
-        vlm = ScriptedVLM([_length_response(completion_tokens=32768)])
+        vlm = ScriptedVLM([_length_response(completion_tokens=32768)] * 3)
         loop = _make_loop(vlm)
 
         with pytest.raises(RuntimeError) as exc_info:
@@ -344,7 +346,11 @@ class TestExtractionContentBoundary:
             ],
             finish_reason=finish_reason,
         )
-        vlm = ScriptedVLM([response, VLMResponse(content="<think>done</think>sdk.commit()")])
+        vlm = ScriptedVLM(
+            [response] * 3
+            if finish_reason == "length"
+            else [response, VLMResponse(content="<think>done</think>sdk.commit()")]
+        )
         loop = _make_loop(vlm)
         loop.context_provider.get_tools = lambda: ["read"]
         execute = AsyncMock(return_value={"content": "test"})
@@ -354,7 +360,7 @@ class TestExtractionContentBoundary:
             with pytest.raises(RuntimeError, match="output-token budget"):
                 await _run_loop(loop)
             execute.assert_not_awaited()
-            assert len(vlm.calls) == 1
+            assert len(vlm.calls) == 3
         else:
             operations, _ = await _run_loop(loop)
             assert operations is not None
