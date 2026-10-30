@@ -583,8 +583,18 @@ class AMLAdapter:
                 messages=messages,
             )
         except OpenVikingBackendError as exc:
-            audit_event("add_failed", error_type=type(exc).__name__)
-            if not exc.retryable:
+            if not exc.retryable and exc.failure_kind == "content_filter":
+                # A provider moderation decision is terminal for this extraction,
+                # but must not stop AML from processing the remaining batches.
+                # Keep the native failed task and archive as evidence; only the
+                # competition receipt treats this batch as accepted and skipped.
+                audit_event(
+                    "add_extraction_skipped",
+                    reason="content_filter",
+                    native_task_id=exc.task_id,
+                )
+            elif not exc.retryable:
+                audit_event("add_failed", error_type=type(exc).__name__)
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail={
@@ -594,9 +604,11 @@ class AMLAdapter:
                         "task_id": exc.task_id,
                     },
                 ) from exc
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
-            ) from exc
+            else:
+                audit_event("add_failed", error_type=type(exc).__name__)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+                ) from exc
         return {
             "success": True,
             "request_id": request.request_id,

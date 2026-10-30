@@ -186,7 +186,6 @@ async def test_add_commits_native_parts_and_image_search_retries(adapter_client,
 @pytest.mark.parametrize(
     "kind",
     [
-        "content_filter",
         "reasoning_only",
         "cleanup_empty",
         "refusal_text",
@@ -236,6 +235,61 @@ async def test_non_retryable_extraction_returns_422_without_replaying_add(adapte
         "/api/v1/sessions/session-1/commit",
         "/api/v1/tasks/task-1",
     ]
+
+
+async def test_content_filter_is_accepted_as_skipped_without_replaying_add(
+    adapter_client, monkeypatch
+):
+    from openviking.session.memory.extraction_errors import MemoryExtractionError
+
+    requests = []
+    events = []
+    failure = MemoryExtractionError("content_filter", "Private provider detail").task_failure()
+    monkeypatch.setattr(server, "audit_event", lambda event, **fields: events.append((event, fields)))
+
+    def handle(request):
+        requests.append(request.url.path)
+        if request.url.path.endswith("/messages/batch"):
+            result = {"added": 1}
+        elif request.url.path.endswith("/commit"):
+            result = {"status": "accepted", "task_id": "filtered-task"}
+        else:
+            assert request.url.path == "/api/v1/tasks/filtered-task"
+            result = {
+                "status": "failed",
+                "error": "Private provider detail",
+                "result": {"failure": failure},
+            }
+        return httpx.Response(200, json={"status": "ok", "result": result})
+
+    async with adapter_client(handle) as client:
+        response = await client.post(
+            "/add",
+            json={
+                "request_id": "request-1",
+                "user_id": "alice",
+                "session_id": "session-1",
+                "messages": [{"role": "user", "content": "original"}],
+            },
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "success": True,
+        "request_id": "request-1",
+        "user_id": "alice",
+        "session_id": "session-1",
+    }
+    assert requests == [
+        "/api/v1/sessions/session-1/messages/batch",
+        "/api/v1/sessions/session-1/commit",
+        "/api/v1/tasks/filtered-task",
+    ]
+    assert (
+        "add_extraction_skipped",
+        {"reason": "content_filter", "native_task_id": "filtered-task"},
+    ) in events
+    assert not any(event == "add_failed" for event, _ in events)
+    assert "Private provider detail" not in response.text
 
 
 @pytest.mark.parametrize(

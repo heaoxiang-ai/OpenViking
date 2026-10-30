@@ -78,7 +78,13 @@ task ID, request trace, failure stage and a known failure category (or
 `commit_failure_unknown`). Task error text and message bodies are not added to
 the audit log. This classification does not replay Add or change task outcomes.
 
-Structured non-retryable extraction failures (content filtering, reasoning-only
+Provider content-filter failures are accepted as skipped extraction: Add returns
+its normal HTTP 200 receipt so the remaining evaluation batches can continue.
+The native Task remains failed, its original evidence is preserved, and the
+adapter records `add_extraction_skipped` with the Task ID. This receipt does not
+mean that memory extraction succeeded; no Add or Commit is replayed.
+
+Other structured non-retryable extraction failures (reasoning-only
 or cleaned-empty output, refusal, explicit output truncation, and an invalid
 program after bounded format repair) return HTTP 422. The `detail` object includes
 an `ADD_EXTRACTION_*` code, a safe message, `retryable: false`, and the existing
