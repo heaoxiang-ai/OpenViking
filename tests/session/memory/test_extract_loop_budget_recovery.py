@@ -215,9 +215,7 @@ class TestTruncationDetection:
     async def test_length_finish_reason_is_terminal_even_when_program_parses(self):
         """A truncated program that still parses must NOT be accepted as
         operations — trailing writes/deletes would be silently lost."""
-        vlm = ScriptedVLM(
-            [_length_response(content="sdk.commit()  # actually truncated upstream")]
-        )
+        vlm = ScriptedVLM([_length_response(content="sdk.commit()  # actually truncated upstream")])
         loop = _make_loop(vlm)
 
         with pytest.raises(RuntimeError, match="output-token budget"):
@@ -252,9 +250,7 @@ class TestTruncationDetection:
         raw = SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=_TRUNCATED_PROGRAM, tool_calls=None
-                    ),
+                    message=SimpleNamespace(content=_TRUNCATED_PROGRAM, tool_calls=None),
                     finish_reason="length",
                 )
             ],
@@ -286,9 +282,7 @@ class TestNoTokenCounterInference:
         """finish_reason='stop' that lands exactly on the cap is a complete
         response, not budget exhaustion: an ordinary format error gets the
         regular format repair with the cap unchanged and the failed program available."""
-        vlm = ScriptedVLM(
-            [_length_response(finish_reason="stop"), "sdk.commit()"]
-        )
+        vlm = ScriptedVLM([_length_response(finish_reason="stop"), "sdk.commit()"])
         loop = _make_loop(vlm)
 
         operations, _tools = await _run_loop(loop)
@@ -345,7 +339,9 @@ class TestExtractionContentBoundary:
     async def test_tool_call_respects_finish_reason(self, finish_reason):
         response = VLMResponse(
             content="<think>planning</think>I will read the file.",
-            tool_calls=[ToolCall(id="read-1", name="read", arguments={"uri": "viking://user/test"})],
+            tool_calls=[
+                ToolCall(id="read-1", name="read", arguments={"uri": "viking://user/test"})
+            ],
             finish_reason=finish_reason,
         )
         vlm = ScriptedVLM([response, VLMResponse(content="<think>done</think>sdk.commit()")])
@@ -365,3 +361,47 @@ class TestExtractionContentBoundary:
             execute.assert_awaited_once()
             assert len(vlm.calls) == 2
         assert response.content == "<think>planning</think>I will read the file."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+async def test_each_format_attempt_receives_latest_error_without_extra_budget(repair_succeeds):
+    from copy import deepcopy
+
+    from openviking.session.memory.extraction_errors import MemoryExtractionError
+
+    programs = [
+        'sdk.commit()\nx = "first',
+        'sdk.commit()\n\nx = "second',
+        'sdk.commit()\n\n\nx = "third',
+    ]
+    final = "sdk.commit()" if repair_succeeds else 'sdk.commit()\n\n\n\nx = "fourth'
+    snapshots = []
+
+    class RecordingVLM(ScriptedVLM):
+        async def get_completion_async(self, **kwargs):
+            snapshots.append(deepcopy(kwargs["messages"]))
+            return await super().get_completion_async(**kwargs)
+
+    vlm = RecordingVLM([VLMResponse(content=p, finish_reason="stop") for p in [*programs, final]])
+    loop = _make_loop(vlm)
+    loop.max_iterations = 3
+    if repair_succeeds:
+        operations, _ = await _run_loop(loop)
+        assert operations is not None
+    else:
+        with pytest.raises(MemoryExtractionError) as failure:
+            await _run_loop(loop)
+        assert failure.value.kind == "parse_error"
+        assert failure.value.retryable is False
+
+    assert len(vlm.calls) == 4  # Original three iterations plus one extension.
+    for attempt in range(1, 4):
+        assert _assistant_contents(snapshots[attempt])[-1] == programs[attempt - 1]
+        repair = [text for text in _user_contents(snapshots[attempt]) if "Parser error:" in text][
+            -1
+        ]
+        assert f"Line {attempt + 1}:" in repair
+        assert "four consecutive double quotes" in repair
+    if not repair_succeeds:
+        loop.finalize_operations.assert_not_called()

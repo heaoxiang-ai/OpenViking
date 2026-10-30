@@ -78,16 +78,17 @@ task ID, request trace, failure stage and a known failure category (or
 `commit_failure_unknown`). Task error text and message bodies are not added to
 the audit log. This classification does not replay Add or change task outcomes.
 
-Provider content-filter failures and explicit model refusals are accepted as
-skipped extraction: Add returns
+Provider content-filter failures, explicit model refusals, and invalid programs
+after bounded format repair are accepted as skipped extraction: Add returns
 its normal HTTP 200 receipt so the remaining evaluation batches can continue.
 The native Task remains failed, its original evidence is preserved, and the
 adapter records `add_extraction_skipped` with the Task ID. This receipt does not
-mean that memory extraction succeeded; no Add or Commit is replayed.
+mean that memory extraction succeeded; no Add or Commit is replayed. Each format
+repair attempt receives the latest failed program and compiler diagnostic within
+the existing iteration budget; the one format extension is unchanged.
 
 Other structured non-retryable extraction failures (reasoning-only
-or cleaned-empty output, explicit output truncation, and an invalid
-program after bounded format repair) return HTTP 422. The `detail` object includes
+or cleaned-empty output, and explicit output truncation) return HTTP 422. The `detail` object includes
 an `ADD_EXTRACTION_*` code, a safe message, `retryable: false`, and the existing
 native task ID. Empty technical responses get at most one same-input retry
 within the extraction loop budget; exhaustion, unknown backend failures, and

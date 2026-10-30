@@ -583,9 +583,13 @@ class AMLAdapter:
                 messages=messages,
             )
         except OpenVikingBackendError as exc:
-            if not exc.retryable and exc.failure_kind in {"content_filter", "refusal_text"}:
-                # A moderation decision or refusal is terminal for this extraction,
-                # but must not stop AML from processing the remaining batches.
+            if not exc.retryable and exc.failure_kind in {
+                "content_filter",
+                "refusal_text",
+                "parse_error",
+            }:
+                # Moderation, refusal, or exhausted format repair is terminal for
+                # this extraction, but must not stop remaining evaluation batches.
                 # Keep the native failed task and archive as evidence; only the
                 # competition receipt treats this batch as accepted and skipped.
                 audit_event(

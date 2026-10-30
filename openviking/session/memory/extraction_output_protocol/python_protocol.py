@@ -314,7 +314,10 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
                 "quote or newline inside prose likely ended the string early. Rewrite every "
                 f"natural-language argument ({argument_examples}) as a triple-quoted string "
                 '("""...""") so embedded quotes and '
-                "newlines stay inside the literal."
+                "newlines stay inside the literal. If prose ends with a double quote, "
+                "escape that inner quote or use triple single quotes as the outer delimiter; "
+                "never place it directly against the closing triple double quotes "
+                "to form four consecutive double quotes."
             )
         if self.keep_tools_enabled_after_parse_error(error):
             tool_guidance = (

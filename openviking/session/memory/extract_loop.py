@@ -464,7 +464,12 @@ class ExtractLoop:
                     diagnostics=self._last_response_diagnostics,
                 )
 
-            if failure_kind in {"content_filter", "reasoning_only", "cleanup_empty", "refusal_text"}:
+            if failure_kind in {
+                "content_filter",
+                "reasoning_only",
+                "cleanup_empty",
+                "refusal_text",
+            }:
                 raise MemoryExtractionError(
                     failure_kind,
                     f"Memory extraction stopped (failure_kind={failure_kind})",
@@ -496,11 +501,8 @@ class ExtractLoop:
             if self._format_retry_count == 0:
                 self._format_retry_count += 1
                 max_iterations += 1
-                retry_reason = (
-                    "refusal_text" if failure_kind == "refusal_text" else "format_retry"
-                )
+                retry_reason = "refusal_text" if failure_kind == "refusal_text" else "format_retry"
                 tracer.info(f"Extended max_iterations to {max_iterations} for {retry_reason}")
-                self._add_format_error_message(messages)
 
             # A failure is only terminal when no retry attempt remains after it.
             retry_remaining = iteration < max_iterations
@@ -538,6 +540,10 @@ class ExtractLoop:
                     diagnostics=self._last_response_diagnostics,
                 )
 
+            # Refresh feedback on every remaining attempt, not just when granting
+            # the one budget extension. Later failures can have a different program
+            # and compiler diagnostic; repeating stale input cannot repair that error.
+            self._add_format_error_message(messages)
             self._disable_tools_for_iteration = (
                 not self._output_protocol.keep_tools_enabled_after_parse_error(
                     self._last_parse_error
@@ -582,9 +588,7 @@ class ExtractLoop:
         """
         usage = getattr(response, "usage", None)
         completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-        details = (
-            f"finish_reason='length', output cap={self._effective_max_output_tokens} tokens"
-        )
+        details = f"finish_reason='length', output cap={self._effective_max_output_tokens} tokens"
         if completion_tokens:
             details += f", completion_tokens={completion_tokens}"
         return (
@@ -1384,10 +1388,9 @@ class ExtractLoop:
             )
             return (None, None)
 
-        if (
-            getattr(response, "finish_reason", None) == "content_filter"
-            or self._last_response_diagnostics.get("moderation_hit_type")
-        ):
+        if getattr(
+            response, "finish_reason", None
+        ) == "content_filter" or self._last_response_diagnostics.get("moderation_hit_type"):
             self._last_llm_failure_kind = "content_filter"
             self._last_parse_error = "The provider blocked the extraction response"
             return (None, None)

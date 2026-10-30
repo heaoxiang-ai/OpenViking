@@ -189,7 +189,6 @@ async def test_add_commits_native_parts_and_image_search_retries(adapter_client,
         "reasoning_only",
         "cleanup_empty",
         "budget_exhausted",
-        "parse_error",
     ],
 )
 async def test_non_retryable_extraction_returns_422_without_replaying_add(adapter_client, kind):
@@ -236,8 +235,8 @@ async def test_non_retryable_extraction_returns_422_without_replaying_add(adapte
     ]
 
 
-@pytest.mark.parametrize("kind", ["content_filter", "refusal_text"])
-async def test_moderation_or_refusal_is_accepted_as_skipped_without_replaying_add(
+@pytest.mark.parametrize("kind", ["content_filter", "refusal_text", "parse_error"])
+async def test_terminal_extraction_is_accepted_as_skipped_without_replaying_add(
     adapter_client, monkeypatch, kind
 ):
     from openviking.session.memory.extraction_errors import MemoryExtractionError
