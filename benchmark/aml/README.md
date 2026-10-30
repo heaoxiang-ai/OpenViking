@@ -366,3 +366,15 @@ the authors' trained MemAgent implementation.
 python -m ruff check benchmark/aml
 python -m ruff format --check benchmark/aml
 ```
+
+
+Entity updates select the last operation for each target URI before streaming
+kind/template grouping. Submission order takes precedence across requests;
+Python outputs retain their actual mutation-statement order within a request.
+Legacy/JSON operations without that metadata use the resolved upsert-list then
+delete-list order. Discard superseded Entity targets before applying any writes,
+retain unrelated URIs and delete-replacement metadata only for retained deletes,
+and avoid a per-kind model merge that could recreate those URI conflicts.
+Renames remain atomic when their source or target is superseded. This policy is
+specific to Entities; true storage/index failures still fail and are not accepted
+as successful partial writes.

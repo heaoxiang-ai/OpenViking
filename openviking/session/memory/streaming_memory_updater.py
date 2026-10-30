@@ -414,6 +414,9 @@ class StreamingMemoryUpdater:
         requests: list[MemoryUpdateRequest],
         reason: str,
     ) -> StreamingMemoryUpdateResult:
+        if group_key.memory_type == "entities":
+            # Apply Entity ownership across template snapshots before partitioning.
+            requests = _last_entity_uri_requests(requests)
         # Compare only this group's schema, not unrelated types in the registry.
         # Plain value equality is sufficient for these small, transient batches.
         by_template: list[tuple[dict | None, list[MemoryUpdateRequest]]] = []
@@ -524,6 +527,8 @@ class StreamingMemoryUpdater:
         if all_ops.has_errors():
             return all_ops
 
+        # Decide Entity winners before kind grouping loses request/program order.
+        requests = _last_entity_uri_requests(requests)
         requests_by_kind: dict[str, list[MemoryUpdateRequest]] = {
             "add": [],
             "update": [],
@@ -570,25 +575,73 @@ class StreamingMemoryUpdater:
                 )
 
         async def merge_kind(kind_requests: list[MemoryUpdateRequest]) -> ResolvedOperations:
+            # Entity URI ownership is deterministic after last-operation selection.
+            # Do not ask a per-kind LLM merge to recreate a discarded URI conflict.
+            entity_operations: list[ResolvedOperations] = []
+            other_requests: list[MemoryUpdateRequest] = []
+            for request in kind_requests:
+                original = request.operations
+                entity_operations.append(
+                    ResolvedOperations(
+                        upsert_operations=[
+                            op for op in original.upsert_operations if op.memory_type == "entities"
+                        ],
+                        delete_file_contents=[
+                            mf
+                            for mf in original.delete_file_contents
+                            if mf.memory_type == "entities"
+                        ],
+                        errors=[],
+                        delete_replacements={
+                            mf.uri: original.delete_replacements[mf.uri]
+                            for mf in original.delete_file_contents
+                            if mf.memory_type == "entities"
+                            and mf.uri in original.delete_replacements
+                        },
+                    )
+                )
+                others = original.model_copy(
+                    update={
+                        "upsert_operations": [
+                            op for op in original.upsert_operations if op.memory_type != "entities"
+                        ],
+                        "delete_file_contents": [
+                            mf
+                            for mf in original.delete_file_contents
+                            if mf.memory_type != "entities"
+                        ],
+                        "delete_replacements": {
+                            mf.uri: original.delete_replacements[mf.uri]
+                            for mf in original.delete_file_contents
+                            if mf.memory_type != "entities"
+                            and mf.uri in original.delete_replacements
+                        },
+                    }
+                )
+                if others.upsert_operations or others.delete_file_contents:
+                    other_requests.append(clone_memory_update_request(request, operations=others))
+            entities = _combine_resolved_operations(entity_operations)
+            if not other_requests:
+                return entities
             operations = _combine_resolved_operations(
-                request.operations for request in kind_requests
+                request.operations for request in other_requests
             )
-            if not _requests_span_sessions(kind_requests):
-                return operations
-            return await merge_memory_operations(
-                operations=operations,
-                messages=_combined_request_messages(kind_requests),
-                ctx=kind_requests[0].ctx,
-                registry=kind_requests[0].memory_registry
-                or self.registry
-                or get_default_registry(),
-                strict_extract_errors=any(
-                    request.strict_extract_errors for request in kind_requests
-                ),
-                trace_console=self.config.trace_console,
-                force_merge=True,
-                vlm_resolver=self.vlm_resolver,
-            )
+            if _requests_span_sessions(other_requests):
+                operations = await merge_memory_operations(
+                    operations=operations,
+                    messages=_combined_request_messages(other_requests),
+                    ctx=other_requests[0].ctx,
+                    registry=other_requests[0].memory_registry
+                    or self.registry
+                    or get_default_registry(),
+                    strict_extract_errors=any(
+                        request.strict_extract_errors for request in other_requests
+                    ),
+                    trace_console=self.config.trace_console,
+                    force_merge=True,
+                    vlm_resolver=self.vlm_resolver,
+                )
+            return _combine_resolved_operations([entities, operations])
 
         kind_batches = [
             (kind, kind_requests)
@@ -622,6 +675,102 @@ class StreamingMemoryUpdater:
             list(merged.resolved_links or []),
         )
         return merged
+
+
+def _last_entity_uri_requests(requests: list[MemoryUpdateRequest]) -> list[MemoryUpdateRequest]:
+    """Keep the latest Entity action per URI in submission/statement order.
+
+    Legacy/JSON operations without statement metadata use their resolved order:
+    upsert list, then delete list. Requests always retain submission order, not
+    operation-kind or asynchronous merge-completion order. Renames are atomic:
+    a later action on either source or target supersedes that earlier rename.
+    """
+    actions = []
+    for request_index, request in enumerate(requests):
+        ordered = []
+        for kind, values in (
+            ("upsert", request.operations.upsert_operations),
+            ("delete", request.operations.delete_file_contents),
+        ):
+            for index, value in enumerate(values):
+                if value.memory_type != "entities":
+                    continue
+                fallback = len(ordered)
+                order = value.operation_index if value.operation_index is not None else fallback
+                ordered.append((order, fallback, kind, index, value))
+        actions.extend(
+            (request_index, kind, index, value)
+            for _, _, kind, index, value in sorted(ordered, key=lambda item: item[:2])
+        )
+    claimed: set[str] = set()
+    selected_upserts: dict[tuple[int, int], list[str]] = {}
+    selected_deletes: set[tuple[int, int]] = set()
+    discarded = 0
+    for request_index, kind, index, value in reversed(actions):
+        if kind == "delete":
+            if not value.uri:
+                continue
+            if value.uri in claimed:
+                discarded += 1
+                continue
+            selected_deletes.add((request_index, index))
+            claimed.add(value.uri)
+            continue
+        uris = list(dict.fromkeys(value.uris))
+        discarded += len(value.uris) - len(uris)
+        old = value.old_memory_file_content
+        if old is not None and old.uri and any(uri != old.uri for uri in uris):
+            # A rename also removes its source. Keep the whole operation atomic,
+            # including the unusual case of multiple resolved destination URIs.
+            touched = {old.uri, *uris}
+            if touched & claimed:
+                discarded += len(uris)
+                continue
+            selected_upserts[(request_index, index)] = uris
+            claimed.update(touched)
+            continue
+        kept = []
+        for uri in reversed(uris):
+            if uri in claimed:
+                discarded += 1
+                continue
+            kept.append(uri)
+            claimed.add(uri)
+        selected_upserts[(request_index, index)] = list(reversed(kept))
+    if not discarded:
+        return requests
+    result = []
+    for request_index, request in enumerate(requests):
+        original = request.operations
+        upserts = []
+        for index, op in enumerate(original.upsert_operations):
+            if op.memory_type != "entities" or not op.uris:
+                upserts.append(op)
+                continue
+            uris = selected_upserts.get((request_index, index), [])
+            if uris:
+                upserts.append(op.model_copy(update={"uris": uris}))
+        deletes = [
+            mf
+            for index, mf in enumerate(original.delete_file_contents)
+            if mf.memory_type != "entities"
+            or not mf.uri
+            or (request_index, index) in selected_deletes
+        ]
+        operations = original.model_copy(
+            update={
+                "upsert_operations": upserts,
+                "delete_file_contents": deletes,
+                "delete_replacements": {
+                    mf.uri: original.delete_replacements[mf.uri]
+                    for mf in deletes
+                    if mf.uri in original.delete_replacements
+                },
+            }
+        )
+        result.append(clone_memory_update_request(request, operations=operations))
+    tracer.info(f"Entity URI last-operation-wins discarded_targets={discarded}")
+    return result
 
 
 def _check_template_batch_conflicts(
@@ -677,6 +826,12 @@ def split_request_by_merge_group(
             passthrough_upserts.append(op)
             continue
         peer_id = _peer_id_for_operation(op)
+        if op.memory_type == "entities":
+            # Preserve one Entity mutation's destinations as one ordered action.
+            # In particular, splitting a rename would lose its atomic source.
+            group_key = MemoryMergeGroupKey(peer_id=peer_id, memory_type=op.memory_type)
+            upsert_groups.setdefault(group_key, []).append(op.model_copy(deep=True))
+            continue
         for uri in op.uris:
             single_uri_op = clone_operation_for_uri(op, uri)
             group_key = MemoryMergeGroupKey(peer_id=peer_id, memory_type=single_uri_op.memory_type)
@@ -1027,8 +1182,7 @@ async def merge_one_memory_type_operations(
     )
     if vlm_resolver is None:
         raise RuntimeError(
-            "merge_one_memory_type_operations requires a VLM resolver "
-            "for account-owned work"
+            "merge_one_memory_type_operations requires a VLM resolver for account-owned work"
         )
     vlm_config = await vlm_resolver.get_vlm(ctx.account_id)
     provider = PatchMergeContextProvider(

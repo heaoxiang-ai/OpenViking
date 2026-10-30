@@ -106,6 +106,10 @@ class ExtractionOutputProtocol(ABC):
         del context
         return ""
 
+    def get_operation_order(self) -> dict[int, int]:
+        """Return runtime page-ID mutation order when the protocol records it."""
+        return {}
+
     def get_parse_error_diagnostic(self) -> dict[str, Any]:
         """Return metadata about the last parse failure, without the failed output."""
         return {}

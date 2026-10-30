@@ -2344,3 +2344,46 @@ def test_python_rejects_string_percent_formatting():
 
     assert operations is None
     assert "%-formatting is not allowed" in error
+
+
+@pytest.mark.parametrize("delete_last", [False, True])
+@pytest.mark.asyncio
+async def test_entity_statement_order_reaches_resolved_upsert_and_delete(delete_last):
+    from unittest.mock import Mock
+
+    uri = "viking://user/test/memories/entities/person/A.md"
+    memory = MemoryFile(
+        uri=uri,
+        memory_type="entities",
+        content="before",
+        extra_fields={"name": "A", "category": "person"},
+    )
+    context = _context([_renameable_entity_schema()], files=[memory])
+    protocol = create_extraction_output_protocol("python")
+    _bind(protocol, context)
+    binding = protocol.binding_name(uri)
+    create = 'new = sdk.create_entities(category="person", name="A", content="latest")'
+    delete = f"{binding}.delete()"
+    operations, error = protocol.parse(
+        "\n".join([create, delete] if delete_last else [delete, create]), context
+    )
+    assert error is None
+    assert set(protocol.get_operation_order().values()) == {0, 1}
+    loop = ExtractLoop(vlm=SimpleNamespace(model="synthetic"), viking_fs=MagicMock())
+    loop._output_protocol = protocol
+    loop._extract_context = SimpleNamespace(page_id_map=context.page_id_map)
+    loop.context_provider = SimpleNamespace(
+        read_file_contents=context.read_file_contents,
+        get_memory_schemas=lambda ctx: list(context.schemas),
+    )
+    loop._isolation_handler = Mock()
+    loop._isolation_handler.get_read_scope.return_value = None
+    loop._isolation_handler.fill_identity_fields.side_effect = lambda item, **kwargs: item
+    loop._isolation_handler.calculate_memory_uris.return_value = [uri]
+    resolved, _ = await loop.resolve_operations(operations)
+    assert resolved.upsert_operations[0].operation_index == (0 if delete_last else 1)
+    assert resolved.delete_file_contents[0].operation_index == (1 if delete_last else 0)
+    assert memory.operation_index is None  # Never mutate the prefetched snapshot.
+    assert "operation_index" not in str(resolved.model_dump())
+    protocol.parse('x = "unterminated', context)
+    assert protocol.get_operation_order() == {}

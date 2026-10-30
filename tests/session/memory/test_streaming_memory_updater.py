@@ -2045,8 +2045,12 @@ class TestFilterValidLinksTransientErrors:
             lambda: fs,
         )
         return await filter_valid_links(
-            [StoredLink(from_uri="viking://user/u/memories/cases/a.md",
-                        to_uri="viking://user/u/memories/cases/b.md")],
+            [
+                StoredLink(
+                    from_uri="viking://user/u/memories/cases/a.md",
+                    to_uri="viking://user/u/memories/cases/b.md",
+                )
+            ],
             upsert_operations=self._ops("viking://user/u/memories/cases/a.md"),
             delete_file_contents=[],
             ctx=_ctx(),
@@ -2077,3 +2081,237 @@ class TestFilterValidLinksTransientErrors:
 
         valid = await self._filter(monkeypatch, read_file)
         assert valid == []
+
+
+def _entity_request(kind, text, *, uri="viking://user/u/memories/entities/person/A.md", order=None):
+    old = MemoryFile(
+        uri=uri,
+        memory_type="entities",
+        content="before",
+        extra_fields={"name": "A", "category": "person"},
+        operation_index=order,
+    )
+    upserts = (
+        []
+        if kind == "delete"
+        else [
+            ResolvedOperation(
+                memory_type="entities",
+                uris=[uri],
+                memory_fields={"name": "A", "category": "person", "content": text},
+                old_memory_file_content=old if kind == "update" else None,
+                operation_index=order,
+            )
+        ]
+    )
+    return MemoryUpdateRequest(
+        operations=ResolvedOperations(
+            upsert_operations=upserts,
+            delete_file_contents=[old] if kind == "delete" else [],
+            errors=[],
+        ),
+        messages=[],
+        ctx=_ctx(),
+        metadata={"session_id": text},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["add", "update", "delete"])
+@pytest.mark.parametrize("last", ["add", "update", "delete"])
+@pytest.mark.parametrize("same_session", [False, True])
+async def test_entity_same_uri_keeps_last_submitted_operation(
+    monkeypatch, first, last, same_session
+):
+    from copy import deepcopy
+
+    merge = AsyncMock(
+        side_effect=AssertionError("Entity selection must not depend on a model merge")
+    )
+    monkeypatch.setattr(
+        "openviking.session.memory.streaming_memory_updater.merge_memory_operations", merge
+    )
+    requests = [_entity_request(first, "earlier"), _entity_request(last, "latest")]
+    if same_session:
+        requests[0].metadata["session_id"] = requests[1].metadata["session_id"]
+    before = deepcopy(requests)
+    merged = await StreamingMemoryUpdater(registry=_registry())._merge_requests(requests)
+    assert not merged.errors
+    assert len(merged.delete_file_contents) == (last == "delete")
+    assert len(merged.upsert_operations) == (last != "delete")
+    if merged.upsert_operations:
+        assert merged.upsert_operations[0].memory_fields["content"] == "latest"
+        assert merged.upsert_operations[0].is_edit() == (last == "update")
+    assert requests == before
+    merge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delete_last", [False, True])
+async def test_entity_statement_order_precedes_operation_kind_order(delete_last):
+    upsert = _entity_request("update", "new", order=1 if delete_last else 2)
+    deletion = _entity_request("delete", "remove", order=2 if delete_last else 1)
+    upsert.operations.delete_file_contents = deletion.operations.delete_file_contents
+    merged = await StreamingMemoryUpdater(registry=_registry())._merge_requests([upsert])
+    assert not merged.errors
+    assert bool(merged.delete_file_contents) == delete_last
+    assert bool(merged.upsert_operations) == (not delete_last)
+    assert "operation_index" not in str(merged.model_dump())
+    assert "operation_index" not in str(deletion.operations.delete_file_contents[0].to_metadata())
+
+
+@pytest.mark.asyncio
+async def test_entity_winner_preserves_other_target_uris_and_request_errors():
+    uri = "viking://user/u/memories/entities/person/A.md"
+    other = "viking://user/u/memories/entities/person/B.md"
+    early = _entity_request("add", "earlier", uri=uri)
+    early.operations.upsert_operations[0].uris.append(other)
+    late = _entity_request("add", "latest", uri=uri)
+    updater = StreamingMemoryUpdater(registry=_registry())
+    merged = await updater._merge_requests([early, late])
+    assert [(op.uris, op.memory_fields["content"]) for op in merged.upsert_operations] == [
+        ([other], "earlier"),
+        ([uri], "latest"),
+    ]
+    early.operations.errors.append("real resolution failure")
+    merged = await updater._merge_requests([early, late])
+    assert merged.errors == ["real resolution failure"]
+
+
+@pytest.mark.asyncio
+async def test_entity_discarded_delete_drops_its_replacement_mapping():
+    early = _entity_request("delete", "early")
+    uri = early.operations.delete_file_contents[0].uri
+    early.operations.delete_replacements = {uri: "viking://user/u/memories/entities/person/B.md"}
+    late = _entity_request("add", "latest", uri=uri)
+    merged = await StreamingMemoryUpdater(registry=_registry())._merge_requests([early, late])
+    assert not merged.errors
+    assert merged.delete_file_contents == []
+    assert merged.delete_replacements == {}
+
+
+@pytest.mark.asyncio
+async def test_entity_rename_is_not_partially_retained_against_a_later_source_action():
+    rename = _entity_request("update", "rename")
+    source = rename.operations.upsert_operations[0].uris[0]
+    rename.operations.upsert_operations[0].uris = [source.replace("/A.md", "/B.md")]
+    newest = _entity_request("delete", "latest", uri=source)
+    merged = await StreamingMemoryUpdater(registry=_registry())._merge_requests([rename, newest])
+    assert not merged.errors
+    assert not merged.upsert_operations
+    assert [mf.uri for mf in merged.delete_file_contents] == [source]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_fails", [False, True])
+async def test_entity_last_patch_applies_without_earlier_stale_patch_and_keeps_real_write_errors(
+    monkeypatch, write_fails
+):
+    from tests.session.memory.test_extraction_output_protocol import _renameable_entity_schema
+
+    registry = _registry()
+    registry.register(_renameable_entity_schema())
+    early = _entity_request("update", "early")
+    late = _entity_request("update", "late")
+    uri = late.operations.upsert_operations[0].uris[0]
+    early.operations.upsert_operations[0].memory_fields["content"] = StrPatch(
+        blocks=[SearchReplaceBlock(search="missing stale text", replace="wrong")]
+    )
+    late.operations.upsert_operations[0].memory_fields["content"] = StrPatch(
+        blocks=[SearchReplaceBlock(search="before", replace="latest content")]
+    )
+    fs = InMemoryVikingFS(
+        {uri: MemoryFileUtils.write(late.operations.upsert_operations[0].old_memory_file_content)}
+    )
+    for module in ("streaming_memory_updater", "memory_updater"):
+        monkeypatch.setattr(f"openviking.session.memory.{module}.get_viking_fs", lambda: fs)
+    if write_fails:
+        fs.write_file = AsyncMock(side_effect=OSError("synthetic disk error"))
+    result = await StreamingMemoryUpdater(registry=registry)._process_batch(
+        MemoryMergeGroupKey(None, "entities"), [early, late], "test"
+    )
+    if write_fails:
+        assert result.apply_result.errors
+        assert MemoryFileUtils.read(fs.files[uri], uri=uri).content == "before"
+    else:
+        assert not result.apply_result.errors
+        assert MemoryFileUtils.read(fs.files[uri], uri=uri).content == "latest content"
+        assert len(fs.writes) == 1
+
+
+@pytest.mark.asyncio
+async def test_entity_distinct_namespaces_and_case_are_not_collapsed():
+    requests = [
+        _entity_request("add", "first", uri="viking://user/u/memories/entities/person/A.md"),
+        _entity_request(
+            "delete", "other-user", uri="viking://user/v/memories/entities/person/A.md"
+        ),
+        _entity_request("add", "lowercase", uri="viking://user/u/memories/entities/person/a.md"),
+    ]
+    merged = await StreamingMemoryUpdater(registry=_registry())._merge_requests(requests)
+    assert not merged.errors
+    assert len(merged.upsert_operations) == 2
+    assert len(merged.delete_file_contents) == 1
+
+
+@pytest.mark.asyncio
+async def test_entity_multi_target_rename_is_kept_atomic():
+    rename = _entity_request("update", "rename")
+    source = rename.operations.upsert_operations[0].uris[0]
+    targets = [source.replace("/A.md", "/B.md"), source.replace("/A.md", "/C.md")]
+    rename.operations.upsert_operations[0].uris = targets
+    earlier = _entity_request("add", "superseded", uri=source)
+    from openviking.session.memory.streaming_memory_updater import split_request_by_merge_group
+
+    groups = split_request_by_merge_group(rename)
+    assert len(groups) == 1
+    assert len(groups[0][1].operations.upsert_operations) == 1
+    assert groups[0][1].operations.upsert_operations[0].uris == targets
+    updater = StreamingMemoryUpdater(registry=_registry())
+    merged = await updater._merge_requests([earlier, groups[0][1]])
+    assert not merged.errors
+    assert len(merged.upsert_operations) == 1
+    assert merged.upsert_operations[0].uris == targets
+    newest = _entity_request("delete", "latest", uri=targets[0])
+    merged = await updater._merge_requests([rename, newest])
+    assert not merged.errors
+    assert not merged.upsert_operations
+    assert [mf.uri for mf in merged.delete_file_contents] == [targets[0]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first", ["add", "update", "delete"])
+@pytest.mark.parametrize("last", ["add", "update", "delete"])
+async def test_entity_last_action_controls_real_file_state(monkeypatch, first, last):
+    from tests.session.memory.test_extraction_output_protocol import _renameable_entity_schema
+
+    registry = _registry()
+    registry.register(_renameable_entity_schema())
+    early = _entity_request(first, "earlier")
+    late = _entity_request(last, "latest")
+    uri = "viking://user/u/memories/entities/person/A.md"
+    fs = InMemoryVikingFS(
+        {
+            uri: MemoryFileUtils.write(
+                MemoryFile(
+                    uri=uri,
+                    memory_type="entities",
+                    content="before",
+                    extra_fields={"name": "A", "category": "person"},
+                )
+            )
+        }
+    )
+    for module in ("streaming_memory_updater", "memory_updater"):
+        monkeypatch.setattr(f"openviking.session.memory.{module}.get_viking_fs", lambda: fs)
+    updater = StreamingMemoryUpdater(registry=registry)
+    result = await updater._process_batch(
+        MemoryMergeGroupKey(None, "entities"), [early, late], "test"
+    )
+    assert not result.apply_result.errors
+    if last == "delete":
+        assert uri not in fs.files
+        assert not fs.writes
+    else:
+        assert MemoryFileUtils.read(fs.files[uri], uri=uri).content == "latest"
+        assert len(fs.writes) == 1

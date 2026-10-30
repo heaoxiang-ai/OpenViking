@@ -296,6 +296,7 @@ class MemoryFile(BaseModel):
     backlinks: List[Dict[str, Any]] = []
     memory_type: Optional[str] = None
     extra_fields: Dict[str, Any] = {}
+    operation_index: Optional[int] = Field(default=None, exclude=True)
 
     def plain_content(self) -> str:
         from openviking.session.memory.utils.link_renderer import LinkRenderer
@@ -340,6 +341,8 @@ class MemoryFile(BaseModel):
 
 
 class ResolvedOperation(BaseModel):
+    # Runtime statement order, never a memory field or model-facing value.
+    operation_index: Optional[int] = Field(default=None, exclude=True)
     old_memory_file_content: Optional[MemoryFile] = None
     memory_fields: Dict
     memory_type: str  # The memory type (e.g., 'tools', 'skills', 'events')

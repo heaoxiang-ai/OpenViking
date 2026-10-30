@@ -900,6 +900,8 @@ class ExtractLoop:
         invalid_reference_page_ids: set[int] = set()
 
         role_scope = self._isolation_handler.get_read_scope()
+        protocol = getattr(self, "_output_protocol", None)
+        operation_order = protocol.get_operation_order() if protocol is not None else {}
         page_id_map = getattr(self._extract_context, "page_id_map", None)
         schemas = list(self.context_provider.get_memory_schemas(self.ctx))
         assigned_page_ids, page_id_assignments = self._assign_response_page_ids(
@@ -959,6 +961,7 @@ class ExtractLoop:
                     memory_type=memory_type,
                     uris=[],
                     page_id=page_id,
+                    operation_index=operation_order.get(requested_page_id),
                     resolution_skip=identity_resolution_skip,
                 )
 
@@ -1078,7 +1081,11 @@ class ExtractLoop:
                     replacement_uri = page_id_map.resolve(replacement_page_id)
 
             if all(file.uri != old_content.uri for file in delete_file_contents):
-                delete_file_contents.append(old_content)
+                delete_file_contents.append(
+                    old_content.model_copy(
+                        update={"operation_index": operation_order.get(delete_id.delete_page_id)}
+                    )
+                )
             if replacement_uri and replacement_uri != delete_uri:
                 delete_replacements[delete_uri] = replacement_uri
 

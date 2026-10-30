@@ -85,6 +85,7 @@ class _MemoryObject:
     deleted: bool = False
     replacement: _MemoryObject | None = None
     changed_fields: dict[str, Any] = field(default_factory=dict)
+    operation_index: int | None = None
 
 
 _UNSET = object()
@@ -108,6 +109,7 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
 
     def __init__(self) -> None:
         self._last_parse_diagnostic: dict[str, Any] = {}
+        self._last_operation_order: dict[int, int] = {}
         self._uri_to_name: dict[str, str] = {}
         self._type_counts: dict[str, int] = {}
         self._context_counts: dict[str, int] = {}
@@ -267,11 +269,17 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
     ) -> tuple[Any | None, str | None]:
         self._last_error_allows_tool_retry = False
         self._last_parse_diagnostic = {}
+        self._last_operation_order = {}
         self._capture_prompt_capabilities(context)
         try:
             code = _extract_python_code(content)
             compiler = _PythonProgramCompiler(context=context, protocol=self)
             operations = compiler.compile(code)
+            self._last_operation_order = {
+                obj.page_id: obj.operation_index
+                for obj in compiler.objects.values()
+                if obj.operation_index is not None
+            }
             return operations, None
         except ExtractionOutputProtocolError as exc:
             self._last_parse_diagnostic = exc.diagnostic
@@ -375,6 +383,9 @@ class PythonExtractionOutputProtocol(ExtractionOutputProtocol):
             + "\nSystem-provided existing-object bindings:\n"
             + json.dumps(bindings, ensure_ascii=False)
         )
+
+    def get_operation_order(self) -> dict[int, int]:
+        return dict(self._last_operation_order)
 
     def get_parse_error_diagnostic(self) -> dict[str, Any]:
         return dict(self._last_parse_diagnostic)
@@ -683,6 +694,7 @@ class _PythonProgramCompiler:
         self._singleton_identities: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()
         self._next_new_page_id = self._find_next_new_page_id(100)
         self._committed = False
+        self._statement_index = 0
         self._load_existing_objects()
 
     def compile(self, code: str) -> Any:
@@ -714,6 +726,7 @@ class _PythonProgramCompiler:
         for index, statement in enumerate(module.body):
             if self._committed:
                 self._error(statement, "sdk.commit() must be the final statement")
+            self._statement_index = index
             self._execute_statement(statement)
             if self._committed and index != len(module.body) - 1:
                 self._error(statement, "sdk.commit() must be the final statement")
@@ -1012,6 +1025,7 @@ class _PythonProgramCompiler:
                 fields=dict(kwargs),
                 existing=False,
                 changed_fields=dict(kwargs),
+                operation_index=self._statement_index,
             )
             self._next_new_page_id = self._find_next_new_page_id(self._next_new_page_id + 1)
             return obj
@@ -1084,6 +1098,7 @@ class _PythonProgramCompiler:
                     f"page_id={owner.page_id}, binding={owner.name}",
                 )
                 return None
+            owner.operation_index = self._statement_index
             owner.deleted = True
             owner.replacement = replacement
             return None
@@ -1238,6 +1253,7 @@ class _PythonProgramCompiler:
             )
         owner.fields[name] = value
         owner.changed_fields[name] = value
+        owner.operation_index = self._statement_index
 
     def _eval_keywords(
         self,
@@ -1269,6 +1285,7 @@ class _PythonProgramCompiler:
         } - fields.keys()
         owner.deleted = False
         owner.replacement = None
+        owner.operation_index = self._statement_index
         for name, value in changes.items():
             field_schema = fields.get(name)
             if name in dynamic_fields:
