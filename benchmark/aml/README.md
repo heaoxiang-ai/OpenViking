@@ -148,7 +148,6 @@ export AML_SEARCH_CANDIDATE_LIMIT=40
 export AML_SEARCH_RESULT_LIMIT=40
 export AML_SEARCH_SCORE_THRESHOLD=-1e308
 export AML_SEARCH_RERANK_CONFIG=/path/to/private-rerank.json
-export AML_SEARCH_OWNER_LABELS=false
 ```
 
 The private rerank JSON requires `ak` and `sk`. Supported settings include
@@ -177,11 +176,6 @@ does not apply the rerank score threshold to unscored candidates. The
 last HTTP status, when available. This fallback never replays Add.
 Image-only searches retain native candidate order because this reranker is text
 only; mixed image/text searches rerank using their text query.
-
-`AML_SEARCH_OWNER_LABELS=true` optionally prefixes returned bodies with explicit
-people labels inferred from their URI, profile heading or Event ChatLog. Event
-labels identify participants, not the owner of every fact; unknown attribution
-is left unspecified. The default is false.
 
 ### Shared model admission
 

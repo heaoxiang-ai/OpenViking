@@ -31,7 +31,6 @@ from benchmark.aml.audit import (
     request_audit,
 )
 from benchmark.aml.commit_guard import commit_session_with_proof
-from benchmark.aml.owner_labels import _format_search_content
 from benchmark.aml.rerank import RerankError, RerankRetriesExhausted, VikingDBReranker
 
 DEFAULT_HOST = "127.0.0.1"
@@ -82,7 +81,6 @@ class AMLSettings:
     search_candidate_limit: int | None = None
     search_result_limit: int | None = None
     search_score_threshold: float | None = None
-    search_owner_labels: bool = False
     search_rerank_config: str | None = None
 
     def __post_init__(self) -> None:
@@ -146,8 +144,6 @@ class AMLSettings:
                 if os.getenv("AML_SEARCH_SCORE_THRESHOLD")
                 else None
             ),
-            search_owner_labels=os.getenv("AML_SEARCH_OWNER_LABELS", "false").lower()
-            in {"true", "1", "yes"},
             search_rerank_config=os.getenv("AML_SEARCH_RERANK_CONFIG") or None,
         )
 
@@ -624,8 +620,6 @@ class AMLAdapter:
             uri = hit.get("uri")
             if not isinstance(uri, str) or not uri or not isinstance(content, str) or not content:
                 continue
-            if self.settings.search_owner_labels:
-                content = _format_search_content(uri, content)
             data.append({"id": uri, "content": content})
             if len(data) == result_limit:
                 break

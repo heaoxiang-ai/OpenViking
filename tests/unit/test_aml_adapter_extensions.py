@@ -217,14 +217,12 @@ async def test_image_only_query_skips_text_rerank_and_keeps_native_order():
     assert result["data"][0]["id"] == hit("a")["uri"]
 
 
-async def test_owner_prefix_is_opt_in():
+async def test_search_preserves_body_without_attribution_prefix():
     body = "# Alice\nOriginal preference"
     backend = Backend([{**hit("entities/person/alice.md"), "content": body}])
     request = AMLSearchRequest(user_id="alice", query="q", top_k=1)
     plain = await AMLAdapter(AMLSettings(), backend).search(request)
-    labelled = await AMLAdapter(AMLSettings(search_owner_labels=True), backend).search(request)
     assert plain["data"][0]["content"] == body
-    assert labelled["data"][0]["content"] == "[记忆归属人: alice]\n" + body
 
 
 async def test_long_add_preserves_all_messages_and_commits_once_after_all_batches():
