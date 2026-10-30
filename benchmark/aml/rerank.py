@@ -21,6 +21,15 @@ class RerankError(RuntimeError):
     pass
 
 
+class RerankRetriesExhausted(RerankError):
+    """Transient provider failures exhausted the configured attempt budget."""
+
+    def __init__(self, *, attempts: int, http_status: int | None) -> None:
+        super().__init__("Rerank technical retries exhausted")
+        self.attempts = attempts
+        self.http_status = http_status
+
+
 def retry_after_seconds(value: str | None) -> float | None:
     """Parse RFC 9110 delay-seconds or HTTP-date without trusting invalid values."""
     if not value:
@@ -158,7 +167,9 @@ class VikingDBReranker:
                     if code is not None and code not in {429, 500, 502, 503, 504}:
                         raise RerankError(f"Rerank rejected the request (HTTP {code})") from exc
                     if attempt + 1 == self.attempts:
-                        raise RerankError("Rerank technical retries exhausted") from exc
+                        raise RerankRetriesExhausted(
+                            attempts=self.attempts, http_status=code
+                        ) from exc
                     await asyncio.sleep(min(2**attempt, 20))
                 except ValueError as exc:
                     raise RerankError("Rerank returned invalid JSON") from exc

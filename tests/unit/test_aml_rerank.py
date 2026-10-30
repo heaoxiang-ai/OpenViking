@@ -4,7 +4,13 @@ from email.utils import formatdate
 import httpx
 import pytest
 
-from benchmark.aml.rerank import RerankError, VikingDBReranker, align_scores, retry_after_seconds
+from benchmark.aml.rerank import (
+    RerankError,
+    RerankRetriesExhausted,
+    VikingDBReranker,
+    align_scores,
+    retry_after_seconds,
+)
 
 
 def test_provider_relevance_order_is_mapped_back_to_input_documents():
@@ -174,3 +180,66 @@ async def test_503_cooldown_applies_to_next_request_after_retry_exhaustion(tmp_p
         await ranker._batch("question", ["A"])
     assert await ranker._batch("question", ["A"]) == [0.7]
     assert sent_at == [0, 120]
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504, None])
+async def test_retryable_failures_exhaust_the_budget_with_a_distinct_error(
+    tmp_path, monkeypatch, status_code
+):
+    ranker = make_ranker(tmp_path)
+    ranker.attempts = 3
+    clock = [0.0]
+    requests = []
+    real_client = httpx.AsyncClient
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        if status_code is None:
+            raise httpx.ReadTimeout("provider timeout", request=request)
+        return httpx.Response(status_code)
+
+    async def sleep(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(ranker, "_signed_headers", lambda payload: ({}, json.dumps(payload)))
+    monkeypatch.setattr("benchmark.aml.rerank.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("benchmark.aml.rerank.asyncio.sleep", sleep)
+    monkeypatch.setattr(
+        "benchmark.aml.rerank.httpx.AsyncClient",
+        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(RerankRetriesExhausted) as failure:
+        await ranker._batch("question", ["A"])
+    assert failure.value.attempts == 3
+    assert failure.value.http_status == status_code
+    assert len(requests) == 3 and requests[0] == requests[1] == requests[2]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(403),
+        httpx.Response(200, text="not JSON"),
+        httpx.Response(200, json={"result": {"data": []}}),
+    ],
+)
+async def test_rejection_and_invalid_responses_are_not_retry_exhaustion(
+    tmp_path, monkeypatch, response
+):
+    ranker = make_ranker(tmp_path)
+    requests = []
+    real_client = httpx.AsyncClient
+
+    def handle(request):
+        requests.append(request)
+        return response
+
+    monkeypatch.setattr(ranker, "_signed_headers", lambda payload: ({}, json.dumps(payload)))
+    monkeypatch.setattr(
+        "benchmark.aml.rerank.httpx.AsyncClient",
+        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handle)),
+    )
+    with pytest.raises(RerankError) as failure:
+        await ranker._batch("question", ["A"])
+    assert not isinstance(failure.value, RerankRetriesExhausted)
+    assert len(requests) == 1

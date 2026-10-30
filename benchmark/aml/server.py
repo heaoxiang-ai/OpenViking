@@ -32,7 +32,7 @@ from benchmark.aml.audit import (
 )
 from benchmark.aml.commit_guard import commit_session_with_proof
 from benchmark.aml.owner_labels import _format_search_content
-from benchmark.aml.rerank import RerankError, VikingDBReranker
+from benchmark.aml.rerank import RerankError, RerankRetriesExhausted, VikingDBReranker
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8088
@@ -588,15 +588,29 @@ class AMLAdapter:
                     for hit in candidates
                 ):
                     raise OpenVikingBackendError("OpenViking returned an out-of-scope memory")
-                ranked = await self.reranker.rank(query, candidates) if image_rerank else candidates
+                ranked = candidates
+                search_event = "search_image_ranked"
+                fallback_fields: dict[str, Any] = {}
+                if image_rerank:
+                    try:
+                        ranked = await self.reranker.rank(query, candidates)
+                        search_event = "search_reranked"
+                    except RerankRetriesExhausted as exc:
+                        search_event = "search_rerank_fallback"
+                        fallback_fields = {
+                            "reason": "technical_retries_exhausted",
+                            "http_status": exc.http_status,
+                            "attempts": exc.attempts,
+                        }
                 hits = ranked[:result_limit]
                 uris = [hit["uri"] for hit in hits]
                 bodies = await self.backend.read_memories(user_id=request.user_id, uris=uris)
                 hits = [{**hit, "content": body} for hit, body in zip(hits, bodies, strict=True)]
                 audit_event(
-                    "search_reranked" if image_rerank else "search_image_ranked",
+                    search_event,
                     candidate_count=len(candidates),
                     selected_count=len(hits),
+                    **fallback_fields,
                 )
         except (OpenVikingBackendError, RerankError) as exc:
             audit_event("search_failed", error_type=type(exc).__name__)

@@ -167,7 +167,14 @@ The adapter deduplicates candidate URIs, verifies their user scope, reranks thei
 abstracts, selects at most `min(request.top_k, AML_SEARCH_RESULT_LIMIT)` results,
 and reads their complete bodies through the public Read API. Provider document
 IDs are aligned back to input order before global sorting. Empty/invalid rerank
-responses or failed reads return an error rather than substituting evidence.
+responses, non-retryable provider errors or failed reads still return an error.
+When retryable HTTP failures (429/500/502/503/504) or transport errors exhaust
+the configured rerank attempts, Search skips reranking for the entire candidate
+set, keeps deduplicated native retrieval order and reads the selected full
+bodies as usual. It discards any scores from earlier successful batches and
+does not apply the rerank score threshold to unscored candidates. The
+`search_rerank_fallback` audit event records the exhausted attempt count and
+last HTTP status, when available. This fallback never replays Add.
 Image-only searches retain native candidate order because this reranker is text
 only; mixed image/text searches rerank using their text query.
 

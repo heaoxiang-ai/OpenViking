@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from benchmark.aml import audit, server
+from benchmark.aml.rerank import RerankError, RerankRetriesExhausted, VikingDBReranker
 from benchmark.aml.server import AMLAdapter, AMLAddRequest, AMLSearchRequest, AMLSettings
 
 
@@ -93,6 +94,91 @@ async def test_rerank_deduplicates_and_reads_selected_full_bodies_in_rank_order(
     assert result == {
         "data": [{"id": hit(n)["uri"], "content": f"full body {n}"} for n in ["c", "b"]]
     }
+
+
+@pytest.mark.parametrize("status_code", [503, 504, None])
+async def test_search_returns_native_order_when_a_later_rerank_batch_exhausts_retries(
+    tmp_path, monkeypatch, caplog, status_code
+):
+    config = tmp_path / "rerank.json"
+    config.write_text(
+        json.dumps(
+            {"ak": "test", "sk": "test", "retry_attempts": 2, "batch_size": 2, "threshold": 0.5}
+        )
+    )
+    ranker = VikingDBReranker(str(config))
+    backend = Backend([hit("a"), hit("a"), hit("b"), hit("c"), hit("d")])
+    attempts = []
+    real_client = httpx.AsyncClient
+
+    def handle(request):
+        attempts.append(json.loads(request.content))
+        if len(attempts) == 1:
+            return httpx.Response(
+                200, json={"result": {"data": [{"id": 1, "score": 0.9}, {"id": 0, "score": 0.1}]}}
+            )
+        if status_code is None:
+            raise httpx.ReadTimeout("provider timeout", request=request)
+        return httpx.Response(status_code)
+
+    async def sleep(seconds):
+        pass
+
+    monkeypatch.setattr(ranker, "_signed_headers", lambda payload: ({}, json.dumps(payload)))
+    monkeypatch.setattr("benchmark.aml.rerank.asyncio.sleep", sleep)
+    monkeypatch.setattr(
+        "benchmark.aml.rerank.httpx.AsyncClient",
+        lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handle)),
+    )
+    app = server.create_app(
+        settings=AMLSettings(search_candidate_limit=40, search_result_limit=2),
+        backend=backend,
+        reranker=ranker,
+    )
+    async with real_client(
+        transport=httpx.ASGITransport(app=app), base_url="http://adapter.test"
+    ) as client:
+        response = await client.post(
+            "/search", json={"user_id": "alice", "query": "question", "top_k": 10}
+        )
+    assert response.status_code == 200
+    assert response.json() == {
+        "data": [{"id": hit(n)["uri"], "content": f"full body {n}"} for n in ["a", "b"]]
+    }
+    assert len(backend.find_calls) == len(backend.read_calls) == 1
+    assert backend.read_calls[0]["uris"] == [hit("a")["uri"], hit("b")["uri"]]
+    assert len(attempts) == 3 and attempts[1] == attempts[2]
+    records = [
+        json.loads(row.message) for row in caplog.records if row.name == "benchmark.aml.audit"
+    ]
+    fallback = next(row for row in records if row["event"] == "search_rerank_fallback")
+    assert fallback["http_status"] == status_code
+    assert fallback["attempts"] == 2
+    assert fallback["candidate_count"] == 4 and fallback["selected_count"] == 2
+    assert not any(row["event"] in {"search_reranked", "search_failed"} for row in records)
+
+
+async def test_invalid_rerank_response_still_fails_search():
+    backend = Backend([hit("a")])
+    ranker = AsyncMock()
+    ranker.rank.side_effect = RerankError("Invalid rerank response")
+    adapter = AMLAdapter(AMLSettings(), backend, ranker)
+    with pytest.raises(server.HTTPException) as failure:
+        await adapter.search(AMLSearchRequest(user_id="alice", query="q", top_k=1))
+    assert failure.value.status_code == 503
+    assert backend.read_calls == []
+
+
+async def test_native_read_failure_after_rerank_fallback_still_fails_search():
+    backend = Backend([hit("a")])
+    backend.read_memories = AsyncMock(side_effect=server.OpenVikingBackendError("Read failed"))
+    ranker = AsyncMock()
+    ranker.rank.side_effect = RerankRetriesExhausted(attempts=2, http_status=504)
+    adapter = AMLAdapter(AMLSettings(), backend, ranker)
+    with pytest.raises(server.HTTPException) as failure:
+        await adapter.search(AMLSearchRequest(user_id="alice", query="q", top_k=1))
+    assert failure.value.status_code == 503
+    backend.read_memories.assert_awaited_once()
 
 
 async def test_explicit_smaller_top_k_is_respected():
